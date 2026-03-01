@@ -1,0 +1,11 @@
+[package]
+name = "cadkit-2d-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+cadkit-types = { path = "../types" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }

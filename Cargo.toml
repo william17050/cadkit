@@ -1,0 +1,47 @@
+[workspace]
+members = [
+    "crates/types",
+    "crates/2d-core",
+    "crates/render-wgpu",
+    "crates/ui-egui",
+    "crates/geometry",
+    # TODO: Add these crates as they're implemented
+    # "crates/region-find",
+    # "crates/direct-3d",
+    # "crates/plugin-host",
+    # "crates/scripting-python",
+    # "crates/ai-engine",
+    # "crates/ai-python-bridge",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Proprietary"
+authors = ["Bill"]
+
+[workspace.dependencies]
+# Core
+anyhow = "1"
+thiserror = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Math/Geometry
+nalgebra = "0.32"
+geo = "0.27"
+
+# UI/Rendering
+egui = "0.27"
+eframe = "0.27"
+wgpu = "0.19"
+bytemuck = { version = "1.14", features = ["derive"] }
+
+# Python
+pyo3 = { version = "0.20", features = ["extension-module"] }
+
+# Utilities
+uuid = { version = "1", features = ["v4", "serde"] }
+log = "0.4"
+env_logger = "0.11"

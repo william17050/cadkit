@@ -1,0 +1,37 @@
+CadKit End User License Agreement (EULA)
+========================================
+
+Copyright (c) 2026 Bill. All rights reserved.
+
+This software and all included files are proprietary and confidential.
+
+GRANT OF LICENSE:
+You are granted a non-transferable, non-exclusive license to install and use 
+the provided software for personal or commercial purposes as permitted by the 
+license tier purchased.
+
+RESTRICTIONS:
+You may not:
+- Copy, modify, distribute, sublicense, rent, or lease this software
+- Reverse engineer, decompile, or disassemble any binaries
+- Use the software to build a competing product or service
+- Remove or alter any proprietary notices
+
+PYTHON SCRIPTS:
+User-created Python scripts using the CadKit API remain the property of the user.
+Scripts may be shared or sold independently.
+
+TERMINATION:
+This license is effective until terminated. It will terminate automatically if 
+you fail to comply with any terms. Upon termination, you must destroy all copies.
+
+WARRANTY DISCLAIMER:
+This software is provided "AS IS" without warranty of any kind, either express 
+or implied, including but not limited to warranties of merchantability or 
+fitness for a particular purpose.
+
+LIMITATION OF LIABILITY:
+In no event shall the author be liable for any damages whatsoever arising out 
+of the use or inability to use this software.
+
+For commercial licensing inquiries: contact@cadkit.example.com

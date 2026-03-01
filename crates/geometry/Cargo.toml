@@ -1,0 +1,9 @@
+[package]
+name = "cadkit-geometry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "2D geometric intersection calculations for CadKit"
+
+[dependencies]
+cadkit-types = { path = "../types" }
