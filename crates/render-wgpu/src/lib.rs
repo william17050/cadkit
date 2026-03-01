@@ -299,17 +299,21 @@ impl Viewport {
         let mut vertices = Vec::new();
 
         for entity in drawing.visible_entities() {
-            // Resolve layer colour; fall back to white when the layer is missing.
-            let c = drawing
-                .get_layer(entity.layer)
-                .map(|l| {
-                    [
-                        l.color[0] as f32 / 255.0,
-                        l.color[1] as f32 / 255.0,
-                        l.color[2] as f32 / 255.0,
-                    ]
-                })
-                .unwrap_or([1.0, 1.0, 1.0]);
+            // Resolve colour: entity override → layer colour → white fallback.
+            let c = if let Some(ec) = entity.color {
+                [ec[0] as f32 / 255.0, ec[1] as f32 / 255.0, ec[2] as f32 / 255.0]
+            } else {
+                drawing
+                    .get_layer(entity.layer)
+                    .map(|l| {
+                        [
+                            l.color[0] as f32 / 255.0,
+                            l.color[1] as f32 / 255.0,
+                            l.color[2] as f32 / 255.0,
+                        ]
+                    })
+                    .unwrap_or([1.0, 1.0, 1.0])
+            };
 
             match &entity.kind {
                 EntityKind::Line { start, end } => {

@@ -75,6 +75,9 @@ struct CadKitApp {
     layer_editing_id: Option<u32>,
     layer_editing_text: String,
     layer_editing_original: String,
+    // Properties panel
+    properties_split: f32,      // fraction of right-panel height given to layers list
+    entity_color_picker_open: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -227,6 +230,8 @@ impl Default for CadKitApp {
             layer_editing_id: None,
             layer_editing_text: String::new(),
             layer_editing_original: String::new(),
+            properties_split: 0.55,
+            entity_color_picker_open: false,
         }
     }
 }
@@ -2340,26 +2345,33 @@ impl eframe::App for CadKitApp {
         });
         
         // Right sidebar - layer manager
-        egui::SidePanel::right("properties").default_width(220.0).show(ctx, |ui| {
-            ui.heading("Layers");
-            ui.separator();
+        egui::SidePanel::right("properties").default_width(240.0).show(ctx, |ui| {
+            let total_h = ui.available_height();
 
             // Collect layer ids sorted so the list is stable.
             let mut layer_ids: Vec<u32> = self.drawing.layers().map(|l| l.id).collect();
             layer_ids.sort_unstable();
 
-            // Track mutations requested inside the loop.
-            let mut toggle_visible: Option<u32> = None;
-            let mut toggle_locked: Option<u32> = None;
-            let mut delete_layer: Option<u32> = None;
-            let mut set_current: Option<u32> = None;
-            let mut open_color_picker: Option<u32> = None;
-            let mut commit_name: Option<(u32, String)> = None;
-            let mut cancel_edit = false;
-            let mut start_edit: Option<(u32, String)> = None;
-            let mut assign_entity_layer: Option<u32> = None;
+            // Deferred layer mutations.
+            let mut toggle_visible:  Option<u32>             = None;
+            let mut toggle_locked:   Option<u32>             = None;
+            let mut delete_layer:    Option<u32>             = None;
+            let mut set_current:     Option<u32>             = None;
+            let mut open_color_picker: Option<u32>           = None;
+            let mut commit_name:     Option<(u32, String)>   = None;
+            let mut cancel_edit                              = false;
+            let mut start_edit:      Option<(u32, String)>   = None;
 
-            // --- Active layer indicator ---
+            // Deferred entity mutations.
+            let mut assign_entity_layer: Option<u32>         = None;
+            let mut set_entity_bylayer                       = false;
+            let mut open_entity_color_picker                 = false;
+
+            // ── LAYERS SECTION ──────────────────────────────────────────────
+            ui.heading("Layers");
+            ui.separator();
+
+            // Active layer indicator.
             if let Some(cur) = self.drawing.get_layer(self.current_layer) {
                 let c = cur.color;
                 let name = cur.name.clone();
@@ -2370,137 +2382,283 @@ impl eframe::App for CadKitApp {
                     ui.label(egui::RichText::new(name).strong().color(egui::Color32::from_rgb(160, 210, 255)));
                 });
             }
+            ui.add_space(2.0);
 
-            // --- Selection properties: layer assignment ---
-            if !self.selected_entities.is_empty() {
-                ui.separator();
-                ui.label(egui::RichText::new(format!("{} selected", self.selected_entities.len())).small());
-
-                // Determine common layer of the selection.
-                let mut common_layer: Option<u32> = None;
-                let mut mixed = false;
-                for id in &self.selected_entities {
-                    if let Some(e) = self.drawing.get_entity(id) {
-                        match common_layer {
-                            None => common_layer = Some(e.layer),
-                            Some(l) if l == e.layer => {}
-                            _ => { mixed = true; break; }
-                        }
-                    }
-                }
-                let display_name = if mixed {
-                    "*varies*".to_string()
-                } else if let Some(lid) = common_layer {
-                    self.drawing.get_layer(lid).map(|l| l.name.clone()).unwrap_or_else(|| lid.to_string())
-                } else {
-                    "—".to_string()
-                };
-
-                ui.horizontal(|ui| {
-                    ui.label("Layer:");
-                    egui::ComboBox::from_id_source("entity_layer_combo")
-                        .selected_text(&display_name)
-                        .width(120.0)
-                        .show_ui(ui, |ui| {
-                            for &lid in &layer_ids {
-                                if let Some(layer) = self.drawing.get_layer(lid) {
-                                    let is_sel = common_layer == Some(lid) && !mixed;
-                                    if ui.selectable_label(is_sel, layer.name.clone()).clicked() {
-                                        assign_entity_layer = Some(lid);
+            // Layers scroll list — height controlled by the split handle.
+            let layers_list_h = (total_h * self.properties_split - 70.0).max(40.0);
+            egui::ScrollArea::vertical()
+                .id_source("layer_scroll")
+                .max_height(layers_list_h)
+                .show(ui, |ui| {
+                    for &id in &layer_ids {
+                        let (name, visible, locked, color, is_current) = match self.drawing.get_layer(id) {
+                            Some(l) => (l.name.clone(), l.visible, l.locked, l.color, self.current_layer == id),
+                            None => continue,
+                        };
+                        let row_color = if is_current {
+                            egui::Color32::from_rgb(40, 55, 80)
+                        } else {
+                            egui::Color32::TRANSPARENT
+                        };
+                        egui::Frame::none().fill(row_color).show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                let eye = if visible { "👁" } else { "🚫" };
+                                if ui.small_button(eye).on_hover_text("Toggle visibility").clicked() {
+                                    toggle_visible = Some(id);
+                                }
+                                let swatch = egui::Color32::from_rgb(color[0], color[1], color[2]);
+                                let (rect, resp) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
+                                ui.painter().rect_filled(rect, 2.0, swatch);
+                                ui.painter().rect_stroke(rect, 2.0, egui::Stroke::new(1.0, egui::Color32::from_gray(120)));
+                                if resp.on_hover_text("Change colour").clicked() {
+                                    open_color_picker = Some(id);
+                                }
+                                if self.layer_editing_id == Some(id) {
+                                    let edit_resp = ui.add(
+                                        egui::TextEdit::singleline(&mut self.layer_editing_text)
+                                            .desired_width(80.0),
+                                    );
+                                    edit_resp.request_focus();
+                                    let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                                    let esc   = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                                    if enter || (edit_resp.lost_focus() && !esc) {
+                                        commit_name = Some((id, self.layer_editing_text.trim().to_string()));
+                                    } else if esc {
+                                        cancel_edit = true;
+                                    }
+                                } else {
+                                    let label_text = if is_current {
+                                        egui::RichText::new(&name).strong().color(egui::Color32::from_rgb(160, 210, 255))
+                                    } else {
+                                        egui::RichText::new(&name)
+                                    };
+                                    let resp = ui.add(egui::Label::new(label_text).sense(egui::Sense::click()));
+                                    if resp.double_clicked() {
+                                        start_edit = Some((id, name.clone()));
+                                    } else if resp.clicked() {
+                                        set_current = Some(id);
+                                    }
+                                    resp.on_hover_text("Click to set current · Double-click to rename");
+                                }
+                                let lock_icon = if locked { "🔒" } else { "🔓" };
+                                if ui.small_button(lock_icon).on_hover_text("Toggle lock").clicked() {
+                                    toggle_locked = Some(id);
+                                }
+                                if id != 0 {
+                                    if ui.small_button("✕").on_hover_text("Delete layer").clicked() {
+                                        delete_layer = Some(id);
                                     }
                                 }
-                            }
+                            });
                         });
+                    }
                 });
-            }
 
-            ui.separator();
-            egui::ScrollArea::vertical().id_source("layer_scroll").max_height(ui.available_height() - 50.0).show(ui, |ui| {
-                for &id in &layer_ids {
-                    let (name, visible, locked, color, is_current) = match self.drawing.get_layer(id) {
-                        Some(l) => (l.name.clone(), l.visible, l.locked, l.color, self.current_layer == id),
-                        None => continue,
-                    };
-
-                    // Highlight the current layer row.
-                    let row_color = if is_current {
-                        egui::Color32::from_rgb(40, 55, 80)
-                    } else {
-                        egui::Color32::TRANSPARENT
-                    };
-
-                    egui::Frame::none().fill(row_color).show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            // Visibility eye icon / checkbox.
-                            let eye = if visible { "👁" } else { "🚫" };
-                            if ui.small_button(eye).on_hover_text("Toggle visibility").clicked() {
-                                toggle_visible = Some(id);
-                            }
-
-                            // Colour swatch — clickable to open picker.
-                            let swatch = egui::Color32::from_rgb(color[0], color[1], color[2]);
-                            let (rect, resp) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
-                            ui.painter().rect_filled(rect, 2.0, swatch);
-                            ui.painter().rect_stroke(rect, 2.0, egui::Stroke::new(1.0, egui::Color32::from_gray(120)));
-                            if resp.on_hover_text("Change colour").clicked() {
-                                open_color_picker = Some(id);
-                            }
-
-                            // Name: text edit when being renamed, label otherwise.
-                            if self.layer_editing_id == Some(id) {
-                                let edit_resp = ui.add(
-                                    egui::TextEdit::singleline(&mut self.layer_editing_text)
-                                        .desired_width(90.0),
-                                );
-                                edit_resp.request_focus();
-                                let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
-                                let esc   = ui.input(|i| i.key_pressed(egui::Key::Escape));
-                                if enter || (edit_resp.lost_focus() && !esc) {
-                                    commit_name = Some((id, self.layer_editing_text.trim().to_string()));
-                                } else if esc {
-                                    cancel_edit = true;
-                                }
-                            } else {
-                                let label_text = if is_current {
-                                    egui::RichText::new(&name).strong().color(egui::Color32::from_rgb(160, 210, 255))
-                                } else {
-                                    egui::RichText::new(&name)
-                                };
-                                let resp = ui.add(egui::Label::new(label_text).sense(egui::Sense::click()));
-                                if resp.double_clicked() {
-                                    start_edit = Some((id, name.clone()));
-                                } else if resp.clicked() {
-                                    set_current = Some(id);
-                                }
-                                resp.on_hover_text("Click to set current · Double-click to rename");
-                            }
-
-                            // Lock toggle.
-                            let lock_icon = if locked { "🔒" } else { "🔓" };
-                            if ui.small_button(lock_icon).on_hover_text("Toggle lock").clicked() {
-                                toggle_locked = Some(id);
-                            }
-
-                            // Delete button (not for layer 0).
-                            if id != 0 {
-                                if ui.small_button("✕").on_hover_text("Delete layer").clicked() {
-                                    delete_layer = Some(id);
-                                }
-                            }
-                        });
-                    });
-                }
-            });
-
-            ui.separator();
-            if ui.button("+ New Layer").clicked() {
+            if ui.small_button("+ New Layer").clicked() {
                 let name = format!("Layer {}", self.next_layer_number);
                 self.next_layer_number += 1;
                 let new_id = self.drawing.add_layer(name);
                 self.current_layer = new_id;
             }
 
-            // Apply mutations collected above.
+            // ── DRAG HANDLE ─────────────────────────────────────────────────
+            ui.add_space(2.0);
+            let (drag_rect, drag_resp) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), 6.0),
+                egui::Sense::drag(),
+            );
+            let handle_color = if drag_resp.hovered() || drag_resp.dragged() {
+                egui::Color32::from_gray(90)
+            } else {
+                egui::Color32::from_gray(55)
+            };
+            ui.painter().rect_filled(drag_rect, 0.0, handle_color);
+            for i in -3i32..=3 {
+                let cx = drag_rect.center().x + i as f32 * 5.0;
+                ui.painter().circle_filled(
+                    egui::pos2(cx, drag_rect.center().y),
+                    1.5,
+                    egui::Color32::from_gray(130),
+                );
+            }
+            let drag_delta = drag_resp.drag_delta().y;
+            let is_dragging = drag_resp.on_hover_cursor(egui::CursorIcon::ResizeVertical).dragged();
+            if is_dragging {
+                let new_layers_h = layers_list_h + drag_delta;
+                self.properties_split = ((new_layers_h + 70.0) / total_h).clamp(0.15, 0.85);
+            }
+            ui.add_space(2.0);
+
+            // ── PROPERTIES SECTION ──────────────────────────────────────────
+            ui.label(egui::RichText::new("Properties").strong());
+            ui.separator();
+
+            egui::ScrollArea::vertical()
+                .id_source("props_scroll")
+                .show(ui, |ui| {
+                    let sel_count = self.selected_entities.len();
+
+                    if sel_count == 0 {
+                        ui.label(egui::RichText::new("No selection").color(egui::Color32::from_gray(110)));
+                    } else {
+                        // Gather common color + layer across selection.
+                        let mut common_color:  Option<Option<[u8; 3]>> = None;
+                        let mut color_mixed                            = false;
+                        let mut common_layer:  Option<u32>             = None;
+                        let mut layer_mixed                            = false;
+
+                        for id in &self.selected_entities {
+                            if let Some(e) = self.drawing.get_entity(id) {
+                                match common_color {
+                                    None                               => common_color = Some(e.color),
+                                    Some(c) if c == e.color            => {}
+                                    _                                  => color_mixed = true,
+                                }
+                                match common_layer {
+                                    None                               => common_layer = Some(e.layer),
+                                    Some(l) if l == e.layer            => {}
+                                    _                                  => layer_mixed = true,
+                                }
+                            }
+                        }
+
+                        // Single-entity geometry block.
+                        if sel_count == 1 {
+                            let eid = *self.selected_entities.iter().next().unwrap();
+                            if let Some(entity) = self.drawing.get_entity(&eid) {
+                                let type_name = match &entity.kind {
+                                    EntityKind::Line { .. }     => "Line",
+                                    EntityKind::Circle { .. }   => "Circle",
+                                    EntityKind::Arc { .. }      => "Arc",
+                                    EntityKind::Polyline { .. } => "Polyline",
+                                };
+                                ui.label(egui::RichText::new(type_name).strong());
+                                egui::Grid::new("entity_geom")
+                                    .num_columns(2)
+                                    .spacing([4.0, 2.0])
+                                    .show(ui, |ui| {
+                                        match &entity.kind {
+                                            EntityKind::Line { start, end } => {
+                                                let dx  = end.x - start.x;
+                                                let dy  = end.y - start.y;
+                                                let len = (dx * dx + dy * dy).sqrt();
+                                                ui.label("Start X:"); ui.label(format!("{:.4}", start.x)); ui.end_row();
+                                                ui.label("Start Y:"); ui.label(format!("{:.4}", start.y)); ui.end_row();
+                                                ui.label("End X:");   ui.label(format!("{:.4}", end.x));   ui.end_row();
+                                                ui.label("End Y:");   ui.label(format!("{:.4}", end.y));   ui.end_row();
+                                                ui.label("Length:");  ui.label(format!("{:.4}", len));     ui.end_row();
+                                            }
+                                            EntityKind::Circle { center, radius } => {
+                                                ui.label("Center X:"); ui.label(format!("{:.4}", center.x));    ui.end_row();
+                                                ui.label("Center Y:"); ui.label(format!("{:.4}", center.y));    ui.end_row();
+                                                ui.label("Radius:");        ui.label(format!("{:.4}", radius));                          ui.end_row();
+                                                ui.label("Diameter:");      ui.label(format!("{:.4}", radius * 2.0));                    ui.end_row();
+                                                ui.label("Circumference:"); ui.label(format!("{:.4}", std::f64::consts::TAU * radius)); ui.end_row();
+                                            }
+                                            EntityKind::Arc { center, radius, start_angle, end_angle } => {
+                                                let span_rad = (end_angle - start_angle).abs();
+                                                let span_deg = span_rad.to_degrees();
+                                                let arc_len  = radius * span_rad;
+                                                ui.label("Center X:");  ui.label(format!("{:.4}", center.x));                  ui.end_row();
+                                                ui.label("Center Y:");  ui.label(format!("{:.4}", center.y));                  ui.end_row();
+                                                ui.label("Radius:");    ui.label(format!("{:.4}", radius));                     ui.end_row();
+                                                ui.label("Start Ang:"); ui.label(format!("{:.2}°", start_angle.to_degrees())); ui.end_row();
+                                                ui.label("End Ang:");   ui.label(format!("{:.2}°", end_angle.to_degrees()));   ui.end_row();
+                                                ui.label("Span:");      ui.label(format!("{:.2}°", span_deg));                 ui.end_row();
+                                                ui.label("Arc Length:"); ui.label(format!("{:.4}", arc_len));                  ui.end_row();
+                                            }
+                                            EntityKind::Polyline { vertices, closed } => {
+                                                ui.label("Points:"); ui.label(vertices.len().to_string()); ui.end_row();
+                                                ui.label("Closed:"); ui.label(if *closed { "Yes" } else { "No" }); ui.end_row();
+                                            }
+                                        }
+                                    });
+                                ui.separator();
+                            }
+                        } else {
+                            ui.label(egui::RichText::new(format!("{sel_count} entities selected")).small()
+                                .color(egui::Color32::from_gray(150)));
+                            ui.separator();
+                        }
+
+                        // ── Layer combo ──────────────────────────────────────
+                        let layer_display = if layer_mixed {
+                            "*varies*".to_string()
+                        } else if let Some(lid) = common_layer {
+                            self.drawing.get_layer(lid).map(|l| l.name.clone()).unwrap_or_else(|| lid.to_string())
+                        } else {
+                            "—".to_string()
+                        };
+                        ui.horizontal(|ui| {
+                            ui.label("Layer:");
+                            egui::ComboBox::from_id_source("prop_layer_combo")
+                                .selected_text(&layer_display)
+                                .width(110.0)
+                                .show_ui(ui, |ui| {
+                                    for &lid in &layer_ids {
+                                        if let Some(layer) = self.drawing.get_layer(lid) {
+                                            let is_sel = common_layer == Some(lid) && !layer_mixed;
+                                            if ui.selectable_label(is_sel, layer.name.clone()).clicked() {
+                                                assign_entity_layer = Some(lid);
+                                            }
+                                        }
+                                    }
+                                });
+                        });
+
+                        // ── Color row ────────────────────────────────────────
+                        // Effective color for single / common selection.
+                        let entity_custom_color: Option<[u8; 3]> = if color_mixed {
+                            None
+                        } else {
+                            common_color.flatten()
+                        };
+                        let layer_color: Option<[u8; 3]> = if !layer_mixed {
+                            common_layer.and_then(|lid| self.drawing.get_layer(lid).map(|l| l.color))
+                        } else {
+                            None
+                        };
+                        let bylayer_active = !color_mixed && common_color == Some(None);
+
+                        ui.horizontal(|ui| {
+                            ui.label("Color:");
+
+                            // ByLayer toggle
+                            if ui.selectable_label(bylayer_active, "ByLayer")
+                                .on_hover_text("Use layer colour")
+                                .clicked()
+                                && !bylayer_active
+                            {
+                                set_entity_bylayer = true;
+                            }
+
+                            // Colour swatch — shows entity override or (dimmed) layer fallback.
+                            let swatch_rgb = entity_custom_color
+                                .or(layer_color)
+                                .unwrap_or([128, 128, 128]);
+                            let swatch_c = egui::Color32::from_rgb(swatch_rgb[0], swatch_rgb[1], swatch_rgb[2]);
+
+                            let (rect, resp) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::click());
+                            ui.painter().rect_filled(rect, 2.0, swatch_c);
+                            let (stroke_w, stroke_c) = if entity_custom_color.is_some() && !color_mixed {
+                                (2.0, egui::Color32::WHITE)
+                            } else {
+                                (1.0, egui::Color32::from_gray(100))
+                            };
+                            ui.painter().rect_stroke(rect, 2.0, egui::Stroke::new(stroke_w, stroke_c));
+
+                            if color_mixed {
+                                ui.label(egui::RichText::new("varies").small().color(egui::Color32::from_gray(120)));
+                            }
+
+                            if resp.on_hover_text("Set custom entity colour").clicked() {
+                                open_entity_color_picker = true;
+                            }
+                        });
+                    }
+                });
+
+            // ── Apply layer mutations ────────────────────────────────────────
             if let Some(id) = toggle_visible {
                 if let Some(l) = self.drawing.get_layer_mut(id) { l.visible = !l.visible; }
             }
@@ -2546,13 +2704,22 @@ impl eframe::App for CadKitApp {
                     if self.layer_color_picking == Some(id) { self.layer_color_picking = None; }
                 }
             }
+
+            // ── Apply entity mutations ───────────────────────────────────────
             if let Some(lid) = assign_entity_layer {
                 let ids: Vec<Guid> = self.selected_entities.iter().copied().collect();
                 for id in &ids {
-                    if let Some(e) = self.drawing.get_entity_mut(id) {
-                        e.layer = lid;
-                    }
+                    if let Some(e) = self.drawing.get_entity_mut(id) { e.layer = lid; }
                 }
+            }
+            if set_entity_bylayer {
+                let ids: Vec<Guid> = self.selected_entities.iter().copied().collect();
+                for id in &ids {
+                    if let Some(e) = self.drawing.get_entity_mut(id) { e.color = None; }
+                }
+            }
+            if open_entity_color_picker {
+                self.entity_color_picker_open = true;
             }
         });
 
@@ -2647,7 +2814,116 @@ impl eframe::App for CadKitApp {
                 self.layer_color_picking = None;
             }
         }
-        
+
+        // Entity colour picker popup — same ACI grid, applies to selected entities.
+        if self.entity_color_picker_open && !self.selected_entities.is_empty() {
+            let mut still_open = true;
+            let mut picked_color: Option<[u8; 3]> = None;
+
+            // Determine current common entity colour for highlight.
+            let mut cur_ec: Option<Option<[u8; 3]>> = None;
+            let mut ec_mixed = false;
+            for id in &self.selected_entities {
+                if let Some(e) = self.drawing.get_entity(id) {
+                    match cur_ec {
+                        None                          => cur_ec = Some(e.color),
+                        Some(c) if c == e.color       => {}
+                        _                             => { ec_mixed = true; break; }
+                    }
+                }
+            }
+            let highlight: Option<[u8; 3]> = if ec_mixed { None } else { cur_ec.flatten() };
+
+            egui::Window::new("Entity Colour")
+                .open(&mut still_open)
+                .resizable(false)
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    let current_color = highlight.unwrap_or([255, 255, 255]);
+
+                    // Standard colours 1-9
+                    ui.label(egui::RichText::new("Standard").small().color(egui::Color32::from_gray(150)));
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        for i in 1u8..=9 {
+                            let rgb = aci_color(i);
+                            let c = egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+                            let (rect, resp) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::click());
+                            ui.painter().rect_filled(rect, 2.0, c);
+                            let (sw, sc) = if current_color == rgb && !ec_mixed {
+                                (2.0, egui::Color32::WHITE)
+                            } else {
+                                (0.5, egui::Color32::from_gray(70))
+                            };
+                            ui.painter().rect_stroke(rect, 2.0, egui::Stroke::new(sw, sc));
+                            if resp.on_hover_text(format!("ACI {i}")).clicked() {
+                                picked_color = Some(rgb);
+                            }
+                        }
+                    });
+
+                    ui.add_space(6.0);
+
+                    // Index colour grid 10-249
+                    ui.label(egui::RichText::new("Index colours").small().color(egui::Color32::from_gray(150)));
+                    ui.spacing_mut().item_spacing.y = 1.0;
+                    for row in 0u8..10 {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 1.0;
+                            for col in 0u8..24 {
+                                let idx: u8 = 10 + col * 10 + row;
+                                let rgb = aci_color(idx);
+                                let c = egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+                                let (rect, resp) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::click());
+                                ui.painter().rect_filled(rect, 1.0, c);
+                                if current_color == rgb && !ec_mixed {
+                                    ui.painter().rect_stroke(rect, 1.0, egui::Stroke::new(1.5, egui::Color32::WHITE));
+                                }
+                                if resp.on_hover_text(format!("ACI {idx}")).clicked() {
+                                    picked_color = Some(rgb);
+                                }
+                            }
+                        });
+                    }
+
+                    ui.add_space(6.0);
+
+                    // Grayscale 250-255
+                    ui.label(egui::RichText::new("Grayscale").small().color(egui::Color32::from_gray(150)));
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        for i in 250u8..=255 {
+                            let rgb = aci_color(i);
+                            let c = egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+                            let (rect, resp) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::click());
+                            ui.painter().rect_filled(rect, 2.0, c);
+                            let (sw, sc) = if current_color == rgb && !ec_mixed {
+                                (2.0, egui::Color32::WHITE)
+                            } else {
+                                (0.5, egui::Color32::from_gray(70))
+                            };
+                            ui.painter().rect_stroke(rect, 2.0, egui::Stroke::new(sw, sc));
+                            if resp.on_hover_text(format!("ACI {i}")).clicked() {
+                                picked_color = Some(rgb);
+                            }
+                        }
+                    });
+                });
+
+            if let Some(rgb) = picked_color {
+                let ids: Vec<Guid> = self.selected_entities.iter().copied().collect();
+                for id in &ids {
+                    if let Some(e) = self.drawing.get_entity_mut(id) {
+                        e.color = Some(rgb);
+                    }
+                }
+                self.entity_color_picker_open = false;
+            }
+            if !still_open {
+                self.entity_color_picker_open = false;
+            }
+        }
+
         // Bottom panel - command line (AutoCAD-style with history)
         egui::TopBottomPanel::bottom("command_line")
             .min_height(110.0)

@@ -83,7 +83,9 @@ pub struct Entity {
     pub id: Guid,
     pub kind: EntityKind,
     pub layer: u32,
-    // TODO: Add color, linetype, etc
+    /// Per-entity colour override. `None` means "ByLayer" (inherit from the layer).
+    #[serde(default)]
+    pub color: Option<[u8; 3]>,
 }
 
 impl Entity {
@@ -92,6 +94,7 @@ impl Entity {
             id: Guid::new(),
             kind,
             layer,
+            color: None,
         }
     }
 }
