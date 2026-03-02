@@ -1,6 +1,6 @@
 # CadKit - Modular CAD Platform
 
-**Professional 2D/3D CAD with Python Scripting & AI Assistance**
+**Pragmatic 2D CAD core with room to grow into 3D, CAM, and AI.**
 
 ## Vision
 Build a modern, affordable CAD platform that combines:
@@ -21,9 +21,10 @@ Build a modern, affordable CAD platform that combines:
 Modular Rust workspace with clear separation of concerns:
 - **types**: Core data types (Vec2/Vec3, Guid, tolerances)
 - **2d-core**: Drafting entities, layers, snaps
+- **geometry**: 2D intersection calculations (line/arc/circle/polyline)
 - **region-find**: Boundary detection (for hatch and push/pull)
 - **direct-3d**: SketchUp-style push/pull operations
-- **render-wgpu**: Viewport rendering
+- **render-wgpu**: Viewport rendering (wgpu LineList, stroke font)
 - **ui-egui**: User interface shell
 - **scripting-python**: Embedded Python runtime (PyO3)
 - **ai-engine**: Pluggable AI backend (Claude Desktop/API/local)
@@ -37,57 +38,28 @@ Modular Rust workspace with clear separation of concerns:
 - **XY plane**: Ground/construction plane (Z=0 for 2D phase)
 - **Right-handed system**
 
-## Development Phases
+## Current 2D Feature Set (as of Mar 2026)
+- **Drawing tools**: line, arc (3-point), circle, polyline with close; command aliases and toolbar buttons.
+- **Precision input**: absolute/relative (@x,y) and polar (@dist<angle); direct distance entry with live rubber-band; FROM offset workflow; ortho lock (F8); snap toggle (F3).
+- **Snaps**: endpoint, midpoint, center, intersection (radius search).
+- **Editing**: move, copy, rotate, offset, trim, extend — all with ghosted rubber-band previews; cancel via Esc or right-click; undo/redo stack.
+- **Dimensions**: DIMLINEAR command (`dli`) — 3-click placement (first point, second point, line location); live preview with stroke text; readable text regardless of pick direction.
+- **Layers**: create, color, rename, set current, toggle visibility; selection highlights by layer.
+- **IO**: JSON save/load; DXF import/export with per-entity warnings; file dialogs; window title reflects current file.
+- **Rendering/UI**: wgpu viewport, dot grid, selection marquee (window/crossing), command log, left tool palette, top menu bar, right properties/layers panel.
 
-### Phase 1: 2D Drafting Foundation (Year 1)
-- [ ] Basic entities (Line, Arc, Circle, Polyline)
-- [ ] Viewport with pan/zoom
-- [ ] Object snaps (endpoint, midpoint, center, etc)
-- [ ] Grid and coordinate display
-- [ ] Layers and selection
-- [ ] Basic edit operations (move, copy, rotate, delete)
-- [ ] Save/load (native format)
-- [ ] Python scripting bridge
+## Near-Term Roadmap (Q2 2026)
+- **Dimension polish**: egui native text rendering for dim labels (replacing stroke font); DimStyle dialog (text height, arrow size, extension gap, color); DXF DIMENSION entity export.
+- **Text placement**: TEXT command for placing annotation text entities on the drawing.
+- Additional snaps (perpendicular, tangent, nearest) and improved snap glyphs.
+- Status bar: live cursor coordinates, active snap/ortho/layer indicators.
+- Scale and mirror editing commands.
+- Preference persistence (grid spacing, last file, snap/ortho state).
 
-### Phase 2: AI & Advanced 2D (Year 2)
-- [ ] AI command-line interface ("move entity A forward 3 inches")
-- [ ] Text and dimensions
-- [ ] Blocks/references
-- [ ] Region detection (hatch boundaries)
-- [ ] Hatching
-- [ ] DXF import/export
-- [ ] More edit ops (offset, trim, extend, fillet, chamfer)
-
-### Phase 3: Direct 3D Modeling (Year 3)
-- [ ] Push/pull extrusion using region detection
-- [ ] Boolean operations (union, subtract)
-- [ ] 3D viewport navigation
-- [ ] STL/OBJ export
-- [ ] Basic rendering (shaded/wireframe)
-
-### Phase 4: CNC/CAM Integration (Year 4)
-- [ ] Toolpath generation (pocket, profile, drill)
-- [ ] Post-processors (Mach3, Fanuc/KOMO, Planet CNC)
-- [ ] Feed/speed calculations
-- [ ] Material database
-- [ ] G-code simulation
-- [ ] Test on home CNC (30x24 Planet CNC)
-
-### Phase 5: Cabinet Designer Module (Year 5-6)
-- [ ] Parametric cabinet templates
-- [ ] Cut list generation with nesting
-- [ ] Hardware catalog integration
-- [ ] Assembly drawings
-- [ ] Pricing/quoting engine
-- [ ] CNC output for nested cutting
-
-### Phase 6: Parametric & Polish (Year 7)
-- [ ] Feature history tree
-- [ ] Constraints and relations
-- [ ] Assembly mode
-- [ ] Performance optimization
-- [ ] Documentation
-- [ ] Market and seek acquisition interest
+## Longer-Term (high level)
+- Hatch patterns, leaders/callouts, multi-line text, blocks/references.
+- Python bridge and AI command line.
+- Push/pull 3D prototype, then CAM and cabinet workflows.
 
 ## Technology Stack
 - **Language**: Rust (performance, safety, packaging)
@@ -114,12 +86,12 @@ See EULA.txt for terms
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 # Clone and build
-git clone <repo>
-cd cadkit_project
+git clone https://github.com/william17050/cadkit
+cd cadkit
 cargo build --release
 
 # Run
-cargo run --bin cadkit
+cargo run -p cadkit
 ```
 
 ## Testing
@@ -132,8 +104,8 @@ cargo test -p cadkit-types
 ```
 
 ## Project Status
-**Current Phase**: Foundation setup
-**Next Milestone**: Draw a line in the viewport
+**Current**: Interactive 2D drafting MVP — command-line tools, snaps, layers, undo/redo, DXF IO, linear dimensions.
+**Next Milestone**: Dim text via egui font + DimStyle dialog + TEXT placement command.
 
 ---
 *Built by Bill - 20+ years manufacturing experience, ready to ship what should exist.*

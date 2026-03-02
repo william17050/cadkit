@@ -1,158 +1,195 @@
 # CadKit Development Roadmap
 
-## Phase 1: Foundation (Current - Q1 2026)
+## Phase 1: Foundation (Q1 2026) — **Done**
 
-### Milestone 1.1: Viewport Rendering ✓ NEXT
-- [ ] Integrate wgpu for 2D rendering
-- [ ] Draw lines in viewport from entity data
-- [ ] Pan and zoom with mouse
-- [ ] Grid display with adjustable spacing
-- [ ] Coordinate display cursor tracking
+### Milestone 1.1: Viewport Rendering
+- [x] Integrate wgpu for 2D rendering
+- [x] Draw entities in viewport
+- [x] Pan and zoom with mouse
+- [x] Grid display (dot grid)
+- [ ] Coordinate readout / status bar (pending)
 
 ### Milestone 1.2: Interactive Drawing
-- [ ] Line tool: click-click to create line
-- [ ] Circle tool: center-point, radius
-- [ ] Arc tool: three-point arc
-- [ ] Polyline tool: connected segments
-- [ ] ESC to cancel current tool
+- [x] Line tool (command + toolbar)
+- [x] Circle tool (center, radius/diameter)
+- [x] Arc tool (3-point)
+- [x] Polyline tool with close option
+- [x] ESC/right-click cancels tools; command aliases supported
 
 ### Milestone 1.3: Snaps
-- [ ] Endpoint snap
-- [ ] Midpoint snap
-- [ ] Center snap (circles/arcs)
-- [ ] Intersection snap
-- [ ] Nearest point snap
-- [ ] Snap indicator visual feedback
+- [x] Endpoint snap
+- [x] Midpoint snap
+- [x] Center snap
+- [x] Intersection snap search with pixel radius
+- [x] FROM offset workflow (base point + typed offset)
+- [ ] Nearest / perpendicular / tangent snaps
+- [ ] Visual snap glyphs (icon per snap type)
 
 ### Milestone 1.4: Selection & Basic Edits
-- [ ] Click to select entity
-- [ ] Box selection (window/crossing)
-- [ ] Multiple selection with Shift
-- [ ] Delete selected entities
-- [ ] Move entities with mouse
-- [ ] Properties panel shows selected entity info
+- [x] Click and box selection (window/crossing)
+- [x] Multi-select toggle (Shift)
+- [x] Delete selected
+- [x] Move / copy / rotate with rubber-band previews
+- [x] Offset command (distance + side pick)
+- [x] Trim command (cutting edges then trim)
+- [x] Extend command (boundary pick then extend)
+- [x] Undo / redo stack
+- [x] Layer-aware selection highlight
 
-## Phase 2: Core 2D Features (Q2-Q3 2026)
+---
 
-### Milestone 2.1: Advanced Editing
-- [ ] Copy command
-- [ ] Rotate command
+## Phase 2: Annotations & Precision (Q2 2026) — **In Progress**
+
+### Milestone 2.1: Linear Dimensions
+- [x] `DimLinear` entity kind in 2d-core
+- [x] 3-click DIMLINEAR placement workflow (`dli` / `dimlinear` / `dim`)
+- [x] Live rubber-band preview with stroke-font distance label
+- [x] Text direction normalized — readable regardless of pick order
+- [x] Move / copy / rotate support for dim entities
+- [x] Selection highlight and pick distance to dim line
+- [ ] **DimStyle dialog** — adjust text height, arrow size, extension line gap, color, precision
+- [ ] **Dim text via egui native font** — replace stroke font with proper system/TTF text for crisp rendering at all zoom levels
+- [ ] Angular dimension (`DIMANGULAR`)
+- [ ] Radial / diameter dimension (`DIMRADIUS` / `DIMDIAMETER`)
+- [ ] DXF DIMENSION entity export (currently skipped with warning)
+- [ ] DXF DIMENSION entity import
+
+### Milestone 2.2: Text Placement
+- [ ] `Text` entity kind in 2d-core (content, insertion point, height, rotation, style)
+- [ ] `TEXT` command — pick insertion point, type content, press Enter
+- [ ] Text rendered via egui `paint_text` or wgpu glyph atlas (not stroke font)
+- [ ] Text selection, move, rotate, properties editing
+- [ ] DXF TEXT / MTEXT export and import
+- [ ] Basic text style (font name, height) stored in drawing
+
+### Milestone 2.3: Advanced Editing
 - [ ] Scale command
 - [ ] Mirror command
-- [ ] Offset command
-- [ ] Trim command
-- [ ] Extend command
-- [ ] Fillet command
-- [ ] Chamfer command
+- [ ] Fillet command (radius + two lines/arcs)
+- [ ] Chamfer command (distance × distance)
+- [ ] Array command (rectangular / polar)
 
-### Milestone 2.2: Layers & Organization
-- [ ] Create/delete layers
-- [ ] Layer properties (color, linetype)
-- [ ] Set current layer
-- [ ] Move entities between layers
-- [ ] Layer visibility toggle
-- [ ] Layer locking
-- [ ] Freeze/thaw layers
+### Milestone 2.4: Layers & Organization
+- [x] Create / delete / rename layers
+- [x] Layer color edit; set current layer
+- [ ] Move entities between layers (UI drag or Properties panel)
+- [ ] Layer visibility toggle (already partially there — wire up fully)
+- [ ] Layer locking / freeze
 
-### Milestone 2.3: Precision Input
-- [ ] Command-line coordinate input
-- [ ] Distance/angle constraint input
-- [ ] Relative coordinates (@x,y)
-- [ ] Polar coordinates (distance<angle)
-- [ ] Object tracking (ortho mode)
+### Milestone 2.5: Precision & UI Polish
+- [x] Relative coordinates (@x,y) and polar (@dist<angle)
+- [x] Direct distance entry with live rubber-band
+- [x] Ortho mode (F8) and snap toggle (F3)
+- [ ] Status bar — live cursor world coordinates, active layer, snap/ortho state
+- [ ] Perpendicular / parallel tracking snaps
+- [ ] Preference persistence (last file, grid spacing, snap/ortho flags)
+- [ ] Recent files list in File menu
 
-### Milestone 2.4: File Operations
-- [ ] DXF import
-- [ ] DXF export
-- [ ] File browser dialog
-- [ ] Recent files list
-- [ ] Auto-save functionality
+---
 
-## Phase 3: Python & AI (Q4 2026)
+## Phase 3: File Interop & IO (Q3 2026)
 
-### Milestone 3.1: Python Bridge
+### Milestone 3.1: DXF Completeness
+- [ ] DIMENSION entity export (RotatedDimension / AlignedDimension)
+- [ ] TEXT / MTEXT entity export and import
+- [ ] HATCH entity stub (import bounding geometry)
+- [ ] Block (INSERT) import as flattened geometry
+- [ ] Arc direction handling edge cases
+
+### Milestone 3.2: Additional Formats
+- [ ] SVG export (paths only)
+- [ ] PDF export (print layout)
+- [ ] Auto-save / recovery file
+
+---
+
+## Phase 4: Python & AI (Q4 2026)
+
+### Milestone 4.1: Python Bridge
 - [ ] PyO3 integration working
-- [ ] cad.line() API exposed
-- [ ] cad.circle() API exposed
-- [ ] cad.get_entity() queries
+- [ ] `cad.line()`, `cad.circle()`, `cad.arc()` API
+- [ ] `cad.get_entity()` / `cad.select()` queries
+- [ ] `cad.dim_linear()` API
 - [ ] Python console in UI
 - [ ] Run .py scripts from file
 
-### Milestone 3.2: AI Command Line
+### Milestone 4.2: AI Command Line
 - [ ] Detect Claude Desktop via MCP
 - [ ] Parse natural language commands
 - [ ] Generate Python code from intent
-- [ ] Execute generated code
-- [ ] Show preview before execution
-- [ ] Fallback to local small model
+- [ ] Execute generated code with preview
+- [ ] Fallback to local small model (Phi-3)
 
-### Milestone 3.3: AI Code Completion
+### Milestone 4.3: AI Code Completion
 - [ ] Phi-3 model integration
 - [ ] Autocomplete in Python console
 - [ ] API documentation lookup
 - [ ] Example code suggestions
 
-## Phase 4: Advanced 2D (Q1 2027)
+---
 
-### Milestone 4.1: Annotations
-- [ ] Text entities
-- [ ] Multi-line text
-- [ ] Dimensions (linear, angular, radial)
-- [ ] Leaders and callouts
-- [ ] Hatch patterns
+## Phase 5: Advanced 2D (Q1 2027)
 
-### Milestone 4.2: Region Detection
-- [ ] Boundary detection algorithm
+### Milestone 5.1: Hatch & Regions
+- [ ] Boundary detection algorithm (region-find crate)
 - [ ] Gap healing under tolerance
 - [ ] Island detection (holes)
-- [ ] Winding order calculation
-- [ ] Use for hatch fill
+- [ ] Hatch patterns (ANSI, ISO, custom)
+- [ ] Use region detection for hatch fill
 
-### Milestone 4.3: Blocks & References
+### Milestone 5.2: Blocks & References
 - [ ] Block definition
 - [ ] Insert block reference
 - [ ] Block editor
 - [ ] Nested blocks
-- [ ] Block library
+- [ ] Block library / palette
 
-## Phase 5: Direct 3D (Q2-Q3 2027)
+### Milestone 5.3: Leaders & Callouts
+- [ ] Leader entity (line + arrowhead + text)
+- [ ] Multileader
+- [ ] Balloon callouts
 
-### Milestone 5.1: 3D Viewport
-- [ ] 3D camera controls
-- [ ] Perspective/orthographic toggle
+---
+
+## Phase 6: Direct 3D (Q2-Q3 2027)
+
+### Milestone 6.1: 3D Viewport
+- [ ] 3D camera controls (orbit / pan / zoom)
+- [ ] Perspective / orthographic toggle
 - [ ] View cube navigation
 - [ ] Shaded rendering mode
 
-### Milestone 5.2: Push/Pull
+### Milestone 6.2: Push/Pull
 - [ ] Select 2D region (face)
-- [ ] Extrude in Z direction
-- [ ] Preview mesh during drag
-- [ ] Confirm to create solid
+- [ ] Extrude in Z direction with live preview
+- [ ] Confirm to create solid mesh
 - [ ] Extrude with taper angle
 
-### Milestone 5.3: 3D Boolean Operations
+### Milestone 6.3: 3D Boolean Operations
 - [ ] Union solids
 - [ ] Subtract solids
 - [ ] Intersect solids
 - [ ] Manifold mesh validation
 
-## Phase 6: CNC/CAM (Q4 2027 - Q1 2028)
+---
 
-### Milestone 6.1: Toolpath Generation
+## Phase 7: CNC/CAM (Q4 2027 - Q1 2028)
+
+### Milestone 7.1: Toolpath Generation
 - [ ] 2D profile toolpath
 - [ ] Pocket clearing
 - [ ] Drilling operations
 - [ ] Adaptive clearing
 - [ ] Helical entry
 
-### Milestone 6.2: Post-Processors
+### Milestone 7.2: Post-Processors
 - [ ] Generic G-code output
 - [ ] Mach3 post-processor
 - [ ] Fanuc/KOMO post-processor
 - [ ] Planet CNC post-processor
 - [ ] Load Aspire .pp files
 
-### Milestone 6.3: CAM Features
+### Milestone 7.3: CAM Features
 - [ ] Tool library
 - [ ] Material database
 - [ ] Feed/speed calculator
@@ -160,58 +197,64 @@
 - [ ] Collision detection
 - [ ] Test on home CNC
 
-## Phase 7: Cabinet Designer (Q2-Q3 2028)
+---
 
-### Milestone 7.1: Cabinet Primitives
+## Phase 8: Cabinet Designer (Q2-Q3 2028)
+
+### Milestone 8.1: Cabinet Primitives
 - [ ] Base cabinet template
 - [ ] Wall cabinet template
 - [ ] Tall cabinet template
 - [ ] Corner cabinet variants
 - [ ] Drawer stack generator
 
-### Milestone 7.2: Cut List & Nesting
+### Milestone 8.2: Cut List & Nesting
 - [ ] Generate cut list from design
 - [ ] Sheet nesting algorithm
 - [ ] Grain direction control
 - [ ] Edge banding list
 - [ ] Hardware requirements
 
-### Milestone 7.3: Production Output
+### Milestone 8.3: Production Output
 - [ ] CNC programs for nested sheets
 - [ ] Assembly drawings
 - [ ] Hardware location drilling
 - [ ] Material cost estimation
 - [ ] Quote generation
 
-## Phase 8: Parametric & Polish (Q4 2028 - Q1 2029)
+---
 
-### Milestone 8.1: Constraints
+## Phase 9: Parametric & Polish (Q4 2028 - Q1 2029)
+
+### Milestone 9.1: Constraints
 - [ ] Distance constraints
 - [ ] Angle constraints
-- [ ] Parallel/perpendicular
+- [ ] Parallel / perpendicular
 - [ ] Tangent constraints
 - [ ] Constraint solver
 
-### Milestone 8.2: Feature History
+### Milestone 9.2: Feature History
 - [ ] History tree UI
 - [ ] Edit feature parameters
-- [ ] Suppress/resume features
+- [ ] Suppress / resume features
 - [ ] Reorder operations
 - [ ] Feature patterns
 
-### Milestone 8.3: Final Polish
+### Milestone 9.3: Final Polish
 - [ ] Performance optimization
 - [ ] User documentation
 - [ ] Tutorial system
 - [ ] Example projects
 - [ ] Marketing materials
 
+---
+
 ## Exit Strategy (2029)
 
 - Market to cabinet shops
 - Build customer testimonials
-- Reach 500-2000 users
-- $500K-2M ARR target
+- Reach 500–2000 users
+- $500K–2M ARR target
 - Field acquisition offers
 - Close deal or continue building
 

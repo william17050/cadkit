@@ -456,8 +456,15 @@ impl Viewport {
                     };
                     let tx = text_pos.x as f32;
                     let ty = text_pos.y as f32;
-                    let up = [perp[0] * sign, perp[1] * sign];
-                    for (p1, p2) in font::text_segments(&label, [tx, ty], dir, up, 5.0) {
+                    // Normalise text dir so it always points in the readable direction.
+                    let text_dir = if dir[0] < -1e-6 || (dir[0].abs() < 1e-6 && dir[1] < -1e-6) {
+                        [-dir[0], -dir[1]]
+                    } else {
+                        dir
+                    };
+                    // up = 90° CCW from text_dir (top of glyphs faces this way).
+                    let text_up = [-text_dir[1], text_dir[0]];
+                    for (p1, p2) in font::text_segments(&label, [tx, ty], text_dir, text_up, 5.0) {
                         vertices.push(Vertex::new(p1[0], p1[1], c[0], c[1], c[2]));
                         vertices.push(Vertex::new(p2[0], p2[1], c[0], c[1], c[2]));
                     }
