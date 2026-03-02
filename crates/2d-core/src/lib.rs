@@ -6,6 +6,9 @@
 //! - Drawing document structure
 //! - Entity storage and queries
 
+pub mod dxf_io;
+pub use dxf_io::{aci_to_rgb, rgb_to_aci, DxfImportResult};
+
 use cadkit_types::{Guid, Result, Vec2, Vec3};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -58,6 +61,15 @@ pub enum EntityKind {
         vertices: Vec<Vec3>,
         closed: bool,
     },
+
+    /// Linear dimension between two points
+    DimLinear {
+        start: Vec3,                    // first extension line origin
+        end: Vec3,                      // second extension line origin
+        offset: f64,                    // signed perpendicular distance to dimension line
+        text_override: Option<String>,  // None = auto-format measured distance
+        text_pos: Vec3,                 // world-space centre of dimension text
+    },
 }
 
 impl EntityKind {
@@ -72,6 +84,11 @@ impl EntityKind {
             }
             EntityKind::Polyline { vertices, .. } => {
                 vertices.iter().all(|v| v.z.abs() < f64::EPSILON)
+            }
+            EntityKind::DimLinear { start, end, text_pos, .. } => {
+                start.z.abs() < f64::EPSILON
+                    && end.z.abs() < f64::EPSILON
+                    && text_pos.z.abs() < f64::EPSILON
             }
         }
     }

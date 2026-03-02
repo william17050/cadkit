@@ -5,6 +5,7 @@
 //! - Rendering entities to texture
 //! - Pan/zoom camera control
 
+pub mod font;
 pub mod vertex;
 
 use cadkit_2d_core::{Drawing, EntityKind};
@@ -383,6 +384,82 @@ impl Viewport {
                         let b = verts.first().unwrap();
                         vertices.push(Vertex::new(a.x as f32, a.y as f32, c[0], c[1], c[2]));
                         vertices.push(Vertex::new(b.x as f32, b.y as f32, c[0], c[1], c[2]));
+                    }
+                }
+                EntityKind::DimLinear { start, end, offset, text_override, text_pos } => {
+                    let sx = start.x as f32;
+                    let sy = start.y as f32;
+                    let ex = end.x as f32;
+                    let ey = end.y as f32;
+
+                    let dx = ex - sx;
+                    let dy = ey - sy;
+                    let len = (dx * dx + dy * dy).sqrt();
+                    if len < 1e-6 {
+                        continue;
+                    }
+
+                    let dir = [dx / len, dy / len];
+                    let perp = [-dir[1], dir[0]]; // 90° CCW
+                    let off = *offset as f32;
+                    let sign = if off >= 0.0 { 1.0f32 } else { -1.0f32 };
+
+                    // Dimension line endpoints
+                    let dl1 = [sx + perp[0] * off, sy + perp[1] * off];
+                    let dl2 = [ex + perp[0] * off, ey + perp[1] * off];
+
+                    // Extension line colour (dimmed)
+                    let ec = [c[0] * 0.75, c[1] * 0.75, c[2] * 0.75];
+                    let gap = 1.0f32;
+
+                    // Extension line 1: from start+gap toward dim-line side
+                    let ext1_s = [sx + perp[0] * sign * gap, sy + perp[1] * sign * gap];
+                    vertices.push(Vertex::new(ext1_s[0], ext1_s[1], ec[0], ec[1], ec[2]));
+                    vertices.push(Vertex::new(dl1[0], dl1[1], ec[0], ec[1], ec[2]));
+
+                    // Extension line 2: from end+gap toward dim-line side
+                    let ext2_s = [ex + perp[0] * sign * gap, ey + perp[1] * sign * gap];
+                    vertices.push(Vertex::new(ext2_s[0], ext2_s[1], ec[0], ec[1], ec[2]));
+                    vertices.push(Vertex::new(dl2[0], dl2[1], ec[0], ec[1], ec[2]));
+
+                    // Dimension line
+                    vertices.push(Vertex::new(dl1[0], dl1[1], c[0], c[1], c[2]));
+                    vertices.push(Vertex::new(dl2[0], dl2[1], c[0], c[1], c[2]));
+
+                    // Arrows (V-shape, 3 units long, 0.75 half-width)
+                    let arrow_len = 3.0f32;
+                    let arrow_hw = 0.75f32;
+
+                    // Arrow at dl1 (pointing in +dir)
+                    let a1_base = [dl1[0] + dir[0] * arrow_len, dl1[1] + dir[1] * arrow_len];
+                    let a1_w1 = [a1_base[0] + perp[0] * arrow_hw, a1_base[1] + perp[1] * arrow_hw];
+                    let a1_w2 = [a1_base[0] - perp[0] * arrow_hw, a1_base[1] - perp[1] * arrow_hw];
+                    vertices.push(Vertex::new(dl1[0], dl1[1], c[0], c[1], c[2]));
+                    vertices.push(Vertex::new(a1_w1[0], a1_w1[1], c[0], c[1], c[2]));
+                    vertices.push(Vertex::new(dl1[0], dl1[1], c[0], c[1], c[2]));
+                    vertices.push(Vertex::new(a1_w2[0], a1_w2[1], c[0], c[1], c[2]));
+
+                    // Arrow at dl2 (pointing in -dir)
+                    let a2_base = [dl2[0] - dir[0] * arrow_len, dl2[1] - dir[1] * arrow_len];
+                    let a2_w1 = [a2_base[0] + perp[0] * arrow_hw, a2_base[1] + perp[1] * arrow_hw];
+                    let a2_w2 = [a2_base[0] - perp[0] * arrow_hw, a2_base[1] - perp[1] * arrow_hw];
+                    vertices.push(Vertex::new(dl2[0], dl2[1], c[0], c[1], c[2]));
+                    vertices.push(Vertex::new(a2_w1[0], a2_w1[1], c[0], c[1], c[2]));
+                    vertices.push(Vertex::new(dl2[0], dl2[1], c[0], c[1], c[2]));
+                    vertices.push(Vertex::new(a2_w2[0], a2_w2[1], c[0], c[1], c[2]));
+
+                    // Text label
+                    let dist = start.distance_to(end);
+                    let label = match text_override {
+                        Some(s) => s.clone(),
+                        None => format!("{:.3}", dist),
+                    };
+                    let tx = text_pos.x as f32;
+                    let ty = text_pos.y as f32;
+                    let up = [perp[0] * sign, perp[1] * sign];
+                    for (p1, p2) in font::text_segments(&label, [tx, ty], dir, up, 5.0) {
+                        vertices.push(Vertex::new(p1[0], p1[1], c[0], c[1], c[2]));
+                        vertices.push(Vertex::new(p2[0], p2[1], c[0], c[1], c[2]));
                     }
                 }
             }

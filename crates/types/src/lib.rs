@@ -240,6 +240,9 @@ pub enum CadError {
 
     #[error("Serialization error: {0}")]
     SerdeError(#[from] serde_json::Error),
+
+    #[error("DXF error: {0}")]
+    DxfError(String),
 }
 
 pub type Result<T> = std::result::Result<T, CadError>;

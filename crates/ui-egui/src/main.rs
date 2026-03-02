@@ -1,12 +1,12 @@
 //! CadKit - Main application entry point
 
-use cadkit_2d_core::{create_arc, create_circle, create_line, Drawing, Entity, EntityKind};
+use cadkit_2d_core::{create_arc, create_circle, create_line, Drawing, DxfImportResult, Entity, EntityKind};
 // create_arc_from_three_points helper lives below in this file (UI layer-specific).
 use cadkit_geometry::{
     Arc as GeomArc, Circle as GeomCircle, Intersects, Line as GeomLine,
     Polyline as GeomPolyline,
 };
-use cadkit_render_wgpu::{screen_to_world, world_to_screen, Viewport};
+use cadkit_render_wgpu::{font, screen_to_world, world_to_screen, Viewport};
 use cadkit_types::{Guid, Vec2, Vec3};
 use eframe::egui;
 use egui_wgpu::wgpu;
@@ -67,6 +67,7 @@ struct CadKitApp {
     rotate_entities: Vec<Guid>,
     from_phase: FromPhase,
     from_base: Option<Vec2>,
+    dim_phase: DimPhase,
     current_file: Option<String>,
     // Layer management
     current_layer: u32,
@@ -78,6 +79,8 @@ struct CadKitApp {
     // Properties panel
     properties_split: f32,      // fraction of right-panel height given to layers list
     entity_color_picker_open: bool,
+    // Deferred DXF import (needs ctx, triggered by command alias)
+    pending_dxf_import: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -142,6 +145,15 @@ enum FromPhase {
     Idle,
     WaitingBase,   // picked base snap point first
     WaitingOffset, // now type @dx,dy or @dist<angle, or click for raw position
+}
+
+/// DimLinear placement workflow phases.
+#[derive(Debug, Clone, PartialEq)]
+enum DimPhase {
+    Idle,
+    FirstPoint,
+    SecondPoint { first: Vec2 },
+    Placing { first: Vec2, second: Vec2 },
 }
 
 /// Result of a read-only trim computation; mutations are applied by the caller.
@@ -223,6 +235,7 @@ impl Default for CadKitApp {
             rotate_entities: Vec::new(),
             from_phase: FromPhase::Idle,
             from_base: None,
+            dim_phase: DimPhase::Idle,
             current_file: None,
             current_layer: 0,
             next_layer_number: 1,
@@ -232,6 +245,7 @@ impl Default for CadKitApp {
             layer_editing_original: String::new(),
             properties_split: 0.55,
             entity_color_picker_open: false,
+            pending_dxf_import: false,
         }
     }
 }
@@ -257,6 +271,10 @@ impl CadKitApp {
         self.from_base = None;
     }
 
+    fn exit_dim(&mut self) {
+        self.dim_phase = DimPhase::Idle;
+    }
+
     /// True when the current state expects the next user action to be picking a world point.
     fn is_picking_point(&self) -> bool {
         match &self.active_tool {
@@ -268,6 +286,7 @@ impl CadKitApp {
                 matches!(self.move_phase, MovePhase::BasePoint | MovePhase::Destination)
                     || matches!(self.copy_phase, CopyPhase::BasePoint | CopyPhase::Destination)
                     || matches!(self.rotate_phase, RotatePhase::BasePoint | RotatePhase::Rotation)
+                    || !matches!(self.dim_phase, DimPhase::Idle)
             }
         }
     }
@@ -499,6 +518,27 @@ impl CadKitApp {
                 } else {
                     self.command_log.push("FROM: Not active during a point-pick step".to_string());
                 }
+                true
+            }
+            "dxfout" => {
+                self.export_dxf();
+                true
+            }
+            "dxfin" => {
+                self.pending_dxf_import = true;
+                true
+            }
+            "dli" | "dimlinear" | "dim" => {
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.dim_phase = DimPhase::FirstPoint;
+                self.command_log.push("DIMLINEAR: Specify first extension line origin".to_string());
+                log::info!("Command: DIMLINEAR");
                 true
             }
             _ => false,
@@ -937,6 +977,22 @@ impl CadKitApp {
                         );
                     }
                 }
+                EntityKind::DimLinear { start, end, offset, .. } => {
+                    let sx = start.x as f32; let sy = start.y as f32;
+                    let ex = end.x as f32;   let ey = end.y as f32;
+                    let ddx = ex - sx; let ddy = ey - sy;
+                    let len = (ddx*ddx + ddy*ddy).sqrt();
+                    if len < 1e-6 { continue; }
+                    let perp = [-ddy/len, ddx/len];
+                    let off = *offset as f32;
+                    let (dl1x, dl1y) = world_to_screen(sx + perp[0]*off, sy + perp[1]*off, viewport);
+                    let (dl2x, dl2y) = world_to_screen(ex + perp[0]*off, ey + perp[1]*off, viewport);
+                    let (sx1, sy1) = world_to_screen(sx, sy, viewport);
+                    let (sx2, sy2) = world_to_screen(ex, ey, viewport);
+                    painter.line_segment([rect.min + egui::vec2(dl1x, dl1y), rect.min + egui::vec2(dl2x, dl2y)], stroke);
+                    painter.line_segment([rect.min + egui::vec2(sx1, sy1), rect.min + egui::vec2(dl1x, dl1y)], stroke);
+                    painter.line_segment([rect.min + egui::vec2(sx2, sy2), rect.min + egui::vec2(dl2x, dl2y)], stroke);
+                }
             }
         }
     }
@@ -977,7 +1033,12 @@ impl CadKitApp {
                         MovePhase::Idle => match self.extend_phase {
                         ExtendPhase::Idle => match self.copy_phase {
                             CopyPhase::Idle => match self.rotate_phase {
-                                RotatePhase::Idle => "Command:",
+                                RotatePhase::Idle => match self.dim_phase {
+                                    DimPhase::Idle => "Command:",
+                                    DimPhase::FirstPoint => "DIMLINEAR  Specify first extension line origin:",
+                                    DimPhase::SecondPoint { .. } => "DIMLINEAR  Specify second extension line origin:",
+                                    DimPhase::Placing { .. } => "DIMLINEAR  Specify dimension line location:",
+                                },
                                 RotatePhase::SelectingEntities => "ROTATE  Select entities, press Enter to continue:",
                                 RotatePhase::BasePoint => "ROTATE  Pick base point:",
                                 RotatePhase::Rotation => "ROTATE  Specify angle (degrees) or click:",
@@ -1070,6 +1131,49 @@ impl CadKitApp {
         }
     }
 
+    /// Export the current drawing to a DXF file.
+    fn export_dxf(&mut self) {
+        let path = rfd::FileDialog::new()
+            .set_title("Export Drawing as DXF")
+            .add_filter("DXF Drawing", &["dxf"])
+            .save_file();
+        if let Some(path) = path {
+            let path_str = path.to_string_lossy().to_string();
+            match self.drawing.save_to_dxf(&path_str) {
+                Ok(n) => self.command_log.push(format!("DXF: Exported {} entities to {}", n, path_str)),
+                Err(e) => self.command_log.push(format!("DXF: Export failed - {}", e)),
+            }
+        }
+    }
+
+    /// Import a DXF file, replacing the current drawing.
+    fn import_dxf(&mut self, ctx: &egui::Context) {
+        let path = rfd::FileDialog::new()
+            .set_title("Import DXF File")
+            .add_filter("DXF Drawing", &["dxf"])
+            .pick_file();
+        if let Some(path) = path {
+            let path_str = path.to_string_lossy().to_string();
+            match Drawing::load_from_dxf(&path_str) {
+                Ok(DxfImportResult { drawing, entity_count, layer_count, skipped_entity_types }) => {
+                    self.drawing = drawing;
+                    self.current_file = None;
+                    self.selected_entities.clear();
+                    self.selection = None;
+                    self.command_log.push(format!(
+                        "DXF: Imported {} entities, {} layers from {}",
+                        entity_count, layer_count, path_str
+                    ));
+                    for t in &skipped_entity_types {
+                        self.command_log.push(format!("DXF: Warning - skipped unsupported entity type: {}", t));
+                    }
+                    Self::update_title(ctx, &path_str);
+                }
+                Err(e) => self.command_log.push(format!("DXF: Import failed - {}", e)),
+            }
+        }
+    }
+
     fn update_title(ctx: &egui::Context, path: &str) {
         let name = std::path::Path::new(path)
             .file_name()
@@ -1132,6 +1236,11 @@ impl CadKitApp {
                             v.x += dx;
                             v.y += dy;
                         }
+                    }
+                    EntityKind::DimLinear { start, end, text_pos, .. } => {
+                        start.x += dx; start.y += dy;
+                        end.x += dx;   end.y += dy;
+                        text_pos.x += dx; text_pos.y += dy;
                     }
                 }
             }
@@ -1215,6 +1324,22 @@ impl CadKitApp {
                         painter.line_segment([*shifted.last().unwrap(), shifted[0]], ghost_stroke);
                     }
                 }
+                EntityKind::DimLinear { start, end, offset, .. } => {
+                    let gsx = (start.x + dx) as f32; let gsy = (start.y + dy) as f32;
+                    let gex = (end.x   + dx) as f32; let gey = (end.y   + dy) as f32;
+                    let ddx2 = gex - gsx; let ddy2 = gey - gsy;
+                    let glen = (ddx2*ddx2 + ddy2*ddy2).sqrt();
+                    if glen < 1e-6 { continue; }
+                    let perp = [-ddy2/glen, ddx2/glen];
+                    let off = *offset as f32;
+                    let (p1x, p1y) = world_to_screen(gsx, gsy, viewport);
+                    let (p2x, p2y) = world_to_screen(gex, gey, viewport);
+                    let (dl1x, dl1y) = world_to_screen(gsx + perp[0]*off, gsy + perp[1]*off, viewport);
+                    let (dl2x, dl2y) = world_to_screen(gex + perp[0]*off, gey + perp[1]*off, viewport);
+                    painter.line_segment([rect.min + egui::vec2(dl1x, dl1y), rect.min + egui::vec2(dl2x, dl2y)], ghost_stroke);
+                    painter.line_segment([rect.min + egui::vec2(p1x, p1y), rect.min + egui::vec2(dl1x, dl1y)], ghost_stroke);
+                    painter.line_segment([rect.min + egui::vec2(p2x, p2y), rect.min + egui::vec2(dl2x, dl2y)], ghost_stroke);
+                }
             }
         }
     }
@@ -1261,6 +1386,13 @@ impl CadKitApp {
                     EntityKind::Polyline { vertices, closed } => EntityKind::Polyline {
                         vertices: vertices.iter().map(|v| Vec3::xy(v.x + dx, v.y + dy)).collect(),
                         closed: *closed,
+                    },
+                    EntityKind::DimLinear { start, end, offset, text_override, text_pos } => EntityKind::DimLinear {
+                        start: Vec3::xy(start.x + dx, start.y + dy),
+                        end:   Vec3::xy(end.x   + dx, end.y   + dy),
+                        offset: *offset,
+                        text_override: text_override.clone(),
+                        text_pos: Vec3::xy(text_pos.x + dx, text_pos.y + dy),
                     },
                 };
                 let layer = entity.layer;
@@ -1344,6 +1476,22 @@ impl CadKitApp {
                         painter.line_segment([*shifted.last().unwrap(), shifted[0]], ghost_stroke);
                     }
                 }
+                EntityKind::DimLinear { start, end, offset, .. } => {
+                    let gsx = (start.x + dx) as f32; let gsy = (start.y + dy) as f32;
+                    let gex = (end.x   + dx) as f32; let gey = (end.y   + dy) as f32;
+                    let ddx2 = gex - gsx; let ddy2 = gey - gsy;
+                    let glen = (ddx2*ddx2 + ddy2*ddy2).sqrt();
+                    if glen < 1e-6 { continue; }
+                    let perp = [-ddy2/glen, ddx2/glen];
+                    let off = *offset as f32;
+                    let (p1x, p1y) = world_to_screen(gsx, gsy, viewport);
+                    let (p2x, p2y) = world_to_screen(gex, gey, viewport);
+                    let (dl1x, dl1y) = world_to_screen(gsx + perp[0]*off, gsy + perp[1]*off, viewport);
+                    let (dl2x, dl2y) = world_to_screen(gex + perp[0]*off, gey + perp[1]*off, viewport);
+                    painter.line_segment([rect.min + egui::vec2(dl1x, dl1y), rect.min + egui::vec2(dl2x, dl2y)], ghost_stroke);
+                    painter.line_segment([rect.min + egui::vec2(p1x, p1y), rect.min + egui::vec2(dl1x, dl1y)], ghost_stroke);
+                    painter.line_segment([rect.min + egui::vec2(p2x, p2y), rect.min + egui::vec2(dl2x, dl2y)], ghost_stroke);
+                }
             }
         }
     }
@@ -1394,6 +1542,12 @@ impl CadKitApp {
                         for v in vertices.iter_mut() {
                             *v = rotate_pt(*v, base.x, base.y, cos_a, sin_a);
                         }
+                    }
+                    EntityKind::DimLinear { start, end, text_pos, .. } => {
+                        *start    = rotate_pt(*start,    base.x, base.y, cos_a, sin_a);
+                        *end      = rotate_pt(*end,      base.x, base.y, cos_a, sin_a);
+                        *text_pos = rotate_pt(*text_pos, base.x, base.y, cos_a, sin_a);
+                        // offset scalar is preserved by rotation (see geometry proof)
                     }
                 }
             }
@@ -1485,7 +1639,125 @@ impl CadKitApp {
                         painter.line_segment([*pts.last().unwrap(), pts[0]], ghost_stroke);
                     }
                 }
+                EntityKind::DimLinear { start, end, offset, .. } => {
+                    let (rs1x, rs1y) = rot(*start);
+                    let (rs2x, rs2y) = rot(*end);
+                    // Compute rotated dim line endpoints
+                    let ddx = end.x - start.x;
+                    let ddy = end.y - start.y;
+                    let glen = (ddx*ddx + ddy*ddy).sqrt();
+                    if glen < 1e-9 { continue; }
+                    let perp = Vec3::xy(-ddy/glen, ddx/glen);
+                    let off = *offset;
+                    let dl1 = Vec3::xy(start.x + perp.x * off, start.y + perp.y * off);
+                    let dl2 = Vec3::xy(end.x   + perp.x * off, end.y   + perp.y * off);
+                    let (rdl1x, rdl1y) = rot(dl1);
+                    let (rdl2x, rdl2y) = rot(dl2);
+                    painter.line_segment([rect.min + egui::vec2(rdl1x, rdl1y), rect.min + egui::vec2(rdl2x, rdl2y)], ghost_stroke);
+                    painter.line_segment([rect.min + egui::vec2(rs1x, rs1y), rect.min + egui::vec2(rdl1x, rdl1y)], ghost_stroke);
+                    painter.line_segment([rect.min + egui::vec2(rs2x, rs2y), rect.min + egui::vec2(rdl2x, rdl2y)], ghost_stroke);
+                }
             }
+        }
+    }
+
+    /// Place a DimLinear entity. Called when the user clicks the dimension line location.
+    /// After placement, resets to FirstPoint so the user can continue dimensioning.
+    fn place_dim_linear(&mut self, first: Vec2, second: Vec2, offset_world: Vec2) {
+        let dx = second.x - first.x;
+        let dy = second.y - first.y;
+        let len = (dx * dx + dy * dy).sqrt();
+        if len < 1e-6 {
+            self.command_log.push("DIMLINEAR: Degenerate dimension, ignored".to_string());
+            return;
+        }
+        let dir = (dx / len, dy / len);
+        let perp = (-dir.1, dir.0);
+        let mx = (first.x + second.x) * 0.5;
+        let my = (first.y + second.y) * 0.5;
+        let offset = (offset_world.x - mx) * perp.0 + (offset_world.y - my) * perp.1;
+        // Ensure minimum visible offset.
+        let offset = if offset.abs() < 5.0 { if offset >= 0.0 { 5.0 } else { -5.0 } } else { offset };
+        let text_pos = Vec3::xy(mx + perp.0 * offset, my + perp.1 * offset);
+        let entity = Entity::new(
+            EntityKind::DimLinear {
+                start: Vec3::xy(first.x, first.y),
+                end: Vec3::xy(second.x, second.y),
+                offset,
+                text_override: None,
+                text_pos,
+            },
+            self.current_layer,
+        );
+        self.drawing.add_entity(entity);
+        self.command_log.push(format!("DIMLINEAR: Distance = {:.4}", len));
+        // Stay in FirstPoint so user can chain dimensions.
+        self.dim_phase = DimPhase::FirstPoint;
+    }
+
+    /// Draw the DIMLINEAR rubber-band preview during SecondPoint and Placing phases.
+    fn draw_dim_preview(&self, ui: &egui::Ui, rect: egui::Rect, viewport: &Viewport, world_cursor: Vec2) {
+        let ghost_stroke = egui::Stroke::new(1.5, egui::Color32::from_rgba_premultiplied(220, 210, 80, 180));
+        let painter = ui.painter_at(rect);
+
+        match &self.dim_phase {
+            DimPhase::SecondPoint { first } => {
+                // Draw tick at first point and rubber-band line to cursor.
+                let (x1, y1) = world_to_screen(first.x as f32, first.y as f32, viewport);
+                let p1 = rect.min + egui::vec2(x1, y1);
+                let r = 5.0_f32;
+                painter.line_segment([p1 - egui::vec2(r, r), p1 + egui::vec2(r, r)], ghost_stroke);
+                painter.line_segment([p1 - egui::vec2(r, -r), p1 + egui::vec2(r, -r)], ghost_stroke);
+                let (x2, y2) = world_to_screen(world_cursor.x as f32, world_cursor.y as f32, viewport);
+                let p2 = rect.min + egui::vec2(x2, y2);
+                painter.line_segment([p1, p2], ghost_stroke);
+            }
+            DimPhase::Placing { first, second } => {
+                let dx = second.x - first.x;
+                let dy = second.y - first.y;
+                let len = (dx * dx + dy * dy).sqrt();
+                if len < 1e-6 { return; }
+                let dir = [dx / len, dy / len];
+                let perp = [-dir[1], dir[0]];
+                let mx = (first.x + second.x) * 0.5;
+                let my = (first.y + second.y) * 0.5;
+                let offset = (world_cursor.x - mx) * perp[0] + (world_cursor.y - my) * perp[1];
+                let offset = if offset.abs() < 5.0 { if offset >= 0.0 { 5.0 } else { -5.0 } } else { offset };
+                let dl1 = [first.x + perp[0] * offset, first.y + perp[1] * offset];
+                let dl2 = [second.x + perp[0] * offset, second.y + perp[1] * offset];
+
+                let (sx1, sy1) = world_to_screen(first.x as f32, first.y as f32, viewport);
+                let (sx2, sy2) = world_to_screen(second.x as f32, second.y as f32, viewport);
+                let (dl1x, dl1y) = world_to_screen(dl1[0] as f32, dl1[1] as f32, viewport);
+                let (dl2x, dl2y) = world_to_screen(dl2[0] as f32, dl2[1] as f32, viewport);
+
+                let p_s1 = rect.min + egui::vec2(sx1, sy1);
+                let p_s2 = rect.min + egui::vec2(sx2, sy2);
+                let p_d1 = rect.min + egui::vec2(dl1x, dl1y);
+                let p_d2 = rect.min + egui::vec2(dl2x, dl2y);
+
+                // Extension lines
+                painter.line_segment([p_s1, p_d1], ghost_stroke);
+                painter.line_segment([p_s2, p_d2], ghost_stroke);
+                // Dim line
+                painter.line_segment([p_d1, p_d2], ghost_stroke);
+
+                // Dimension text via stroke font
+                let dist_text = format!("{:.3}", len);
+                let tc = [(dl1[0] + dl2[0]) as f32 * 0.5, (dl1[1] + dl2[1]) as f32 * 0.5];
+                let sign = if offset >= 0.0 { 1.0_f32 } else { -1.0 };
+                let up = [perp[0] as f32 * sign, perp[1] as f32 * sign];
+                let dir_f = [dir[0] as f32, dir[1] as f32];
+                for (fp1, fp2) in font::text_segments(&dist_text, tc, dir_f, up, 5.0) {
+                    let (fsx1, fsy1) = world_to_screen(fp1[0], fp1[1], viewport);
+                    let (fsx2, fsy2) = world_to_screen(fp2[0], fp2[1], viewport);
+                    painter.line_segment(
+                        [rect.min + egui::vec2(fsx1, fsy1), rect.min + egui::vec2(fsx2, fsy2)],
+                        ghost_stroke,
+                    );
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1638,6 +1910,7 @@ impl CadKitApp {
                         );
                     }
                 }
+                EntityKind::DimLinear { .. } => {}
             }
         }
     }
@@ -1705,6 +1978,9 @@ impl CadKitApp {
             }
             EntityKind::Polyline { .. } => {
                 Err("OFFSET: Polyline offset not yet supported".to_string())
+            }
+            EntityKind::DimLinear { .. } => {
+                Err("OFFSET: Cannot offset dimension entities".to_string())
             }
         }
     }
@@ -1776,6 +2052,7 @@ impl CadKitApp {
                         );
                     }
                 }
+                EntityKind::DimLinear { .. } => {}
             }
         }
     }
@@ -1845,6 +2122,7 @@ impl CadKitApp {
                     );
                 }
             }
+            EntityKind::DimLinear { .. } => {}
         }
     }
 
@@ -1893,6 +2171,7 @@ impl CadKitApp {
             EntityKind::Polyline { vertices, closed } => {
                 Some(GeomPrim::Polyline(GeomPolyline::new(vertices.clone(), *closed)))
             }
+            EntityKind::DimLinear { .. } => None,
         }
     }
 
@@ -2002,6 +2281,22 @@ impl CadKitApp {
                 }
                 min_d
             }
+            EntityKind::DimLinear { start, end, offset, .. } => {
+                let sx = start.x as f32; let sy = start.y as f32;
+                let ex = end.x as f32;   let ey = end.y as f32;
+                let ddx = ex - sx; let ddy = ey - sy;
+                let len = (ddx*ddx + ddy*ddy).sqrt();
+                if len < 1e-6 { return f32::INFINITY; }
+                let perp = [-ddy/len, ddx/len];
+                let off = *offset as f32;
+                let (dl1x, dl1y) = world_to_screen(sx + perp[0]*off, sy + perp[1]*off, viewport);
+                let (dl2x, dl2y) = world_to_screen(ex + perp[0]*off, ey + perp[1]*off, viewport);
+                point_to_segment_dist(
+                    screen_pos,
+                    rect.min + egui::vec2(dl1x, dl1y),
+                    rect.min + egui::vec2(dl2x, dl2y),
+                )
+            }
         }
     }
 
@@ -2074,6 +2369,12 @@ impl CadKitApp {
 
 impl eframe::App for CadKitApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // === Deferred operations that need ctx ===
+        if self.pending_dxf_import {
+            self.pending_dxf_import = false;
+            self.import_dxf(ctx);
+        }
+
         // === Global keyboard shortcuts (fire even while command line has focus) ===
 
         // Ctrl+S: save
@@ -2114,6 +2415,9 @@ impl eframe::App for CadKitApp {
                 self.command_log.push("*Cancel*".to_string());
             } else if !matches!(self.extend_phase, ExtendPhase::Idle) {
                 self.exit_extend();
+                self.command_log.push("*Cancel*".to_string());
+            } else if !matches!(self.dim_phase, DimPhase::Idle) {
+                self.exit_dim();
                 self.command_log.push("*Cancel*".to_string());
             } else if matches!(self.active_tool, ActiveTool::None) {
                 self.selected_entities.clear();
@@ -2175,6 +2479,15 @@ impl eframe::App for CadKitApp {
                     if ui.button("Save As...").clicked() {
                         ui.close_menu();
                         self.save_as(ctx);
+                    }
+                    ui.separator();
+                    if ui.button("Export DXF...").clicked() {
+                        ui.close_menu();
+                        self.export_dxf();
+                    }
+                    if ui.button("Import DXF...").clicked() {
+                        ui.close_menu();
+                        self.import_dxf(ctx);
                     }
                     ui.separator();
                     if ui.button("Exit").clicked() {
@@ -2266,6 +2579,23 @@ impl eframe::App for CadKitApp {
                 }
             }
             
+            ui.add_space(20.0);
+            ui.heading("Dimension");
+            ui.separator();
+
+            if ui.button("📐 Linear Dim").clicked() {
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.dim_phase = DimPhase::FirstPoint;
+                self.command_log.push("DIMLINEAR: Specify first extension line origin".to_string());
+                log::info!("Command: DIMLINEAR");
+            }
+
             ui.add_space(20.0);
             ui.heading("Modify");
             ui.separator();
@@ -2527,10 +2857,11 @@ impl eframe::App for CadKitApp {
                             let eid = *self.selected_entities.iter().next().unwrap();
                             if let Some(entity) = self.drawing.get_entity(&eid) {
                                 let type_name = match &entity.kind {
-                                    EntityKind::Line { .. }     => "Line",
-                                    EntityKind::Circle { .. }   => "Circle",
-                                    EntityKind::Arc { .. }      => "Arc",
-                                    EntityKind::Polyline { .. } => "Polyline",
+                                    EntityKind::Line { .. }      => "Line",
+                                    EntityKind::Circle { .. }    => "Circle",
+                                    EntityKind::Arc { .. }       => "Arc",
+                                    EntityKind::Polyline { .. }  => "Polyline",
+                                    EntityKind::DimLinear { .. } => "DimLinear",
                                 };
                                 ui.label(egui::RichText::new(type_name).strong());
                                 egui::Grid::new("entity_geom")
@@ -2570,6 +2901,20 @@ impl eframe::App for CadKitApp {
                                             EntityKind::Polyline { vertices, closed } => {
                                                 ui.label("Points:"); ui.label(vertices.len().to_string()); ui.end_row();
                                                 ui.label("Closed:"); ui.label(if *closed { "Yes" } else { "No" }); ui.end_row();
+                                            }
+                                            EntityKind::DimLinear { start, end, offset, text_override, .. } => {
+                                                let dx = end.x - start.x;
+                                                let dy = end.y - start.y;
+                                                let dist = (dx*dx + dy*dy).sqrt();
+                                                ui.label("Start X:"); ui.label(format!("{:.4}", start.x)); ui.end_row();
+                                                ui.label("Start Y:"); ui.label(format!("{:.4}", start.y)); ui.end_row();
+                                                ui.label("End X:");   ui.label(format!("{:.4}", end.x));   ui.end_row();
+                                                ui.label("End Y:");   ui.label(format!("{:.4}", end.y));   ui.end_row();
+                                                ui.label("Distance:"); ui.label(format!("{:.4}", dist));   ui.end_row();
+                                                ui.label("Offset:");  ui.label(format!("{:.4}", offset));  ui.end_row();
+                                                if let Some(t) = text_override {
+                                                    ui.label("Text:"); ui.label(t.as_str()); ui.end_row();
+                                                }
                                             }
                                         }
                                     });
@@ -3064,6 +3409,18 @@ impl eframe::App for CadKitApp {
                                     let angle = (world.y - base.y).atan2(world.x - base.x);
                                     self.apply_rotate(angle);
                                 }
+                            } else if !matches!(self.dim_phase, DimPhase::Idle) {
+                                if let Some(world) = self.hover_world_pos {
+                                    if matches!(self.dim_phase, DimPhase::FirstPoint) {
+                                        self.dim_phase = DimPhase::SecondPoint { first: world };
+                                        self.command_log.push(format!("DIMLINEAR: First point ({:.4}, {:.4})", world.x, world.y));
+                                    } else if let DimPhase::SecondPoint { first } = self.dim_phase {
+                                        self.dim_phase = DimPhase::Placing { first, second: world };
+                                        self.command_log.push(format!("DIMLINEAR: Second point ({:.4}, {:.4})", world.x, world.y));
+                                    } else if let DimPhase::Placing { first, second } = self.dim_phase {
+                                        self.place_dim_linear(first, second, world);
+                                    }
+                                }
                             } else {
                                 // Enter confirms current hover position (same as clicking at cursor).
                                 let hover = self.hover_world_pos;
@@ -3252,6 +3609,31 @@ impl eframe::App for CadKitApp {
                                     self.apply_rotate(deg.to_radians());
                                 } else {
                                     self.command_log.push("  *Invalid angle*".to_string());
+                                }
+                                true
+                            // DIMLINEAR coordinate entry.
+                            } else if !matches!(self.dim_phase, DimPhase::Idle) {
+                                if matches!(self.dim_phase, DimPhase::FirstPoint) {
+                                    if let Some(world) = Self::resolve_typed_point(cmd.trim(), None) {
+                                        self.dim_phase = DimPhase::SecondPoint { first: world };
+                                        self.command_log.push(format!("DIMLINEAR: First point ({:.4}, {:.4})", world.x, world.y));
+                                    } else {
+                                        self.command_log.push("  *Invalid coordinate*".to_string());
+                                    }
+                                } else if let DimPhase::SecondPoint { first } = self.dim_phase {
+                                    if let Some(world) = Self::resolve_typed_point(cmd.trim(), None) {
+                                        self.dim_phase = DimPhase::Placing { first, second: world };
+                                        self.command_log.push(format!("DIMLINEAR: Second point ({:.4}, {:.4})", world.x, world.y));
+                                    } else {
+                                        self.command_log.push("  *Invalid coordinate*".to_string());
+                                    }
+                                } else if let DimPhase::Placing { first, second } = self.dim_phase {
+                                    // Can type a number to set offset distance, or x,y for exact placement.
+                                    if let Some(world) = Self::resolve_typed_point(cmd.trim(), None) {
+                                        self.place_dim_linear(first, second, world);
+                                    } else {
+                                        self.command_log.push("  *Invalid coordinate*".to_string());
+                                    }
                                 }
                                 true
                             // OFFSET distance entry intercepts before generic input handlers.
@@ -3549,6 +3931,28 @@ impl eframe::App for CadKitApp {
                                             let angle = (world.y - base.y).atan2(world.x - base.x);
                                             self.apply_rotate(angle);
                                         }
+                                    } else if !matches!(self.dim_phase, DimPhase::Idle) {
+                                        // DIMLINEAR point pick — same snap logic as MOVE/COPY/ROTATE.
+                                        let local = click_pos - response.rect.min;
+                                        let raw_world = screen_to_world(local.x, local.y, viewport);
+                                        let pick = self.pick_entity_point(viewport, response.rect, click_pos);
+                                        let mut world = pick.as_ref().map(|p| p.world).unwrap_or_else(|| {
+                                            if self.snap_enabled { Self::snap_to_grid(raw_world) } else { raw_world }
+                                        });
+                                        if pick.is_none() {
+                                            if let Some(snap_pt) = self.snap_intersection_point {
+                                                world = snap_pt;
+                                            }
+                                        }
+                                        if matches!(self.dim_phase, DimPhase::FirstPoint) {
+                                            self.dim_phase = DimPhase::SecondPoint { first: world };
+                                            self.command_log.push(format!("DIMLINEAR: First point ({:.4}, {:.4})", world.x, world.y));
+                                        } else if let DimPhase::SecondPoint { first } = self.dim_phase {
+                                            self.dim_phase = DimPhase::Placing { first, second: world };
+                                            self.command_log.push(format!("DIMLINEAR: Second point ({:.4}, {:.4})", world.x, world.y));
+                                        } else if let DimPhase::Placing { first, second } = self.dim_phase {
+                                            self.place_dim_linear(first, second, world);
+                                        }
                                     } else {
                                         match self.offset_phase {
                                             OffsetPhase::SelectingEntity => {
@@ -3595,7 +3999,8 @@ impl eframe::App for CadKitApp {
                                 let allow = matches!(self.offset_phase, OffsetPhase::Idle)
                                     && !matches!(self.move_phase, MovePhase::BasePoint | MovePhase::Destination)
                                     && !matches!(self.copy_phase, CopyPhase::BasePoint | CopyPhase::Destination)
-                                    && !matches!(self.rotate_phase, RotatePhase::BasePoint | RotatePhase::Rotation);
+                                    && !matches!(self.rotate_phase, RotatePhase::BasePoint | RotatePhase::Rotation)
+                                    && matches!(self.dim_phase, DimPhase::Idle);
                                 if allow {
                                     if let Some(pos) = response.interact_pointer_pos() {
                                         self.selection_drag_start = Some(pos);
@@ -3630,6 +4035,9 @@ impl eframe::App for CadKitApp {
                                 self.command_log.push("*Cancel*".to_string());
                             } else if !matches!(self.extend_phase, ExtendPhase::Idle) {
                                 self.exit_extend();
+                                self.command_log.push("*Cancel*".to_string());
+                            } else if !matches!(self.dim_phase, DimPhase::Idle) {
+                                self.exit_dim();
                                 self.command_log.push("*Cancel*".to_string());
                             }
                         }
@@ -3870,10 +4278,11 @@ impl eframe::App for CadKitApp {
                                 }
                             }
 
-                            // MOVE / COPY / ROTATE ghost preview.
+                            // MOVE / COPY / ROTATE / DIMLINEAR ghost preview.
                             self.draw_move_preview(ui, response.rect, viewport, world);
                             self.draw_copy_preview(ui, response.rect, viewport, world);
                             self.draw_rotate_preview(ui, response.rect, viewport, world);
+                            self.draw_dim_preview(ui, response.rect, viewport, world);
 
                             // Grid-snap dot (suppress when intersection snap is active).
                             if self.snap_enabled
@@ -4383,6 +4792,22 @@ impl CadKitApp {
                 }
                 Some((min_x, min_y, max_x, max_y))
             }
+            EntityKind::DimLinear { start, end, offset, .. } => {
+                let ddx = end.x - start.x;
+                let ddy = end.y - start.y;
+                let glen = (ddx*ddx + ddy*ddy).sqrt();
+                if glen < 1e-9 { return None; }
+                let perp = (-ddy/glen, ddx/glen);
+                let dl1x = start.x + perp.0 * offset;
+                let dl1y = start.y + perp.1 * offset;
+                let dl2x = end.x   + perp.0 * offset;
+                let dl2y = end.y   + perp.1 * offset;
+                let min_x = start.x.min(end.x).min(dl1x).min(dl2x);
+                let min_y = start.y.min(end.y).min(dl1y).min(dl2y);
+                let max_x = start.x.max(end.x).max(dl1x).max(dl2x);
+                let max_y = start.y.max(end.y).max(dl1y).max(dl2y);
+                Some((min_x, min_y, max_x, max_y))
+            }
         }
     }
 
@@ -4513,6 +4938,15 @@ impl CadKitApp {
                         let b: Vec2 = vertices.first().unwrap().to_owned().into();
                         add_seg(a, b);
                     }
+                }
+                EntityKind::DimLinear { start, end, .. } => {
+                    let s: Vec2 = (*start).into();
+                    let e: Vec2 = (*end).into();
+                    let mid = Vec2::new((s.x + e.x) * 0.5, (s.y + e.y) * 0.5);
+                    self.push_pick_candidates(
+                        &mut best, viewport, rect, screen_pos, entity.id,
+                        &[("dim start", s), ("dim end", e), ("dim mid", mid)],
+                    );
                 }
             }
         }
@@ -4898,6 +5332,11 @@ impl CadKitApp {
             EntityKind::Polyline { .. } => {
                 return TrimResult::Fail(
                     "TRIM: Polyline trim not yet supported".to_string(),
+                );
+            }
+            EntityKind::DimLinear { .. } => {
+                return TrimResult::Fail(
+                    "TRIM: Cannot trim dimension entities".to_string(),
                 );
             }
         };
