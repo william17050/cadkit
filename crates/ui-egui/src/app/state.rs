@@ -42,6 +42,14 @@ pub enum ExtendPhase {
     Extending,
 }
 
+/// Result returned by `compute_extend`.
+pub enum ExtendResult {
+    /// Move a line endpoint to `new_pt`.
+    Line { id: Guid, is_start: bool, new_pt: Vec2 },
+    /// Rotate an arc endpoint to `new_angle` (radians, world CCW from +X).
+    Arc  { id: Guid, is_start: bool, new_angle: f64 },
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum CopyPhase {
     Idle,
@@ -65,6 +73,62 @@ pub enum FromPhase {
     Idle,
     WaitingBase,
     WaitingOffset,
+}
+
+/// TEXT placement workflow phases.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TextPhase {
+    Idle,
+    PlacingPosition,
+    EnteringHeight   { position: Vec2 },
+    EnteringRotation { position: Vec2, height: f64 },
+    TypingContent    { position: Vec2, height: f64, rotation: f64 },
+}
+
+impl Default for TextPhase {
+    fn default() -> Self { TextPhase::Idle }
+}
+
+/// EDITTEXT workflow: select a text entity then edit it via dialog.
+#[derive(Debug, Clone, PartialEq)]
+pub enum EditTextPhase {
+    Idle,
+    SelectingEntity,
+}
+
+impl Default for EditTextPhase {
+    fn default() -> Self { EditTextPhase::Idle }
+}
+
+/// State held while the Edit Text dialog is open.
+#[derive(Debug, Clone)]
+pub struct TextEditDialog {
+    pub id:              Guid,
+    pub content:         String,
+    pub height_str:      String,
+    pub rotation_str:    String,
+    /// Set to true after the first frame so we only steal focus once.
+    pub focus_requested: bool,
+}
+
+/// EDITDIM workflow: select a dimension entity to edit its text override.
+#[derive(Debug, Clone, PartialEq)]
+pub enum EditDimPhase {
+    Idle,
+    SelectingEntity,
+}
+
+impl Default for EditDimPhase {
+    fn default() -> Self { EditDimPhase::Idle }
+}
+
+/// State held while the Edit Dim dialog is open.
+#[derive(Debug, Clone)]
+pub struct DimEditDialog {
+    pub id:              Guid,
+    /// Empty string = use the measured distance (auto).
+    pub override_str:    String,
+    pub focus_requested: bool,
 }
 
 /// DimLinear placement workflow phases.

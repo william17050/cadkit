@@ -1,5 +1,6 @@
 use super::state::{
-    ActiveTool, CopyPhase, DimPhase, ExtendPhase, FromPhase, MovePhase, OffsetPhase, RotatePhase, TrimPhase,
+    ActiveTool, CopyPhase, DimPhase, EditDimPhase, EditTextPhase, ExtendPhase, FromPhase,
+    MovePhase, OffsetPhase, RotatePhase, TextPhase, TrimPhase,
 };
 use super::CadKitApp;
 use cadkit_2d_core::EntityKind;
@@ -73,8 +74,9 @@ impl CadKitApp {
                 });
 
                 ui.menu_button("Help", |ui| {
-                    if ui.button("About").clicked() {
-                        // TODO: About dialog
+                    if ui.button("Commands...").clicked() {
+                        self.help_open = true;
+                        ui.close_menu();
                     }
                 });
             });
@@ -121,6 +123,30 @@ impl CadKitApp {
                     }
                 }
             }
+            if ui.button("T Text").clicked() {
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.text_phase = TextPhase::PlacingPosition;
+                self.command_log.push("TEXT  Specify insertion point:".to_string());
+            }
+            if ui.button("✏ Edit Text").clicked() {
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.exit_text();
+                self.edit_text_phase = EditTextPhase::SelectingEntity;
+                self.text_edit_dialog = None;
+                self.command_log.push("EDITTEXT: Click a text entity to edit".to_string());
+            }
 
             ui.add_space(20.0);
             ui.heading("Dimension");
@@ -136,6 +162,20 @@ impl CadKitApp {
                 self.exit_rotate();
                 self.dim_phase = DimPhase::FirstPoint;
                 self.command_log.push("DIMLINEAR: Specify first extension line origin".to_string());
+            }
+            if ui.button("✏ Edit Dim").clicked() {
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.exit_text();
+                self.exit_edit_text();
+                self.edit_dim_phase = EditDimPhase::SelectingEntity;
+                self.dim_edit_dialog = None;
+                self.command_log.push("EDITDIM: Click a dimension entity to edit".to_string());
             }
 
             ui.add_space(20.0);
@@ -389,6 +429,7 @@ impl CadKitApp {
                                     EntityKind::Arc { .. } => "Arc",
                                     EntityKind::Polyline { .. } => "Polyline",
                                     EntityKind::DimLinear { .. } => "DimLinear",
+                                    EntityKind::Text { .. } => "Text",
                                 };
                                 ui.label(egui::RichText::new(type_name).strong());
                                 egui::Grid::new("entity_geom")
@@ -442,6 +483,13 @@ impl CadKitApp {
                                                 if let Some(t) = text_override {
                                                     ui.label("Text:"); ui.label(t.as_str()); ui.end_row();
                                                 }
+                                            }
+                                            EntityKind::Text { position, content, height, rotation } => {
+                                                ui.label("X:"); ui.label(format!("{:.4}", position.x)); ui.end_row();
+                                                ui.label("Y:"); ui.label(format!("{:.4}", position.y)); ui.end_row();
+                                                ui.label("Content:"); ui.label(content.as_str()); ui.end_row();
+                                                ui.label("Height:"); ui.label(format!("{:.4}", height)); ui.end_row();
+                                                ui.label("Rotation:"); ui.label(format!("{:.2}°", rotation.to_degrees())); ui.end_row();
                                             }
                                         }
                                     });
@@ -621,8 +669,16 @@ impl CadKitApp {
                                 .id(egui::Id::new("cmd_input")),
                         );
 
-                        // Keep focus glued to the command line.
-                        ui.memory_mut(|m| m.request_focus(edit.id));
+                        // Keep focus glued to the command line, unless the user
+                        // is editing a layer name, has a colour picker open, or the
+                        // Edit Text dialog is showing.
+                        if self.layer_editing_id.is_none()
+                            && self.layer_color_picking.is_none()
+                            && self.text_edit_dialog.is_none()
+                            && self.dim_edit_dialog.is_none()
+                        {
+                            ui.memory_mut(|m| m.request_focus(edit.id));
+                        }
 
                         let enter = edit.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                         if enter {
@@ -709,6 +765,28 @@ impl CadKitApp {
                                         self.place_dim_linear(first, second, world);
                                     }
                                 }
+                            } else if self.text_phase == TextPhase::PlacingPosition {
+                                // Empty Enter = confirm hover point as position.
+                                if let Some(world) = self.hover_world_pos {
+                                    self.text_phase = TextPhase::EnteringHeight { position: world };
+                                    self.command_log.push(format!(
+                                        "TEXT  Text height <{:.4}>:", self.last_text_height));
+                                }
+                            } else if let TextPhase::EnteringHeight { position } = self.text_phase {
+                                // Empty Enter = use last_text_height.
+                                let h = self.last_text_height;
+                                self.text_phase = TextPhase::EnteringRotation { position, height: h };
+                                self.command_log.push(format!(
+                                    "TEXT  Rotation angle <{:.1}>:", h.to_degrees()));
+                            } else if let TextPhase::EnteringRotation { position, height } = self.text_phase {
+                                // Empty Enter = use last_text_rotation.
+                                let r = self.last_text_rotation;
+                                self.text_phase = TextPhase::TypingContent { position, height, rotation: r };
+                                self.command_log.push("TEXT  Enter text:".to_string());
+                            } else if let TextPhase::TypingContent { .. } = self.text_phase {
+                                // Empty Enter in content phase = cancel.
+                                self.exit_text();
+                                self.command_log.push("*Cancel*".to_string());
                             } else if self.trim_phase == TrimPhase::SelectingEdges {
                                 if self.trim_cutting_edges.is_empty() {
                                     self.command_log.push("TRIM: No cutting edges selected".to_string());
@@ -724,7 +802,7 @@ impl CadKitApp {
                                     self.command_log.push("EXTEND: No boundary edges selected".to_string());
                                 } else {
                                     self.extend_phase = ExtendPhase::Extending;
-                                    self.command_log.push("EXTEND: Click near line endpoint to extend".to_string());
+                                    self.command_log.push("EXTEND: Click near line or arc endpoint to extend".to_string());
                                 }
                             } else if self.extend_phase == ExtendPhase::Extending {
                                 self.exit_extend();
@@ -799,6 +877,40 @@ impl CadKitApp {
                                 } else {
                                     self.command_log.push("  *DIMLINEAR: enter x,y for point*".to_string());
                                 }
+                                handled = true;
+                            } else if let TextPhase::EnteringHeight { position } = self.text_phase {
+                                let h = cmd.trim().parse::<f64>().unwrap_or(self.last_text_height).max(0.001);
+                                self.last_text_height = h;
+                                self.text_phase = TextPhase::EnteringRotation { position, height: h };
+                                self.command_log.push(format!(
+                                    "TEXT  Rotation angle <{:.1}>:", self.last_text_rotation.to_degrees()));
+                                handled = true;
+                            } else if let TextPhase::EnteringRotation { position, height } = self.text_phase {
+                                let r = cmd.trim().parse::<f64>().unwrap_or(self.last_text_rotation.to_degrees()).to_radians();
+                                self.last_text_rotation = r;
+                                self.text_phase = TextPhase::TypingContent { position, height, rotation: r };
+                                self.command_log.push("TEXT  Enter text:".to_string());
+                                handled = true;
+                            } else if let TextPhase::TypingContent { position, height, rotation } = self.text_phase {
+                                // The typed text becomes the entity content.
+                                if !cmd.is_empty() {
+                                    use cadkit_2d_core::{Entity, EntityKind};
+                                    use cadkit_types::Vec3;
+                                    self.push_undo();
+                                    let mut e = Entity::new(
+                                        EntityKind::Text {
+                                            position: Vec3::xy(position.x, position.y),
+                                            content: cmd.clone(),
+                                            height,
+                                            rotation,
+                                        },
+                                        self.current_layer,
+                                    );
+                                    e.layer = self.current_layer;
+                                    self.drawing.add_entity(e);
+                                    self.command_log.push(format!("TEXT: placed \"{}\"", cmd));
+                                }
+                                self.exit_text();
                                 handled = true;
                             } else if self.apply_typed_point_input(&cmd) {
                                 handled = true;

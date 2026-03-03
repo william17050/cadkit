@@ -2,9 +2,9 @@
 
 use cadkit_2d_core::{create_arc, create_circle, create_line, Drawing, Entity, EntityKind};
 // create_arc_from_three_points helper lives below in this file (UI layer-specific).
-use cadkit_render_wgpu::{font, screen_to_world, world_to_screen, Viewport};
+use cadkit_render_wgpu::{screen_to_world, world_to_screen, Viewport};
 use cadkit_types::{Guid, Vec2, Vec3};
-use cadkit_geometry::Line as GeomLine;
+use cadkit_geometry::{Circle as GeomCircle, Line as GeomLine};
 use eframe::egui;
 use egui_wgpu::wgpu;
 use std::collections::HashSet;
@@ -54,6 +54,13 @@ pub struct CadKitApp {
     from_phase: FromPhase,
     from_base: Option<Vec2>,
     dim_phase: DimPhase,
+    text_phase: TextPhase,
+    last_text_height: f64,
+    last_text_rotation: f64,
+    edit_text_phase: EditTextPhase,
+    text_edit_dialog: Option<TextEditDialog>,
+    edit_dim_phase: EditDimPhase,
+    dim_edit_dialog: Option<DimEditDialog>,
     current_file: Option<String>,
     // Layer management
     current_layer: u32,
@@ -69,6 +76,8 @@ pub struct CadKitApp {
     pending_dxf_import: bool,
     undo_stack: Vec<Drawing>,
     redo_stack: Vec<Drawing>,
+    help_open: bool,
+    bgcolor_picker_open: bool,
 }
 
 impl Default for CadKitApp {
@@ -113,6 +122,13 @@ impl Default for CadKitApp {
             from_phase: FromPhase::Idle,
             from_base: None,
             dim_phase: DimPhase::Idle,
+            text_phase: TextPhase::Idle,
+            last_text_height: 2.5,
+            last_text_rotation: 0.0,
+            edit_text_phase: EditTextPhase::Idle,
+            text_edit_dialog: None,
+            edit_dim_phase: EditDimPhase::Idle,
+            dim_edit_dialog: None,
             current_file: None,
             current_layer: 0,
             next_layer_number: 1,
@@ -125,6 +141,8 @@ impl Default for CadKitApp {
             pending_dxf_import: false,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            help_open: false,
+            bgcolor_picker_open: false,
         }
     }
 }
@@ -155,6 +173,21 @@ impl CadKitApp {
         self.dim_phase = DimPhase::Idle;
     }
 
+    fn exit_text(&mut self) {
+        self.text_phase = TextPhase::Idle;
+        self.command_input.clear();
+    }
+
+    fn exit_edit_text(&mut self) {
+        self.edit_text_phase = EditTextPhase::Idle;
+        self.text_edit_dialog = None;
+    }
+
+    fn exit_edit_dim(&mut self) {
+        self.edit_dim_phase = EditDimPhase::Idle;
+        self.dim_edit_dialog = None;
+    }
+
     /// True when the current state expects the next user action to be picking a world point.
     fn is_picking_point(&self) -> bool {
         match &self.active_tool {
@@ -167,6 +200,7 @@ impl CadKitApp {
                     || matches!(self.copy_phase, CopyPhase::BasePoint | CopyPhase::Destination)
                     || matches!(self.rotate_phase, RotatePhase::BasePoint | RotatePhase::Rotation)
                     || !matches!(self.dim_phase, DimPhase::Idle)
+                    || self.text_phase == TextPhase::PlacingPosition
             }
         }
     }
@@ -270,6 +304,13 @@ impl CadKitApp {
             self.command_log.push(format!("DIMLINEAR: Second point ({:.4}, {:.4})", world.x, world.y));
         } else if let DimPhase::Placing { first, second } = self.dim_phase {
             self.place_dim_linear(first, second, world);
+        } else if self.text_phase == TextPhase::PlacingPosition {
+            self.text_phase = TextPhase::EnteringHeight { position: world };
+            self.command_input.clear();
+            self.command_log.push(format!(
+                "TEXT  Text height <{:.4}>:",
+                self.last_text_height
+            ));
         }
     }
 
@@ -390,13 +431,29 @@ impl CadKitApp {
         }
     }
 
-    fn current_prompt(&self) -> &'static str {
+    fn current_prompt(&self) -> String {
         // FROM mode overrides all other prompts.
         if self.from_phase == FromPhase::WaitingBase {
-            return "FROM  Base point (snap to geometry):";
+            return "FROM  Base point (snap to geometry):".into();
         }
         if self.from_phase == FromPhase::WaitingOffset {
-            return "FROM  Offset (@dx,dy  or  @dist<angle  or click):";
+            return "FROM  Offset (@dx,dy  or  @dist<angle  or click):".into();
+        }
+        // TEXT placement phases.
+        if self.edit_text_phase == EditTextPhase::SelectingEntity {
+            return "EDITTEXT  Click a text entity to edit:".into();
+        }
+        if self.edit_dim_phase == EditDimPhase::SelectingEntity {
+            return "EDITDIM  Click a dimension entity to edit:".into();
+        }
+        match &self.text_phase {
+            TextPhase::PlacingPosition => return "TEXT  Specify insertion point:".into(),
+            TextPhase::EnteringHeight { .. } => return format!(
+                "TEXT  Text height <{:.4}>:", self.last_text_height),
+            TextPhase::EnteringRotation { .. } => return format!(
+                "TEXT  Rotation angle <{:.1}>:", self.last_text_rotation.to_degrees()),
+            TextPhase::TypingContent { .. } => return "TEXT  Enter text:".into(),
+            TextPhase::Idle => {}
         }
         match &self.active_tool {
             ActiveTool::None => match self.trim_phase {
@@ -406,43 +463,43 @@ impl CadKitApp {
                         ExtendPhase::Idle => match self.copy_phase {
                             CopyPhase::Idle => match self.rotate_phase {
                                 RotatePhase::Idle => match self.dim_phase {
-                                    DimPhase::Idle => "Command:",
-                                    DimPhase::FirstPoint => "DIMLINEAR  Specify first extension line origin:",
-                                    DimPhase::SecondPoint { .. } => "DIMLINEAR  Specify second extension line origin:",
-                                    DimPhase::Placing { .. } => "DIMLINEAR  Specify dimension line location:",
+                                    DimPhase::Idle => "Command:".into(),
+                                    DimPhase::FirstPoint => "DIMLINEAR  Specify first extension line origin:".into(),
+                                    DimPhase::SecondPoint { .. } => "DIMLINEAR  Specify second extension line origin:".into(),
+                                    DimPhase::Placing { .. } => "DIMLINEAR  Specify dimension line location:".into(),
                                 },
-                                RotatePhase::SelectingEntities => "ROTATE  Select entities, press Enter to continue:",
-                                RotatePhase::BasePoint => "ROTATE  Pick base point:",
-                                RotatePhase::Rotation => "ROTATE  Specify angle (degrees) or click:",
+                                RotatePhase::SelectingEntities => "ROTATE  Select entities, press Enter to continue:".into(),
+                                RotatePhase::BasePoint => "ROTATE  Pick base point:".into(),
+                                RotatePhase::Rotation => "ROTATE  Specify angle (degrees) or click:".into(),
                             },
-                            CopyPhase::SelectingEntities => "COPY  Select entities, press Enter to continue:",
-                            CopyPhase::BasePoint => "COPY  Pick base point:",
-                            CopyPhase::Destination => "COPY  Pick destination (Enter to finish):",
+                            CopyPhase::SelectingEntities => "COPY  Select entities, press Enter to continue:".into(),
+                            CopyPhase::BasePoint => "COPY  Pick base point:".into(),
+                            CopyPhase::Destination => "COPY  Pick destination (Enter to finish):".into(),
                         },
-                        ExtendPhase::SelectingBoundaries => "EXTEND  Select boundary edges (Enter when done):",
-                        ExtendPhase::Extending => "EXTEND  Click near line endpoint to extend:",
+                        ExtendPhase::SelectingBoundaries => "EXTEND  Select boundary edges (Enter when done):".into(),
+                        ExtendPhase::Extending => "EXTEND  Click near line or arc endpoint to extend:".into(),
                     },
-                        MovePhase::SelectingEntities => "MOVE  Select entities, press Enter to continue:",
-                        MovePhase::BasePoint => "MOVE  Pick base point:",
-                        MovePhase::Destination => "MOVE  Pick destination point:",
+                        MovePhase::SelectingEntities => "MOVE  Select entities, press Enter to continue:".into(),
+                        MovePhase::BasePoint => "MOVE  Pick base point:".into(),
+                        MovePhase::Destination => "MOVE  Pick destination point:".into(),
                     },
-                    OffsetPhase::EnteringDistance => "OFFSET  Enter distance:",
-                    OffsetPhase::SelectingEntity => "OFFSET  Select entity to offset:",
-                    OffsetPhase::SelectingSide => "OFFSET  Click side to offset toward:",
+                    OffsetPhase::EnteringDistance => "OFFSET  Enter distance:".into(),
+                    OffsetPhase::SelectingEntity => "OFFSET  Select entity to offset:".into(),
+                    OffsetPhase::SelectingSide => "OFFSET  Click side to offset toward:".into(),
                 },
-                TrimPhase::SelectingEdges => "TRIM  Select cutting edges (Enter when done):",
-                TrimPhase::Trimming => "TRIM  Click entity side to trim (Esc/Enter to exit):",
+                TrimPhase::SelectingEdges => "TRIM  Select cutting edges (Enter when done):".into(),
+                TrimPhase::Trimming => "TRIM  Click entity side to trim (Esc/Enter to exit):".into(),
             },
-            ActiveTool::Line { start: None } => "LINE  Specify first point:",
-            ActiveTool::Line { start: Some(_) } => "LINE  Specify next point (Esc to finish):",
-            ActiveTool::Circle { center: None } => "CIRCLE  Specify center point:",
-            ActiveTool::Circle { center: Some(_) } => "CIRCLE  Specify radius:",
-            ActiveTool::Arc { start: None, .. } => "ARC  Specify start point:",
-            ActiveTool::Arc { start: Some(_), mid: None } => "ARC  Specify second point:",
-            ActiveTool::Arc { start: Some(_), mid: Some(_) } => "ARC  Specify end point:",
+            ActiveTool::Line { start: None } => "LINE  Specify first point:".into(),
+            ActiveTool::Line { start: Some(_) } => "LINE  Specify next point (Esc to finish):".into(),
+            ActiveTool::Circle { center: None } => "CIRCLE  Specify center point:".into(),
+            ActiveTool::Circle { center: Some(_) } => "CIRCLE  Specify radius:".into(),
+            ActiveTool::Arc { start: None, .. } => "ARC  Specify start point:".into(),
+            ActiveTool::Arc { start: Some(_), mid: None } => "ARC  Specify second point:".into(),
+            ActiveTool::Arc { start: Some(_), mid: Some(_) } => "ARC  Specify end point:".into(),
             ActiveTool::Polyline { points } => match points.len() {
-                0 => "PLINE  Specify start point:",
-                _ => "PLINE  Specify next point  [C=Close  RClick/Enter=Done]:",
+                0 => "PLINE  Specify start point:".into(),
+                _ => "PLINE  Specify next point  [C=Close  RClick/Enter=Done]:".into(),
             },
         }
     }
@@ -506,6 +563,10 @@ impl CadKitApp {
                         start.x += dx; start.y += dy;
                         end.x += dx;   end.y += dy;
                         text_pos.x += dx; text_pos.y += dy;
+                    }
+                    EntityKind::Text { position, .. } => {
+                        position.x += dx;
+                        position.y += dy;
                     }
                 }
             }
@@ -605,6 +666,7 @@ impl CadKitApp {
                     painter.line_segment([rect.min + egui::vec2(p1x, p1y), rect.min + egui::vec2(dl1x, dl1y)], ghost_stroke);
                     painter.line_segment([rect.min + egui::vec2(p2x, p2y), rect.min + egui::vec2(dl2x, dl2y)], ghost_stroke);
                 }
+                EntityKind::Text { .. } => {} // text ghost not rendered (position marker only)
             }
         }
     }
@@ -659,6 +721,12 @@ impl CadKitApp {
                         offset: *offset,
                         text_override: text_override.clone(),
                         text_pos: Vec3::xy(text_pos.x + dx, text_pos.y + dy),
+                    },
+                    EntityKind::Text { position, content, height, rotation } => EntityKind::Text {
+                        position: Vec3::xy(position.x + dx, position.y + dy),
+                        content: content.clone(),
+                        height: *height,
+                        rotation: *rotation,
                     },
                 };
                 let layer = entity.layer;
@@ -758,6 +826,7 @@ impl CadKitApp {
                     painter.line_segment([rect.min + egui::vec2(p1x, p1y), rect.min + egui::vec2(dl1x, dl1y)], ghost_stroke);
                     painter.line_segment([rect.min + egui::vec2(p2x, p2y), rect.min + egui::vec2(dl2x, dl2y)], ghost_stroke);
                 }
+                EntityKind::Text { .. } => {}
             }
         }
     }
@@ -815,6 +884,10 @@ impl CadKitApp {
                         *end      = rotate_pt(*end,      base.x, base.y, cos_a, sin_a);
                         *text_pos = rotate_pt(*text_pos, base.x, base.y, cos_a, sin_a);
                         // offset scalar is preserved by rotation (see geometry proof)
+                    }
+                    EntityKind::Text { position, rotation, .. } => {
+                        *position = rotate_pt(*position, base.x, base.y, cos_a, sin_a);
+                        *rotation += angle_rad;
                     }
                 }
             }
@@ -924,6 +997,7 @@ impl CadKitApp {
                     painter.line_segment([rect.min + egui::vec2(rs1x, rs1y), rect.min + egui::vec2(rdl1x, rdl1y)], ghost_stroke);
                     painter.line_segment([rect.min + egui::vec2(rs2x, rs2y), rect.min + egui::vec2(rdl2x, rdl2y)], ghost_stroke);
                 }
+                EntityKind::Text { .. } => {}
             }
         }
     }
@@ -947,6 +1021,10 @@ impl CadKitApp {
         let offset = if offset.abs() < 5.0 { if offset >= 0.0 { 5.0 } else { -5.0 } } else { offset };
         let text_pos = Vec3::xy(mx + perp.0 * offset, my + perp.1 * offset);
         self.push_undo();
+        // Find or create the "Dim" layer so dimensions are easy to manage.
+        let existing_dim_layer = self.drawing.layers().find(|l| l.name == "Dim").map(|l| l.id);
+        let dim_layer = existing_dim_layer
+            .unwrap_or_else(|| self.drawing.add_layer_with_color("Dim".to_string(), [0, 180, 220]));
         let entity = Entity::new(
             EntityKind::DimLinear {
                 start: Vec3::xy(first.x, first.y),
@@ -955,7 +1033,7 @@ impl CadKitApp {
                 text_override: None,
                 text_pos,
             },
-            self.current_layer,
+            dim_layer,
         );
         self.drawing.add_entity(entity);
         self.command_log.push(format!("DIMLINEAR: Distance = {:.4}", len));
@@ -1010,25 +1088,36 @@ impl CadKitApp {
                 // Dim line
                 painter.line_segment([p_d1, p_d2], ghost_stroke);
 
-                // Dimension text via stroke font
+                // Dimension text via egui painter (matches draw_dim_entities style).
                 let dist_text = format!("{:.3}", len);
-                let tc = [(dl1[0] + dl2[0]) as f32 * 0.5, (dl1[1] + dl2[1]) as f32 * 0.5];
+                let tc_world = [(dl1[0] + dl2[0]) * 0.5, (dl1[1] + dl2[1]) * 0.5];
+                let (tcsx, tcsy) = world_to_screen(tc_world[0] as f32, tc_world[1] as f32, viewport);
+                let text_center = rect.min + egui::vec2(tcsx, tcsy);
                 let dir_f = [dir[0] as f32, dir[1] as f32];
-                // Normalise to always point in the readable direction.
                 let text_dir = if dir_f[0] < -1e-6 || (dir_f[0].abs() < 1e-6 && dir_f[1] < -1e-6) {
                     [-dir_f[0], -dir_f[1]]
-                } else {
-                    dir_f
-                };
-                let text_up = [-text_dir[1], text_dir[0]];
-                for (fp1, fp2) in font::text_segments(&dist_text, tc, text_dir, text_up, 5.0) {
-                    let (fsx1, fsy1) = world_to_screen(fp1[0], fp1[1], viewport);
-                    let (fsx2, fsy2) = world_to_screen(fp2[0], fp2[1], viewport);
-                    painter.line_segment(
-                        [rect.min + egui::vec2(fsx1, fsy1), rect.min + egui::vec2(fsx2, fsy2)],
-                        ghost_stroke,
-                    );
-                }
+                } else { dir_f };
+                let screen_angle = -(text_dir[1].atan2(text_dir[0]));
+                let font_size = (2.5 * viewport.zoom as f64).clamp(8.0, 48.0) as f32;
+                let ghost_color = egui::Color32::from_rgba_premultiplied(220, 210, 80, 180);
+                let galley = painter.ctx().fonts(|f| {
+                    f.layout_no_wrap(dist_text, egui::FontId::proportional(font_size), ghost_color)
+                });
+                let w = galley.size().x;
+                let h = galley.size().y;
+                let cos_a = screen_angle.cos();
+                let sin_a = screen_angle.sin();
+                let rot = |vx: f32, vy: f32| egui::vec2(vx * cos_a - vy * sin_a, vx * sin_a + vy * cos_a);
+                let anchor = text_center - rot(w * 0.5, h * 0.5);
+                painter.add(egui::Shape::Text(egui::epaint::TextShape {
+                    pos:                 anchor,
+                    galley,
+                    underline:           egui::epaint::Stroke::NONE,
+                    fallback_color:      ghost_color,
+                    override_text_color: None,
+                    opacity_factor:      1.0,
+                    angle:               screen_angle,
+                }));
             }
             _ => {}
         }
@@ -1042,82 +1131,343 @@ impl CadKitApp {
 
     /// Find the nearest line endpoint to `screen_pos` and extend it to the nearest
     /// boundary intersection that lies beyond it.
-    /// Returns (entity_id, is_start, new_point) or an error message.
+    /// Returns an `ExtendResult` or an error message.
     fn compute_extend(
         &self,
         screen_pos: egui::Pos2,
         viewport: &Viewport,
         rect: egui::Rect,
-    ) -> Result<(Guid, bool, Vec2), String> {
-        // 1. Find the nearest line endpoint within PICK_RADIUS.
-        let mut best_ep: Option<(f32, Guid, bool)> = None; // (dist, id, is_start)
+    ) -> Result<ExtendResult, String> {
+        // Tag for what kind of endpoint was found.
+        enum EpKind { Line { is_start: bool }, Arc { is_start: bool } }
+
+        // 1. Find the nearest line OR arc endpoint within PICK_RADIUS.
+        let mut best: Option<(f32, Guid, EpKind)> = None;
         for entity in self.drawing.visible_entities() {
-            let EntityKind::Line { start, end } = &entity.kind else { continue };
-            for (pt, is_start) in [(*start, true), (*end, false)] {
-                let (sx, sy) = world_to_screen(pt.x as f32, pt.y as f32, viewport);
-                let screen_pt = rect.min + egui::vec2(sx, sy);
-                let d = screen_pos.distance(screen_pt);
-                if d <= Self::PICK_RADIUS {
-                    if best_ep.as_ref().map_or(true, |(bd, _, _)| d < *bd) {
-                        best_ep = Some((d, entity.id, is_start));
+            match &entity.kind {
+                EntityKind::Line { start, end } => {
+                    for (pt, is_start) in [(*start, true), (*end, false)] {
+                        let (sx, sy) = world_to_screen(pt.x as f32, pt.y as f32, viewport);
+                        let sp = rect.min + egui::vec2(sx, sy);
+                        let d = screen_pos.distance(sp);
+                        if d <= Self::PICK_RADIUS && best.as_ref().map_or(true, |(bd, _, _)| d < *bd) {
+                            best = Some((d, entity.id, EpKind::Line { is_start }));
+                        }
                     }
                 }
+                EntityKind::Arc { center, radius, start_angle, end_angle } => {
+                    for (pt, is_start) in [
+                        (cadkit_types::Vec3::xy(
+                            center.x + radius * start_angle.cos(),
+                            center.y + radius * start_angle.sin(),
+                        ), true),
+                        (cadkit_types::Vec3::xy(
+                            center.x + radius * end_angle.cos(),
+                            center.y + radius * end_angle.sin(),
+                        ), false),
+                    ] {
+                        let (sx, sy) = world_to_screen(pt.x as f32, pt.y as f32, viewport);
+                        let sp = rect.min + egui::vec2(sx, sy);
+                        let d = screen_pos.distance(sp);
+                        if d <= Self::PICK_RADIUS && best.as_ref().map_or(true, |(bd, _, _)| d < *bd) {
+                            best = Some((d, entity.id, EpKind::Arc { is_start }));
+                        }
+                    }
+                }
+                _ => {}
             }
         }
-        let (_, eid, is_start) = best_ep
-            .ok_or_else(|| "EXTEND: Click near a line endpoint".to_string())?;
+        let (_, eid, ep_kind) = best
+            .ok_or_else(|| "EXTEND: Click near a line or arc endpoint".to_string())?;
 
-        // 2. Read the line geometry.
-        let entity = self
-            .drawing
-            .get_entity(&eid)
+        let entity = self.drawing.get_entity(&eid)
             .ok_or_else(|| "EXTEND: Entity not found".to_string())?;
-        let (clicked_pt, other_pt) = match &entity.kind {
-            EntityKind::Line { start, end } => {
-                if is_start { (*start, *end) } else { (*end, *start) }
+
+        // Build the boundary prim: lines → treat as infinite; others → as-is.
+        // Line boundaries are infinite so that extending to the LINE (not just its
+        // segment extent) matches AutoCAD behaviour.
+        let inf_boundary = |kind: &EntityKind| -> Option<GeomPrim> {
+            match kind {
+                EntityKind::Line { start, end } => {
+                    let bdx = end.x - start.x;
+                    let bdy = end.y - start.y;
+                    let blen = (bdx * bdx + bdy * bdy).sqrt();
+                    if blen < 1e-9 { return None; }
+                    let bux = bdx / blen;
+                    let buy = bdy / blen;
+                    const INF: f64 = 1_000_000.0;
+                    let is = cadkit_types::Vec3::xy(start.x - bux * INF, start.y - buy * INF);
+                    let ie = cadkit_types::Vec3::xy(start.x + bux * INF, start.y + buy * INF);
+                    Some(GeomPrim::Line(GeomLine::new(is, ie)))
+                }
+                other => CadKitApp::entity_to_geom_prim(other),
             }
-            _ => return Err("EXTEND: Not a line".to_string()),
         };
 
-        // Direction: from other_pt toward clicked_pt and beyond.
-        let dx = clicked_pt.x - other_pt.x;
-        let dy = clicked_pt.y - other_pt.y;
-        let seg_len = (dx * dx + dy * dy).sqrt();
-        if seg_len < 1e-9 {
-            return Err("EXTEND: Degenerate line".to_string());
-        }
-        let dir_x = dx / seg_len;
-        let dir_y = dy / seg_len;
-
-        // 3. Build an extended ray as a very long GeomLine.
-        let far = 1_000_000.0_f64;
-        let far_pt = cadkit_types::Vec3::xy(
-            other_pt.x + dir_x * far,
-            other_pt.y + dir_y * far,
-        );
-        let ray = GeomLine::new(other_pt, far_pt);
-
-        // 4. Intersect ray with each boundary edge; keep nearest point beyond clicked_pt.
-        let mut best_new_pt: Option<Vec2> = None;
-        let mut best_dot = f64::INFINITY;
-        for &bid in &self.extend_boundary_edges {
-            if bid == eid { continue; } // skip self
-            let Some(boundary) = self.drawing.get_entity(&bid) else { continue };
-            let Some(bprim) = Self::entity_to_geom_prim(&boundary.kind) else { continue };
-            let isect = Self::intersect_geom_prims(&GeomPrim::Line(ray), &bprim, Self::GEOM_TOL);
-            for pt in isect.points() {
-                // dot > epsilon means the point is strictly beyond clicked_pt.
-                let dot = (pt.x - clicked_pt.x) * dir_x + (pt.y - clicked_pt.y) * dir_y;
-                if dot > 1e-6 && dot < best_dot {
-                    best_dot = dot;
-                    best_new_pt = Some(Vec2::new(pt.x, pt.y));
+        match ep_kind {
+            EpKind::Line { is_start } => {
+                // clicked end of the line; extend in the line's direction.
+                let (clicked_pt, other_pt) = match &entity.kind {
+                    EntityKind::Line { start, end } => {
+                        if is_start { (*start, *end) } else { (*end, *start) }
+                    }
+                    _ => return Err("EXTEND: Not a line".to_string()),
+                };
+                let dx = clicked_pt.x - other_pt.x;
+                let dy = clicked_pt.y - other_pt.y;
+                let seg_len = (dx * dx + dy * dy).sqrt();
+                if seg_len < 1e-9 {
+                    return Err("EXTEND: Degenerate line".to_string());
                 }
+                let dir_x = dx / seg_len;
+                let dir_y = dy / seg_len;
+
+                const FAR: f64 = 1_000_000.0;
+                let ray = GeomLine::new(
+                    other_pt,
+                    cadkit_types::Vec3::xy(other_pt.x + dir_x * FAR, other_pt.y + dir_y * FAR),
+                );
+
+                let mut best_pt: Option<Vec2> = None;
+                let mut best_dot = f64::INFINITY;
+                for &bid in &self.extend_boundary_edges {
+                    if bid == eid { continue; }
+                    let Some(b) = self.drawing.get_entity(&bid) else { continue };
+                    let Some(bprim) = inf_boundary(&b.kind) else { continue };
+                    for pt in Self::intersect_geom_prims(&GeomPrim::Line(ray), &bprim, Self::GEOM_TOL).points() {
+                        let dot = (pt.x - clicked_pt.x) * dir_x + (pt.y - clicked_pt.y) * dir_y;
+                        if dot > 1e-6 && dot < best_dot {
+                            best_dot = dot;
+                            best_pt = Some(Vec2::new(pt.x, pt.y));
+                        }
+                    }
+                }
+                best_pt
+                    .map(|p| ExtendResult::Line { id: eid, is_start, new_pt: p })
+                    .ok_or_else(|| "EXTEND: No intersection found beyond endpoint".to_string())
+            }
+
+            EpKind::Arc { is_start } => {
+                // clicked end of an arc; extend by rotating the angle to the boundary.
+                let (center, radius, start_angle, end_angle) = match &entity.kind {
+                    EntityKind::Arc { center, radius, start_angle, end_angle } => {
+                        (*center, *radius, *start_angle, *end_angle)
+                    }
+                    _ => return Err("EXTEND: Not an arc".to_string()),
+                };
+                let arc_circle = GeomCircle::new(center, radius);
+                let twopi = std::f64::consts::TAU;
+
+                // Intersect the arc's full circle with every boundary edge.
+                let mut candidates: Vec<f64> = Vec::new();
+                for &bid in &self.extend_boundary_edges {
+                    if bid == eid { continue; }
+                    let Some(b) = self.drawing.get_entity(&bid) else { continue };
+                    let Some(bprim) = inf_boundary(&b.kind) else { continue };
+                    for pt in Self::intersect_geom_prims(
+                        &GeomPrim::Circle(arc_circle),
+                        &bprim,
+                        Self::GEOM_TOL,
+                    ).points() {
+                        candidates.push((pt.y - center.y).atan2(pt.x - center.x));
+                    }
+                }
+                if candidates.is_empty() {
+                    return Err("EXTEND: No boundary intersection found for arc".to_string());
+                }
+
+                // Span of the existing arc (CCW, always > 0 after normalisation).
+                let arc_span = Self::ccw_from(start_angle, end_angle);
+                // Gap region is twopi - arc_span.  A valid extension target must lie
+                // strictly inside that gap (not on the arc itself).
+                let gap_span = twopi - arc_span;
+
+                let new_angle = if is_start {
+                    // Extend START: find the angle in the gap that is nearest (CW) to
+                    // start_angle, i.e. smallest CCW distance from a → start_angle.
+                    candidates.iter()
+                        .filter_map(|&a| {
+                            let gap = Self::ccw_from(a, start_angle);
+                            if gap > 1e-6 && gap < gap_span - 1e-6 { Some((gap, a)) } else { None }
+                        })
+                        .min_by(|x, y| x.0.partial_cmp(&y.0).unwrap())
+                        .map(|(_, a)| a)
+                        .ok_or_else(|| "EXTEND: No intersection before arc start".to_string())?
+                } else {
+                    // Extend END: find the angle in the gap that is nearest (CCW) past
+                    // end_angle, i.e. smallest CCW distance from end_angle → a.
+                    candidates.iter()
+                        .filter_map(|&a| {
+                            let gap = Self::ccw_from(end_angle, a);
+                            if gap > 1e-6 && gap < gap_span - 1e-6 { Some((gap, a)) } else { None }
+                        })
+                        .min_by(|x, y| x.0.partial_cmp(&y.0).unwrap())
+                        .map(|(_, a)| a)
+                        .ok_or_else(|| "EXTEND: No intersection beyond arc end".to_string())?
+                };
+                Ok(ExtendResult::Arc { id: eid, is_start, new_angle })
             }
         }
+    }
 
-        best_new_pt
-            .map(|p| (eid, is_start, p))
-            .ok_or_else(|| "EXTEND: No intersection found beyond endpoint".to_string())
+    /// Render all Text entities via egui painter (crisp at any zoom).
+    fn draw_text_entities(&self, ui: &egui::Ui, rect: egui::Rect, viewport: &Viewport) {
+        let painter = ui.painter_at(rect);
+        for entity in self.drawing.visible_entities() {
+            if let EntityKind::Text { position, content, height, rotation } = &entity.kind {
+                let (sx, sy) = world_to_screen(position.x as f32, position.y as f32, viewport);
+                let screen_pos = rect.min + egui::vec2(sx, sy);
+                let height_px = (height * viewport.zoom as f64) as f32;
+                if height_px < 1.0 { continue; }
+
+                // Entity colour (ByLayer or per-entity override).
+                let [r, g, b] = entity.color.unwrap_or_else(|| {
+                    self.drawing.get_layer(entity.layer)
+                        .map(|l| l.color)
+                        .unwrap_or([255, 255, 255])
+                });
+                let color = if self.selected_entities.contains(&entity.id) {
+                    egui::Color32::from_rgb(0, 200, 255)
+                } else {
+                    egui::Color32::from_rgb(r, g, b)
+                };
+
+                let font_id = egui::FontId::proportional(height_px);
+                let galley = ui.ctx().fonts(|f| {
+                    f.layout_no_wrap(content.clone(), font_id, color)
+                });
+                // World CCW from +X → screen CW (Y axis flipped), so negate.
+                let screen_angle = -(*rotation as f32);
+                let text_shape = egui::epaint::TextShape {
+                    pos: screen_pos,
+                    galley,
+                    underline: egui::epaint::Stroke::NONE,
+                    fallback_color: color,
+                    override_text_color: None,
+                    opacity_factor: 1.0,
+                    angle: screen_angle,
+                };
+                painter.add(egui::Shape::Text(text_shape));
+            }
+        }
+    }
+
+    /// Render DimLinear text labels via egui (crisp, rotated, with background mask).
+    fn draw_dim_entities(&self, ui: &egui::Ui, rect: egui::Rect, viewport: &Viewport) {
+        const DIM_TEXT_HEIGHT: f64 = 2.5; // world units
+        let [r, g, b] = viewport.bg_srgb();
+        let bg = egui::Color32::from_rgb(r, g, b);
+        let painter = ui.painter_at(rect);
+
+        for entity in self.drawing.visible_entities() {
+            let EntityKind::DimLinear { start, end, text_pos, text_override, .. } = &entity.kind
+            else { continue };
+
+            let dist = start.distance_to(end);
+            let measurement = format!("{:.3}", dist);
+            let label = match text_override {
+                None => measurement.clone(),
+                Some(s) if s.trim().is_empty() || s.trim() == "<>" => measurement.clone(),
+                Some(s) => s.replace("<>", &measurement),
+            };
+
+            // Direction — normalised to always point in a readable direction.
+            let dx = (end.x - start.x) as f32;
+            let dy = (end.y - start.y) as f32;
+            let len = (dx * dx + dy * dy).sqrt();
+            if len < 1e-6 { continue; }
+            let dir = [dx / len, dy / len];
+            let text_dir = if dir[0] < -1e-6 || (dir[0].abs() < 1e-6 && dir[1] < -1e-6) {
+                [-dir[0], -dir[1]]
+            } else { dir };
+            // World CCW angle from +X → screen CW (negate for screen coords).
+            let screen_angle = -(text_dir[1].atan2(text_dir[0]));
+
+            // Text centre in screen space.
+            let (tx, ty) = world_to_screen(text_pos.x as f32, text_pos.y as f32, viewport);
+            let text_center = rect.min + egui::vec2(tx, ty);
+
+            // Colour.
+            let [r, g, b] = entity.color.unwrap_or_else(|| {
+                self.drawing.get_layer(entity.layer)
+                    .map(|l| l.color)
+                    .unwrap_or([255, 255, 255])
+            });
+            let color = if self.selected_entities.contains(&entity.id) {
+                egui::Color32::from_rgb(0, 200, 255)
+            } else {
+                egui::Color32::from_rgb(r, g, b)
+            };
+
+            let font_size = (DIM_TEXT_HEIGHT * viewport.zoom as f64).clamp(8.0, 48.0) as f32;
+            let galley = ui.ctx().fonts(|f| {
+                f.layout_no_wrap(label, egui::FontId::proportional(font_size), color)
+            });
+            let w = galley.size().x;
+            let h = galley.size().y;
+            let pad = 3.0_f32;
+
+            // Compute the TextShape anchor so the galley is centred at text_center.
+            // TextShape rotates the galley around `pos`; galley origin is top-left.
+            // Centre offset in the unrotated glyph frame: (w/2, h/2).
+            let cos_a = screen_angle.cos();
+            let sin_a = screen_angle.sin();
+            let rot = |vx: f32, vy: f32| egui::vec2(vx * cos_a - vy * sin_a, vx * sin_a + vy * cos_a);
+            let anchor = text_center - rot(w * 0.5, h * 0.5);
+
+            // Mask: rotated padded bounding rect drawn before the text.
+            let corners = [
+                rot(-pad,     -pad    ),
+                rot(w + pad,  -pad    ),
+                rot(w + pad,   h + pad),
+                rot(-pad,      h + pad),
+            ];
+            let mask_pts: Vec<egui::Pos2> = corners.iter().map(|&v| anchor + v).collect();
+            painter.add(egui::Shape::convex_polygon(mask_pts, bg, egui::Stroke::NONE));
+
+            // Rotated text.
+            painter.add(egui::Shape::Text(egui::epaint::TextShape {
+                pos:                  anchor,
+                galley,
+                underline:            egui::epaint::Stroke::NONE,
+                fallback_color:       color,
+                override_text_color:  None,
+                opacity_factor:       1.0,
+                angle:                screen_angle,
+            }));
+        }
+    }
+
+    /// Ghost text preview during the TEXT command phases.
+    fn draw_text_preview(&self, ui: &egui::Ui, rect: egui::Rect, viewport: &Viewport, world_cursor: Vec2) {
+        let ghost = egui::Color32::from_rgba_premultiplied(180, 180, 255, 160);
+        let painter = ui.painter_at(rect);
+
+        match &self.text_phase {
+            TextPhase::PlacingPosition => {
+                // Small "T" marker at cursor.
+                let (sx, sy) = world_to_screen(world_cursor.x as f32, world_cursor.y as f32, viewport);
+                let pos = rect.min + egui::vec2(sx, sy);
+                painter.text(pos, egui::Align2::LEFT_BOTTOM, "T",
+                    egui::FontId::proportional(18.0), ghost);
+            }
+            TextPhase::EnteringHeight { position } | TextPhase::EnteringRotation { position, .. } => {
+                // Preview marker at the selected insertion point.
+                let (sx, sy) = world_to_screen(position.x as f32, position.y as f32, viewport);
+                let pos = rect.min + egui::vec2(sx, sy);
+                painter.text(pos, egui::Align2::LEFT_BOTTOM, "T",
+                    egui::FontId::proportional(18.0), ghost);
+            }
+            TextPhase::TypingContent { position, height, .. } => {
+                let preview = if self.command_input.is_empty() { "…" } else { &self.command_input };
+                let (sx, sy) = world_to_screen(position.x as f32, position.y as f32, viewport);
+                let pos = rect.min + egui::vec2(sx, sy);
+                let height_px = (height * viewport.zoom as f64).max(8.0) as f32;
+                painter.text(pos, egui::Align2::LEFT_BOTTOM, preview,
+                    egui::FontId::proportional(height_px), ghost);
+            }
+            TextPhase::Idle => {}
+        }
     }
 
     /// Draw green highlight overlay for EXTEND boundary edges.
@@ -1183,7 +1533,7 @@ impl CadKitApp {
                         );
                     }
                 }
-                EntityKind::DimLinear { .. } => {}
+                EntityKind::DimLinear { .. } | EntityKind::Text { .. } => {}
             }
         }
     }
@@ -1255,6 +1605,9 @@ impl CadKitApp {
             EntityKind::DimLinear { .. } => {
                 Err("OFFSET: Cannot offset dimension entities".to_string())
             }
+            EntityKind::Text { .. } => {
+                Err("OFFSET: Cannot offset text entities".to_string())
+            }
         }
     }
 
@@ -1325,7 +1678,7 @@ impl CadKitApp {
                         );
                     }
                 }
-                EntityKind::DimLinear { .. } => {}
+                EntityKind::DimLinear { .. } | EntityKind::Text { .. } => {}
             }
         }
     }
@@ -1395,7 +1748,7 @@ impl CadKitApp {
                     );
                 }
             }
-            EntityKind::DimLinear { .. } => {}
+            EntityKind::DimLinear { .. } | EntityKind::Text { .. } => {}
         }
     }
 
@@ -1491,6 +1844,15 @@ impl eframe::App for CadKitApp {
             } else if !matches!(self.dim_phase, DimPhase::Idle) {
                 self.exit_dim();
                 self.command_log.push("*Cancel*".to_string());
+            } else if !matches!(self.text_phase, TextPhase::Idle) {
+                self.exit_text();
+                self.command_log.push("*Cancel*".to_string());
+            } else if self.text_edit_dialog.is_some() || !matches!(self.edit_text_phase, EditTextPhase::Idle) {
+                self.exit_edit_text();
+                self.command_log.push("*Cancel*".to_string());
+            } else if self.dim_edit_dialog.is_some() || !matches!(self.edit_dim_phase, EditDimPhase::Idle) {
+                self.exit_edit_dim();
+                self.command_log.push("*Cancel*".to_string());
             } else if matches!(self.active_tool, ActiveTool::None) {
                 self.selected_entities.clear();
                 self.selection = None;
@@ -1532,6 +1894,425 @@ impl eframe::App for CadKitApp {
 
         // UI panels (menu, toolbars, properties, command line)
         self.draw_ui_panels(ctx);
+
+        // === Edit Text dialog ===
+        if self.text_edit_dialog.is_some() {
+            let mut ok_clicked = false;
+            let mut cancel_clicked = false;
+
+            // Temporarily take the dialog out to allow &mut self in the closure.
+            let mut dlg = self.text_edit_dialog.take().unwrap();
+
+            egui::Window::new("Edit Text")
+                .resizable(false)
+                .collapsible(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    egui::Grid::new("edit_text_grid")
+                        .num_columns(2)
+                        .spacing([8.0, 6.0])
+                        .show(ui, |ui| {
+                            ui.label("Content:");
+                            let resp = ui.add(
+                                egui::TextEdit::singleline(&mut dlg.content)
+                                    .desired_width(240.0)
+                                    .hint_text("Enter text"),
+                            );
+                            // Only steal focus on the very first frame so the user
+                            // can freely click Height / Rotation fields afterward.
+                            if !dlg.focus_requested {
+                                resp.request_focus();
+                                dlg.focus_requested = true;
+                            }
+                            ui.end_row();
+
+                            ui.label("Height (world units):");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut dlg.height_str)
+                                    .desired_width(80.0),
+                            );
+                            ui.end_row();
+
+                            ui.label("Rotation (degrees):");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut dlg.rotation_str)
+                                    .desired_width(80.0),
+                            );
+                            ui.end_row();
+                        });
+
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("OK").clicked() {
+                            ok_clicked = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            cancel_clicked = true;
+                        }
+                    });
+
+                    // Enter = OK, Escape = Cancel
+                    if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        ok_clicked = true;
+                    }
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        cancel_clicked = true;
+                    }
+                });
+
+            if ok_clicked {
+                let height = dlg.height_str.trim().parse::<f64>().ok()
+                    .filter(|&h| h > f64::EPSILON)
+                    .unwrap_or(self.last_text_height);
+                let rotation = dlg.rotation_str.trim().parse::<f64>()
+                    .map(|d| d.to_radians())
+                    .unwrap_or(self.last_text_rotation);
+                let content = dlg.content.clone();
+
+                if !content.is_empty() {
+                    self.last_text_height = height;
+                    self.last_text_rotation = rotation;
+                    self.push_undo();
+                    if let Some(entity) = self.drawing.get_entity_mut(&dlg.id) {
+                        if let EntityKind::Text { content: c, height: h, rotation: r, .. } = &mut entity.kind {
+                            *c = content;
+                            *h = height;
+                            *r = rotation;
+                        }
+                    }
+                }
+                // dialog consumed — leave text_edit_dialog = None
+            } else if cancel_clicked {
+                // dialog consumed — leave text_edit_dialog = None
+            } else {
+                // dialog still open — put it back
+                self.text_edit_dialog = Some(dlg);
+            }
+        }
+
+        // === Edit Dim dialog ===
+        if self.dim_edit_dialog.is_some() {
+            let mut ok_clicked = false;
+            let mut cancel_clicked = false;
+            let mut dlg = self.dim_edit_dialog.take().unwrap();
+
+            egui::Window::new("Edit Dimension Text")
+                .resizable(false)
+                .collapsible(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label("Text override ('<>' = measured distance, e.g. '<> mm'):");
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut dlg.override_str)
+                            .desired_width(240.0)
+                            .hint_text("auto"),
+                    );
+                    if !dlg.focus_requested {
+                        resp.request_focus();
+                        dlg.focus_requested = true;
+                    }
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("OK").clicked() { ok_clicked = true; }
+                        if ui.button("Cancel").clicked() { cancel_clicked = true; }
+                    });
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        cancel_clicked = true;
+                    }
+                });
+
+            if ok_clicked {
+                self.push_undo();
+                if let Some(entity) = self.drawing.get_entity_mut(&dlg.id) {
+                    if let EntityKind::DimLinear { text_override, .. } = &mut entity.kind {
+                        let s = dlg.override_str.trim();
+                        *text_override = if s.is_empty() || s == "<>" { None } else { Some(s.to_string()) };
+                    }
+                }
+            } else if !cancel_clicked {
+                self.dim_edit_dialog = Some(dlg);
+            }
+        }
+
+        if self.help_open {
+            egui::Window::new("CadKit — Command Reference")
+                .open(&mut self.help_open)
+                .resizable(true)
+                .default_width(480.0)
+                .default_height(520.0)
+                .show(ctx, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        ui.monospace("DRAW");
+                        ui.separator();
+                        egui::Grid::new("help_draw").striped(true).show(ui, |ui| {
+                            for (alias, full, desc) in [
+                                ("L / LINE",        "",          "Draw lines (click-click or type coords)"),
+                                ("C / CIRCLE",      "",          "Draw circle (center then radius/diameter)"),
+                                ("A / ARC",         "",          "Draw arc through 3 points"),
+                                ("PL / PLINE",      "POLYLINE",  "Draw polyline; C closes it"),
+                                ("T / TEXT",        "",          "Place a text label"),
+                            ] {
+                                ui.label(egui::RichText::new(alias).strong());
+                                ui.label(full);
+                                ui.label(desc);
+                                ui.end_row();
+                            }
+                        });
+                        ui.add_space(8.0);
+                        ui.monospace("EDIT");
+                        ui.separator();
+                        egui::Grid::new("help_edit").striped(true).show(ui, |ui| {
+                            for (alias, full, desc) in [
+                                ("TR / TRIM",      "",          "Trim entity at cutting edges"),
+                                ("EX / EXTEND",    "",          "Extend entity to boundary"),
+                                ("O / OFFSET",     "",          "Offset entity by distance"),
+                                ("M / MOVE",       "",          "Move entities"),
+                                ("CO / COPY",      "",          "Copy entities"),
+                                ("RO / ROTATE",    "",          "Rotate entities"),
+                                ("ET / EDITTEXT",  "",          "Edit a text entity via dialog"),
+                                ("U / UNDO",       "",          "Undo last change"),
+                                ("R / REDO",       "",          "Redo undone change"),
+                            ] {
+                                ui.label(egui::RichText::new(alias).strong());
+                                ui.label(full);
+                                ui.label(desc);
+                                ui.end_row();
+                            }
+                        });
+                        ui.add_space(8.0);
+                        ui.monospace("DIMENSION");
+                        ui.separator();
+                        egui::Grid::new("help_dim").striped(true).show(ui, |ui| {
+                            for (alias, full, desc) in [
+                                ("DLI / DIM",   "DIMLINEAR",  "Place a linear dimension"),
+                                ("ED / EDITDIM", "",          "Edit dimension text (<> = measured distance)"),
+                            ] {
+                                ui.label(egui::RichText::new(alias).strong());
+                                ui.label(full);
+                                ui.label(desc);
+                                ui.end_row();
+                            }
+                        });
+                        ui.add_space(8.0);
+                        ui.monospace("FILE");
+                        ui.separator();
+                        egui::Grid::new("help_file").striped(true).show(ui, |ui| {
+                            for (alias, full, desc) in [
+                                ("DXFOUT", "",  "Export drawing to DXF"),
+                                ("DXFIN",  "",  "Import a DXF file"),
+                            ] {
+                                ui.label(egui::RichText::new(alias).strong());
+                                ui.label(full);
+                                ui.label(desc);
+                                ui.end_row();
+                            }
+                        });
+                        ui.add_space(8.0);
+                        ui.monospace("VIEW / SETTINGS");
+                        ui.separator();
+                        egui::Grid::new("help_view").striped(true).show(ui, |ui| {
+                            for (alias, full, desc) in [
+                                ("BGCOLOR",     "",  "Open background colour picker"),
+                                ("LA / LAYER",  "",  "Manage layers (see right panel)"),
+                            ] {
+                                ui.label(egui::RichText::new(alias).strong());
+                                ui.label(full);
+                                ui.label(desc);
+                                ui.end_row();
+                            }
+                        });
+                        ui.add_space(8.0);
+                        ui.monospace("INPUT MODIFIERS");
+                        ui.separator();
+                        egui::Grid::new("help_input").striped(true).show(ui, |ui| {
+                            for (alias, full, desc) in [
+                                ("FROM / FR",    "",  "Specify point relative to a snapped base"),
+                                ("@x,y",         "",  "Relative Cartesian offset from last point"),
+                                ("@dist<angle",  "",  "Relative polar offset (angle in degrees)"),
+                                ("ESC / CANCEL", "",  "Cancel current command"),
+                            ] {
+                                ui.label(egui::RichText::new(alias).strong());
+                                ui.label(full);
+                                ui.label(desc);
+                                ui.end_row();
+                            }
+                        });
+                    });
+                });
+        }
+
+        if let Some(layer_id) = self.layer_color_picking {
+            let mut still_open = true;
+            let mut picked_color: Option<[u8; 3]> = None;
+            let current_color = self.drawing.get_layer(layer_id)
+                .map(|l| l.color)
+                .unwrap_or([255, 255, 255]);
+
+            egui::Window::new("Layer Colour")
+                .open(&mut still_open)
+                .resizable(false)
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    ui.label(egui::RichText::new("Standard").small().color(egui::Color32::from_gray(150)));
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        for i in 1u8..=9 {
+                            let rgb = aci_color(i);
+                            let c = egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+                            let (rect, resp) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::click());
+                            ui.painter().rect_filled(rect, 2.0, c);
+                            let (sw, sc) = if current_color == rgb {
+                                (2.0, egui::Color32::WHITE)
+                            } else {
+                                (0.5, egui::Color32::from_gray(70))
+                            };
+                            ui.painter().rect_stroke(rect, 2.0, egui::Stroke::new(sw, sc));
+                            if resp.on_hover_text(format!("ACI {i}")).clicked() {
+                                picked_color = Some(rgb);
+                            }
+                        }
+                    });
+
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new("Index colours").small().color(egui::Color32::from_gray(150)));
+                    ui.spacing_mut().item_spacing.y = 1.0;
+                    for row in 0u8..10 {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 1.0;
+                            for col in 0u8..24 {
+                                let idx: u8 = 10 + col * 10 + row;
+                                let rgb = aci_color(idx);
+                                let c = egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+                                let (rect, resp) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::click());
+                                ui.painter().rect_filled(rect, 1.0, c);
+                                if current_color == rgb {
+                                    ui.painter().rect_stroke(rect, 1.0, egui::Stroke::new(1.5, egui::Color32::WHITE));
+                                }
+                                if resp.on_hover_text(format!("ACI {idx}")).clicked() {
+                                    picked_color = Some(rgb);
+                                }
+                            }
+                        });
+                    }
+
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new("Grayscale").small().color(egui::Color32::from_gray(150)));
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        for i in 250u8..=255 {
+                            let rgb = aci_color(i);
+                            let c = egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+                            let (rect, resp) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::click());
+                            ui.painter().rect_filled(rect, 2.0, c);
+                            let (sw, sc) = if current_color == rgb {
+                                (2.0, egui::Color32::WHITE)
+                            } else {
+                                (0.5, egui::Color32::from_gray(70))
+                            };
+                            ui.painter().rect_stroke(rect, 2.0, egui::Stroke::new(sw, sc));
+                            if resp.on_hover_text(format!("ACI {i}")).clicked() {
+                                picked_color = Some(rgb);
+                            }
+                        }
+                    });
+                });
+
+            if let Some(rgb) = picked_color {
+                if let Some(l) = self.drawing.get_layer_mut(layer_id) {
+                    l.color = rgb;
+                }
+                self.layer_color_picking = None;
+            }
+            if !still_open {
+                self.layer_color_picking = None;
+            }
+        }
+
+        if self.bgcolor_picker_open {
+            let mut still_open = true;
+            let mut picked_color: Option<[u8; 3]> = None;
+            let current_color = self.viewport.as_ref().map(|vp| vp.bg_srgb()).unwrap_or([81, 81, 81]);
+
+            egui::Window::new("Background Colour")
+                .open(&mut still_open)
+                .resizable(false)
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    ui.label(egui::RichText::new("Standard").small().color(egui::Color32::from_gray(150)));
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        for i in 1u8..=9 {
+                            let rgb = aci_color(i);
+                            let c = egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+                            let (rect, resp) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::click());
+                            ui.painter().rect_filled(rect, 2.0, c);
+                            let (sw, sc) = if current_color == rgb {
+                                (2.0, egui::Color32::WHITE)
+                            } else {
+                                (0.5, egui::Color32::from_gray(70))
+                            };
+                            ui.painter().rect_stroke(rect, 2.0, egui::Stroke::new(sw, sc));
+                            if resp.on_hover_text(format!("ACI {i}")).clicked() {
+                                picked_color = Some(rgb);
+                            }
+                        }
+                    });
+
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new("Index colours").small().color(egui::Color32::from_gray(150)));
+                    ui.spacing_mut().item_spacing.y = 1.0;
+                    for row in 0u8..10 {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 1.0;
+                            for col in 0u8..24 {
+                                let idx: u8 = 10 + col * 10 + row;
+                                let rgb = aci_color(idx);
+                                let c = egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+                                let (rect, resp) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::click());
+                                ui.painter().rect_filled(rect, 1.0, c);
+                                if current_color == rgb {
+                                    ui.painter().rect_stroke(rect, 1.0, egui::Stroke::new(1.5, egui::Color32::WHITE));
+                                }
+                                if resp.on_hover_text(format!("ACI {idx}")).clicked() {
+                                    picked_color = Some(rgb);
+                                }
+                            }
+                        });
+                    }
+
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new("Grayscale").small().color(egui::Color32::from_gray(150)));
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        for i in 250u8..=255 {
+                            let rgb = aci_color(i);
+                            let c = egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+                            let (rect, resp) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::click());
+                            ui.painter().rect_filled(rect, 2.0, c);
+                            let (sw, sc) = if current_color == rgb {
+                                (2.0, egui::Color32::WHITE)
+                            } else {
+                                (0.5, egui::Color32::from_gray(70))
+                            };
+                            ui.painter().rect_stroke(rect, 2.0, egui::Stroke::new(sw, sc));
+                            if resp.on_hover_text(format!("ACI {i}")).clicked() {
+                                picked_color = Some(rgb);
+                            }
+                        }
+                    });
+                });
+
+            if let Some([r, g, b]) = picked_color {
+                let to_linear = |v: u8| (v as f32 / 255.0).powf(2.2);
+                if let Some(vp) = &mut self.viewport {
+                    vp.clear_color = [to_linear(r), to_linear(g), to_linear(b)];
+                }
+                self.bgcolor_picker_open = false;
+            }
+            if !still_open {
+                self.bgcolor_picker_open = false;
+            }
+        }
 
         if self.entity_color_picker_open && !self.selected_entities.is_empty() {
             let mut still_open = true;
@@ -1677,6 +2458,8 @@ impl eframe::App for CadKitApp {
                         self.draw_trim_overlay(ui, response.rect, viewport);
                         self.draw_offset_overlay(ui, response.rect, viewport);
                         self.draw_extend_overlay(ui, response.rect, viewport);
+                        self.draw_text_entities(ui, response.rect, viewport);
+                        self.draw_dim_entities(ui, response.rect, viewport);
                     }
 
                     // Draw current snap/pick marker (if any).
@@ -1828,20 +2611,36 @@ impl eframe::App for CadKitApp {
                                     } else if self.extend_phase == ExtendPhase::Extending {
                                         let rect = response.rect;
                                         match self.compute_extend(click_pos, viewport, rect) {
-                                            Ok((eid, is_start, new_pt)) => {
+                                            Ok(result) => {
                                                 self.push_undo();
-                                                if let Some(entity) = self.drawing.get_entity_mut(&eid) {
-                                                    if let EntityKind::Line { start, end } = &mut entity.kind {
-                                                        if is_start {
-                                                            start.x = new_pt.x;
-                                                            start.y = new_pt.y;
-                                                        } else {
-                                                            end.x = new_pt.x;
-                                                            end.y = new_pt.y;
+                                                match result {
+                                                    ExtendResult::Line { id: eid, is_start, new_pt } => {
+                                                        if let Some(entity) = self.drawing.get_entity_mut(&eid) {
+                                                            if let EntityKind::Line { start, end } = &mut entity.kind {
+                                                                if is_start {
+                                                                    start.x = new_pt.x;
+                                                                    start.y = new_pt.y;
+                                                                } else {
+                                                                    end.x = new_pt.x;
+                                                                    end.y = new_pt.y;
+                                                                }
+                                                            }
                                                         }
+                                                        self.command_log.push("EXTEND: Line extended".to_string());
+                                                    }
+                                                    ExtendResult::Arc { id: eid, is_start, new_angle } => {
+                                                        if let Some(entity) = self.drawing.get_entity_mut(&eid) {
+                                                            if let EntityKind::Arc { start_angle, end_angle, .. } = &mut entity.kind {
+                                                                if is_start {
+                                                                    *start_angle = new_angle;
+                                                                } else {
+                                                                    *end_angle = new_angle;
+                                                                }
+                                                            }
+                                                        }
+                                                        self.command_log.push("EXTEND: Arc extended".to_string());
                                                     }
                                                 }
-                                                self.command_log.push("EXTEND: Line extended".to_string());
                                             }
                                             Err(msg) => {
                                                 self.command_log.push(msg);
@@ -1932,6 +2731,57 @@ impl eframe::App for CadKitApp {
                                         } else if let DimPhase::Placing { first, second } = self.dim_phase {
                                             self.place_dim_linear(first, second, world);
                                         }
+                                    } else if self.text_phase == TextPhase::PlacingPosition {
+                                        // TEXT insertion point pick — same snap logic as DIMLINEAR.
+                                        let local = click_pos - response.rect.min;
+                                        let raw_world = screen_to_world(local.x, local.y, viewport);
+                                        let pick = self.pick_entity_point(viewport, response.rect, click_pos);
+                                        let mut world = pick.as_ref().map(|p| p.world).unwrap_or_else(|| {
+                                            if self.snap_enabled { Self::snap_to_grid(raw_world) } else { raw_world }
+                                        });
+                                        if pick.is_none() {
+                                            if let Some(snap_pt) = self.snap_intersection_point {
+                                                world = snap_pt;
+                                            }
+                                        }
+                                        self.deliver_point(world);
+                                    } else if self.edit_text_phase == EditTextPhase::SelectingEntity {
+                                        // EDITTEXT: find a text entity near the click.
+                                        if let Some(id) = self.entity_at_screen_pos(viewport, response.rect, click_pos) {
+                                            if let Some(entity) = self.drawing.get_entity(&id) {
+                                                if let EntityKind::Text { content, height, rotation, .. } = &entity.kind {
+                                                    self.text_edit_dialog = Some(TextEditDialog {
+                                                        id,
+                                                        content: content.clone(),
+                                                        height_str: format!("{:.4}", height),
+                                                        rotation_str: format!("{:.2}", rotation.to_degrees()),
+                                                        focus_requested: false,
+                                                    });
+                                                    self.edit_text_phase = EditTextPhase::Idle;
+                                                } else {
+                                                    self.command_log.push("EDITTEXT: That is not a text entity".to_string());
+                                                }
+                                            }
+                                        } else {
+                                            self.command_log.push("EDITTEXT: Nothing found near click".to_string());
+                                        }
+                                    } else if self.edit_dim_phase == EditDimPhase::SelectingEntity {
+                                        if let Some(id) = self.entity_at_screen_pos(viewport, response.rect, click_pos) {
+                                            if let Some(entity) = self.drawing.get_entity(&id) {
+                                                if let EntityKind::DimLinear { text_override, .. } = &entity.kind {
+                                                    self.dim_edit_dialog = Some(DimEditDialog {
+                                                        id,
+                                                        override_str: text_override.clone().unwrap_or_else(|| "<>".to_string()),
+                                                        focus_requested: false,
+                                                    });
+                                                    self.edit_dim_phase = EditDimPhase::Idle;
+                                                } else {
+                                                    self.command_log.push("EDITDIM: That is not a dimension entity".to_string());
+                                                }
+                                            }
+                                        } else {
+                                            self.command_log.push("EDITDIM: Nothing found near click".to_string());
+                                        }
                                     } else {
                                         match self.offset_phase {
                                             OffsetPhase::SelectingEntity => {
@@ -2018,6 +2868,15 @@ impl eframe::App for CadKitApp {
                                 self.command_log.push("*Cancel*".to_string());
                             } else if !matches!(self.dim_phase, DimPhase::Idle) {
                                 self.exit_dim();
+                                self.command_log.push("*Cancel*".to_string());
+                            } else if !matches!(self.text_phase, TextPhase::Idle) {
+                                self.exit_text();
+                                self.command_log.push("*Cancel*".to_string());
+                            } else if self.text_edit_dialog.is_some() || !matches!(self.edit_text_phase, EditTextPhase::Idle) {
+                                self.exit_edit_text();
+                                self.command_log.push("*Cancel*".to_string());
+                            } else if self.dim_edit_dialog.is_some() || !matches!(self.edit_dim_phase, EditDimPhase::Idle) {
+                                self.exit_edit_dim();
                                 self.command_log.push("*Cancel*".to_string());
                             }
                         }
@@ -2259,11 +3118,12 @@ impl eframe::App for CadKitApp {
                                 }
                             }
 
-                            // MOVE / COPY / ROTATE / DIMLINEAR ghost preview.
+                            // MOVE / COPY / ROTATE / DIMLINEAR / TEXT ghost preview.
                             self.draw_move_preview(ui, response.rect, viewport, world);
                             self.draw_copy_preview(ui, response.rect, viewport, world);
                             self.draw_rotate_preview(ui, response.rect, viewport, world);
                             self.draw_dim_preview(ui, response.rect, viewport, world);
+                            self.draw_text_preview(ui, response.rect, viewport, world);
 
                             // Grid-snap dot (suppress when intersection snap is active).
                             if self.snap_enabled
@@ -2790,6 +3650,9 @@ impl CadKitApp {
                 let max_y = start.y.max(end.y).max(dl1y).max(dl2y);
                 Some((min_x, min_y, max_x, max_y))
             }
+            EntityKind::Text { position, .. } => {
+                Some((position.x, position.y, position.x, position.y))
+            }
         }
     }
 
@@ -2928,6 +3791,13 @@ impl CadKitApp {
                     self.push_pick_candidates(
                         &mut best, viewport, rect, screen_pos, entity.id,
                         &[("dim start", s), ("dim end", e), ("dim mid", mid)],
+                    );
+                }
+                EntityKind::Text { position, .. } => {
+                    let p: Vec2 = (*position).into();
+                    self.push_pick_candidates(
+                        &mut best, viewport, rect, screen_pos, entity.id,
+                        &[("text origin", p)],
                     );
                 }
             }
@@ -3321,6 +4191,11 @@ impl CadKitApp {
                     "TRIM: Cannot trim dimension entities".to_string(),
                 );
             }
+            EntityKind::Text { .. } => {
+                return TrimResult::Fail(
+                    "TRIM: Cannot trim text entities".to_string(),
+                );
+            }
         };
 
         TrimResult::Apply { target_id, new_entities }
@@ -3403,9 +4278,17 @@ fn create_arc_from_three_points(start: Vec2, mid: Vec2, end: Vec2) -> Option<cad
         }
     }
 
-    let end_angle = ang_start + sweep;
+    // Normalise to CCW: all arc geometry code (trim, extend, snap) assumes
+    // end_angle > start_angle (positive CCW sweep).  A CW arc (sweep < 0)
+    // represents the same visual segment as the CCW arc from (ang_start+sweep)
+    // to ang_start — swap the endpoints so the span is always positive.
+    let (final_start, final_end) = if sweep < 0.0 {
+        (ang_start + sweep, ang_start)
+    } else {
+        (ang_start, ang_start + sweep)
+    };
 
-    Some(create_arc(center, r, ang_start, end_angle))
+    Some(create_arc(center, r, final_start, final_end))
 }
 
 /// Convert HSV (hue 0-360, saturation 0-1, value 0-1) to RGB bytes.

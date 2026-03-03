@@ -5,6 +5,15 @@
 //! - Rendering entities to texture
 //! - Pan/zoom camera control
 
+/// Canvas clear colour as **linear** RGB, matching the wgpu `LoadOp::Clear` value.
+pub const CANVAS_CLEAR_LINEAR: f64 = 0.08;
+
+/// Canvas background colour as **sRGB** bytes (gamma-corrected equivalent of
+/// `CANVAS_CLEAR_LINEAR`), suitable for use as an egui `Color32`.
+///
+/// Derivation: `round(0.08^(1/2.2) * 255) = 81`
+pub const CANVAS_BG_SRGB: [u8; 3] = [81, 81, 81];
+
 pub mod font;
 pub mod vertex;
 
@@ -22,12 +31,15 @@ pub struct Viewport {
     texture_view: wgpu::TextureView,
     transform_buffer: wgpu::Buffer,
     transform_bind_group: wgpu::BindGroup,
-    
+
     // Camera state
     pub zoom: f32,
     pub pan_x: f32,
     pub pan_y: f32,
-    
+
+    /// Canvas clear colour in **linear** RGB. Default: `CANVAS_CLEAR_LINEAR` for each channel.
+    pub clear_color: [f32; 3],
+
     width: u32,
     height: u32,
 }
@@ -192,6 +204,7 @@ impl Viewport {
             zoom: 1.0,
             pan_x: 0.0,
             pan_y: 0.0,
+            clear_color: [CANVAS_CLEAR_LINEAR as f32; 3],
             width,
             height,
         })
@@ -269,9 +282,9 @@ impl Viewport {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.08,
-                            g: 0.08,
-                            b: 0.08,
+                            r: self.clear_color[0] as f64,
+                            g: self.clear_color[1] as f64,
+                            b: self.clear_color[2] as f64,
                             a: 1.0,
                         }),
                         store: wgpu::StoreOp::Store,
@@ -448,26 +461,13 @@ impl Viewport {
                     vertices.push(Vertex::new(dl2[0], dl2[1], c[0], c[1], c[2]));
                     vertices.push(Vertex::new(a2_w2[0], a2_w2[1], c[0], c[1], c[2]));
 
-                    // Text label
-                    let dist = start.distance_to(end);
-                    let label = match text_override {
-                        Some(s) => s.clone(),
-                        None => format!("{:.3}", dist),
-                    };
-                    let tx = text_pos.x as f32;
-                    let ty = text_pos.y as f32;
-                    // Normalise text dir so it always points in the readable direction.
-                    let text_dir = if dir[0] < -1e-6 || (dir[0].abs() < 1e-6 && dir[1] < -1e-6) {
-                        [-dir[0], -dir[1]]
-                    } else {
-                        dir
-                    };
-                    // up = 90° CCW from text_dir (top of glyphs faces this way).
-                    let text_up = [-text_dir[1], text_dir[0]];
-                    for (p1, p2) in font::text_segments(&label, [tx, ty], text_dir, text_up, 5.0) {
-                        vertices.push(Vertex::new(p1[0], p1[1], c[0], c[1], c[2]));
-                        vertices.push(Vertex::new(p2[0], p2[1], c[0], c[1], c[2]));
-                    }
+                    // Text label is rendered by the egui overlay (draw_dim_entities),
+                    // not by the wgpu vertex buffer.
+                    let _ = (text_override, text_pos);
+                }
+                EntityKind::Text { .. } => {
+                    // Text entities are rendered by the egui overlay (painter.text),
+                    // not by the wgpu vertex buffer.  Nothing to emit here.
                 }
             }
         }
@@ -488,6 +488,17 @@ impl Viewport {
     /// Current viewport size in pixels.
     pub fn size(&self) -> (u32, u32) {
         (self.width, self.height)
+    }
+
+    /// Returns `clear_color` converted to sRGB bytes `[r, g, b]` (0–255).
+    /// Use this to match the egui overlay mask colour to the wgpu background.
+    pub fn bg_srgb(&self) -> [u8; 3] {
+        let to_srgb = |v: f32| (v.powf(1.0 / 2.2).clamp(0.0, 1.0) * 255.0).round() as u8;
+        [
+            to_srgb(self.clear_color[0]),
+            to_srgb(self.clear_color[1]),
+            to_srgb(self.clear_color[2]),
+        ]
     }
     
     /// Pan the viewport

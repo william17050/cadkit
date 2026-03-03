@@ -7,7 +7,7 @@
 - [x] Draw entities in viewport
 - [x] Pan and zoom with mouse
 - [x] Grid display (dot grid)
-- [ ] Coordinate readout / status bar (pending)
+- [x] Coordinate readout / status bar
 
 ### Milestone 1.2: Interactive Drawing
 - [x] Line tool (command + toolbar)
@@ -80,7 +80,7 @@
 - [x] Relative coordinates (@x,y) and polar (@dist<angle)
 - [x] Direct distance entry with live rubber-band
 - [x] Ortho mode (F8) and snap toggle (F3)
-- [ ] Status bar — live cursor world coordinates, active layer, snap/ortho state
+- [x] Status bar — live cursor world coordinates, active layer, snap/ortho state
 - [ ] Perpendicular / parallel tracking snaps
 - [ ] Preference persistence (last file, grid spacing, snap/ortho flags)
 - [ ] Recent files list in File menu

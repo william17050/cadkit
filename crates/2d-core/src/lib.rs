@@ -70,6 +70,14 @@ pub enum EntityKind {
         text_override: Option<String>,  // None = auto-format measured distance
         text_pos: Vec3,                 // world-space centre of dimension text
     },
+
+    /// Free-standing text label
+    Text {
+        position: Vec3,   // insertion point (baseline-left), z=0
+        content:  String,
+        height:   f64,    // glyph height in world units
+        rotation: f64,    // CCW angle in radians from +X axis
+    },
 }
 
 impl EntityKind {
@@ -90,6 +98,7 @@ impl EntityKind {
                     && end.z.abs() < f64::EPSILON
                     && text_pos.z.abs() < f64::EPSILON
             }
+            EntityKind::Text { position, .. } => position.z.abs() < f64::EPSILON,
         }
     }
 }

@@ -161,6 +161,16 @@ impl CadKitApp {
                     painter.line_segment([rect.min + egui::vec2(sx1, sy1), rect.min + egui::vec2(dl1x, dl1y)], stroke);
                     painter.line_segment([rect.min + egui::vec2(sx2, sy2), rect.min + egui::vec2(dl2x, dl2y)], stroke);
                 }
+                EntityKind::Text { position, .. } => {
+                    // Draw a small selection box around the insertion point.
+                    let (sx, sy) = world_to_screen(position.x as f32, position.y as f32, viewport);
+                    let pos = rect.min + egui::vec2(sx, sy);
+                    painter.rect_stroke(
+                        egui::Rect::from_center_size(pos, egui::vec2(12.0, 12.0)),
+                        2.0,
+                        stroke,
+                    );
+                }
             }
         }
     }
@@ -216,8 +226,9 @@ impl CadKitApp {
                 let c_screen = rect.min + egui::vec2(cx, cy);
 
                 // Convert screen_pos back to world to check if the angle is within the arc span.
+                // World Y is up but screen Y is down, so negate rel.y to get the world-space angle.
                 let rel = screen_pos - c_screen;
-                let click_angle = (rel.y as f64).atan2(rel.x as f64);
+                let click_angle = (-rel.y as f64).atan2(rel.x as f64);
                 let span = Self::ccw_from(*start_angle, *end_angle);
                 let angle_in_span = Self::ccw_from(*start_angle, click_angle) <= span;
 
@@ -278,6 +289,10 @@ impl CadKitApp {
                     rect.min + egui::vec2(dl1x, dl1y),
                     rect.min + egui::vec2(dl2x, dl2y),
                 )
+            }
+            EntityKind::Text { position, .. } => {
+                let (sx, sy) = world_to_screen(position.x as f32, position.y as f32, viewport);
+                screen_pos.distance(rect.min + egui::vec2(sx, sy))
             }
         }
     }
@@ -364,7 +379,7 @@ impl CadKitApp {
             EntityKind::Polyline { vertices, closed } => Some(GeomPrim::Polyline(
                 GeomPolyline::new(vertices.clone(), *closed),
             )),
-            EntityKind::DimLinear { .. } => None,
+            EntityKind::DimLinear { .. } | EntityKind::Text { .. } => None,
         }
     }
 

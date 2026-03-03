@@ -1,6 +1,6 @@
 use super::state::{
-    ActiveTool, CopyPhase, DimPhase, ExtendPhase, FromPhase, MovePhase, OffsetPhase, RotatePhase,
-    TrimPhase,
+    ActiveTool, CopyPhase, DimPhase, EditDimPhase, EditTextPhase, ExtendPhase, FromPhase,
+    MovePhase, OffsetPhase, RotatePhase, TextPhase, TrimPhase,
 };
 use super::{create_arc_from_three_points, CadKitApp};
 use cadkit_2d_core::{create_circle, create_line};
@@ -172,6 +172,53 @@ impl CadKitApp {
                 self.redo();
                 true
             }
+            "t" | "text" => {
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.text_phase = TextPhase::PlacingPosition;
+                self.command_log
+                    .push("TEXT  Specify insertion point:".to_string());
+                log::info!("Command: TEXT");
+                true
+            }
+            "ed" | "editdim" => {
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.exit_text();
+                self.exit_edit_text();
+                self.edit_dim_phase = EditDimPhase::SelectingEntity;
+                self.dim_edit_dialog = None;
+                self.command_log
+                    .push("EDITDIM: Click a dimension entity to edit".to_string());
+                log::info!("Command: EDITDIM");
+                true
+            }
+            "et" | "edittext" => {
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.exit_text();
+                self.edit_text_phase = EditTextPhase::SelectingEntity;
+                self.text_edit_dialog = None;
+                self.command_log
+                    .push("EDITTEXT: Click a text entity to edit".to_string());
+                log::info!("Command: EDITTEXT");
+                true
+            }
             "dli" | "dimlinear" | "dim" => {
                 self.cancel_active_tool();
                 self.exit_trim();
@@ -184,6 +231,14 @@ impl CadKitApp {
                 self.command_log
                     .push("DIMLINEAR: Specify first extension line origin".to_string());
                 log::info!("Command: DIMLINEAR");
+                true
+            }
+            "help" | "?" => {
+                self.help_open = true;
+                true
+            }
+            "bgcolor" => {
+                self.bgcolor_picker_open = true;
                 true
             }
             _ => false,

@@ -207,6 +207,18 @@ impl Drawing {
                         Some(e)
                     }
                 }
+                EntityKind::Text { position, content, height, rotation } => {
+                    use dxf::entities::Text as DxfText;
+                    let mut t = DxfText::default();
+                    t.location   = Point::new(position.x, position.y, 0.0);
+                    t.text_height = *height;
+                    t.value      = content.clone();
+                    t.rotation   = rotation.to_degrees();
+                    let mut e = dxf::entities::Entity::new(EntityType::Text(t));
+                    e.common.layer = layer_name;
+                    e.common.color = color;
+                    Some(e)
+                }
                 EntityKind::DimLinear { .. } => {
                     // TODO: export as DXF DIMENSION entity (RotatedDimension)
                     log::warn!("DXF export: DimLinear not yet exported");
@@ -354,6 +366,18 @@ impl Drawing {
                     }
                 }
 
+                EntityType::Text(t) => Some(Entity {
+                    id:    Guid::new(),
+                    kind:  EntityKind::Text {
+                        position: Vec3::xy(t.location.x, t.location.y),
+                        content:  t.value.clone(),
+                        height:   t.text_height.max(0.01),
+                        rotation: t.rotation.to_radians(),
+                    },
+                    layer: layer_id,
+                    color,
+                }),
+
                 other => {
                     skipped.insert(dxf_type_name(other).to_string());
                     None
@@ -378,7 +402,6 @@ impl Drawing {
 /// Return a human-readable DXF entity type name for warning messages.
 fn dxf_type_name(et: &EntityType) -> &'static str {
     match et {
-        EntityType::Text(_)                        => "TEXT",
         EntityType::MText(_)                       => "MTEXT",
         EntityType::Insert(_)                      => "INSERT",
         EntityType::RotatedDimension(_)
