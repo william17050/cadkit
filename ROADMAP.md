@@ -48,19 +48,19 @@
 - [x] Move / copy / rotate support for dim entities
 - [x] Selection highlight and pick distance to dim line
 - [ ] **DimStyle dialog** — adjust text height, arrow size, extension line gap, color, precision
-- [ ] **Dim text via egui native font** — replace stroke font with proper system/TTF text for crisp rendering at all zoom levels
+- [x] **Dim text via egui native font** — egui overlay painter renders distance label
 - [ ] Angular dimension (`DIMANGULAR`)
 - [ ] Radial / diameter dimension (`DIMRADIUS` / `DIMDIAMETER`)
 - [ ] DXF DIMENSION entity export (currently skipped with warning)
 - [ ] DXF DIMENSION entity import
 
 ### Milestone 2.2: Text Placement
-- [ ] `Text` entity kind in 2d-core (content, insertion point, height, rotation, style)
-- [ ] `TEXT` command — pick insertion point, type content, press Enter
-- [ ] Text rendered via egui `paint_text` or wgpu glyph atlas (not stroke font)
-- [ ] Text selection, move, rotate, properties editing
+- [x] `Text` entity kind in 2d-core (content, insertion point, height, rotation)
+- [x] `TEXT` command — pick insertion point, enter height/rotation, type content (`T`)
+- [x] Text rendered via egui overlay (not stroke font)
+- [x] Text selection, move, rotate, properties editing (`ET` to edit content)
 - [ ] DXF TEXT / MTEXT export and import
-- [ ] Basic text style (font name, height) stored in drawing
+- [ ] Font name stored in drawing (currently height only)
 
 ### Milestone 2.3: Advanced Editing
 - [ ] Scale command
@@ -72,9 +72,9 @@
 ### Milestone 2.4: Layers & Organization
 - [x] Create / delete / rename layers
 - [x] Layer color edit; set current layer
-- [ ] Move entities between layers (UI drag or Properties panel)
-- [ ] Layer visibility toggle (already partially there — wire up fully)
-- [ ] Layer locking / freeze
+- [x] Move entities between layers (combo box + Assign in Properties panel)
+- [x] Layer visibility toggle (eye icon; filters rendering via `visible_entities()`)
+- [ ] Layer locking / freeze (UI exists, enforcement not wired)
 
 ### Milestone 2.5: Precision & UI Polish
 - [x] Relative coordinates (@x,y) and polar (@dist<angle)

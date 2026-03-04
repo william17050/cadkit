@@ -46,9 +46,12 @@ Line, Circle, Arc, Polyline, Text, DimLinear (actually Aligned — rename pendin
 1. **Rename `DimLinear` → `DimAligned`** everywhere (EntityKind, DXF, match arms, UI) — mechanical
 2. **Add true `DimLinear`** — horizontal or vertical only; axis locked by drag direction during Placing phase
 3. **DXF dimension export** — currently skipped with warning; use `dxf_rs` AlignedDimension / RotatedDimension
-4. **Scale command** (`SC`) — like Move but applies uniform or XY scale factor
-5. **Mirror command** (`MI`) — pick axis line, reflect selected entities
-6. **Preference persistence** — serde-serialize snap/ortho/grid flags to `~/.config/cadkit/prefs.json`
+4. **DXF TEXT export** — Text entity not yet exported to DXF
+5. **Layer lock enforcement** — `Layer.locked` field exists + UI toggle, but edits not gated on it
+6. **Scale command** (`SC`) — like Move but applies uniform or XY scale factor
+7. **Mirror command** (`MI`) — pick axis line, reflect selected entities
+8. **DimStyle dialog** — text height, arrow size, extension line gap, colour, precision
+9. **Preference persistence** — serde-serialize snap/ortho/grid flags to `~/.config/cadkit/prefs.json`
 
 ## Adding a New Command — Checklist
 1. Add Phase enum variant(s) to `state.rs`
@@ -61,7 +64,7 @@ Line, Circle, Arc, Polyline, Text, DimLinear (actually Aligned — rename pendin
 8. Update HELP window table in `app.rs`
 
 ## Roadmap Summary
-Phase 2 (now): Dims, Text, Scale/Mirror/Fillet, Layer polish
+Phase 2 (now — mostly done): DimLinear rename, true DimLinear, Scale/Mirror, DXF dims/text, layer lock, DimStyle, prefs
 Phase 3: DXF completeness, SVG/PDF
 Phase 4: Python API + AI/MCP command line
 Phase 5: Hatch, Blocks
