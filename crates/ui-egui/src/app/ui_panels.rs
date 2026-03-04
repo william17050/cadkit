@@ -152,7 +152,7 @@ impl CadKitApp {
             ui.heading("Dimension");
             ui.separator();
 
-            if ui.button("📐 Linear Dim").clicked() {
+            if ui.button("📐 Dim Aligned").clicked() {
                 self.cancel_active_tool();
                 self.exit_trim();
                 self.exit_offset();
@@ -162,6 +162,10 @@ impl CadKitApp {
                 self.exit_rotate();
                 self.dim_phase = DimPhase::FirstPoint;
                 self.command_log.push("DIMALIGNED: Specify first extension line origin".to_string());
+            }
+            if ui.button("↔ Dim Linear").clicked() {
+                // TODO: true DimLinear (H/V locked) — not yet implemented
+                self.command_log.push("DIMLINEAR: Not yet implemented — use DAL for aligned dims".to_string());
             }
             if ui.button("✏ Edit Dim").clicked() {
                 self.cancel_active_tool();
