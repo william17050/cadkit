@@ -399,7 +399,7 @@ impl Viewport {
                         vertices.push(Vertex::new(b.x as f32, b.y as f32, c[0], c[1], c[2]));
                     }
                 }
-                EntityKind::DimLinear { start, end, offset, text_override, text_pos } => {
+                EntityKind::DimAligned { start, end, offset, text_override, text_pos } => {
                     let sx = start.x as f32;
                     let sy = start.y as f32;
                     let ex = end.x as f32;

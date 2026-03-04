@@ -219,7 +219,7 @@ impl CadKitApp {
                 log::info!("Command: EDITTEXT");
                 true
             }
-            "dli" | "dimlinear" | "dim" => {
+            "dal" | "dimaligned" | "dli" | "dimlinear" | "dim" => {
                 self.cancel_active_tool();
                 self.exit_trim();
                 self.exit_offset();
@@ -229,8 +229,8 @@ impl CadKitApp {
                 self.exit_rotate();
                 self.dim_phase = DimPhase::FirstPoint;
                 self.command_log
-                    .push("DIMLINEAR: Specify first extension line origin".to_string());
-                log::info!("Command: DIMLINEAR");
+                    .push("DIMALIGNED: Specify first extension line origin".to_string());
+                log::info!("Command: DIMALIGNED");
                 true
             }
             "help" | "?" => {

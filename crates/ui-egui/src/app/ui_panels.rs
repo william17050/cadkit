@@ -161,7 +161,7 @@ impl CadKitApp {
                 self.exit_copy();
                 self.exit_rotate();
                 self.dim_phase = DimPhase::FirstPoint;
-                self.command_log.push("DIMLINEAR: Specify first extension line origin".to_string());
+                self.command_log.push("DIMALIGNED: Specify first extension line origin".to_string());
             }
             if ui.button("✏ Edit Dim").clicked() {
                 self.cancel_active_tool();
@@ -428,7 +428,7 @@ impl CadKitApp {
                                     EntityKind::Circle { .. } => "Circle",
                                     EntityKind::Arc { .. } => "Arc",
                                     EntityKind::Polyline { .. } => "Polyline",
-                                    EntityKind::DimLinear { .. } => "DimLinear",
+                                    EntityKind::DimAligned { .. } => "DimAligned",
                                     EntityKind::Text { .. } => "Text",
                                 };
                                 ui.label(egui::RichText::new(type_name).strong());
@@ -470,7 +470,7 @@ impl CadKitApp {
                                                 ui.label("Points:"); ui.label(vertices.len().to_string()); ui.end_row();
                                                 ui.label("Closed:"); ui.label(if *closed { "Yes" } else { "No" }); ui.end_row();
                                             }
-                                            EntityKind::DimLinear { start, end, offset, text_override, .. } => {
+                                            EntityKind::DimAligned { start, end, offset, text_override, .. } => {
                                                 let dx = end.x - start.x;
                                                 let dy = end.y - start.y;
                                                 let dist = (dx * dx + dy * dy).sqrt();
@@ -757,12 +757,12 @@ impl CadKitApp {
                                 if let Some(world) = self.hover_world_pos {
                                     if matches!(self.dim_phase, DimPhase::FirstPoint) {
                                         self.dim_phase = DimPhase::SecondPoint { first: world };
-                                        self.command_log.push(format!("DIMLINEAR: First point ({:.4}, {:.4})", world.x, world.y));
+                                        self.command_log.push(format!("DIMALIGNED: First point ({:.4}, {:.4})", world.x, world.y));
                                     } else if let DimPhase::SecondPoint { first } = self.dim_phase {
                                         self.dim_phase = DimPhase::Placing { first, second: world };
-                                        self.command_log.push(format!("DIMLINEAR: Second point ({:.4}, {:.4})", world.x, world.y));
+                                        self.command_log.push(format!("DIMALIGNED: Second point ({:.4}, {:.4})", world.x, world.y));
                                     } else if let DimPhase::Placing { first, second } = self.dim_phase {
-                                        self.place_dim_linear(first, second, world);
+                                        self.place_dim_aligned(first, second, world);
                                     }
                                 }
                             } else if self.text_phase == TextPhase::PlacingPosition {
@@ -867,15 +867,15 @@ impl CadKitApp {
                                 if let Some(world) = Self::resolve_typed_point(&cmd, None) {
                                     if matches!(self.dim_phase, DimPhase::FirstPoint) {
                                         self.dim_phase = DimPhase::SecondPoint { first: world };
-                                        self.command_log.push(format!("DIMLINEAR: First point ({:.4}, {:.4})", world.x, world.y));
+                                        self.command_log.push(format!("DIMALIGNED: First point ({:.4}, {:.4})", world.x, world.y));
                                     } else if let DimPhase::SecondPoint { first } = self.dim_phase {
                                         self.dim_phase = DimPhase::Placing { first, second: world };
-                                        self.command_log.push(format!("DIMLINEAR: Second point ({:.4}, {:.4})", world.x, world.y));
+                                        self.command_log.push(format!("DIMALIGNED: Second point ({:.4}, {:.4})", world.x, world.y));
                                     } else if let DimPhase::Placing { first, second } = self.dim_phase {
-                                        self.place_dim_linear(first, second, world);
+                                        self.place_dim_aligned(first, second, world);
                                     }
                                 } else {
-                                    self.command_log.push("  *DIMLINEAR: enter x,y for point*".to_string());
+                                    self.command_log.push("  *DIMALIGNED: enter x,y for point*".to_string());
                                 }
                                 handled = true;
                             } else if let TextPhase::EnteringHeight { position } = self.text_phase {

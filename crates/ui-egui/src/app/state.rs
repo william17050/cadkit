@@ -131,7 +131,7 @@ pub struct DimEditDialog {
     pub focus_requested: bool,
 }
 
-/// DimLinear placement workflow phases.
+/// DimAligned placement workflow phases.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DimPhase {
     Idle,

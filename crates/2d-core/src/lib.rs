@@ -62,8 +62,8 @@ pub enum EntityKind {
         closed: bool,
     },
 
-    /// Linear dimension between two points
-    DimLinear {
+    /// Aligned dimension between two points (line parallel to measured entity)
+    DimAligned {
         start: Vec3,                    // first extension line origin
         end: Vec3,                      // second extension line origin
         offset: f64,                    // signed perpendicular distance to dimension line
@@ -93,7 +93,7 @@ impl EntityKind {
             EntityKind::Polyline { vertices, .. } => {
                 vertices.iter().all(|v| v.z.abs() < f64::EPSILON)
             }
-            EntityKind::DimLinear { start, end, text_pos, .. } => {
+            EntityKind::DimAligned { start, end, text_pos, .. } => {
                 start.z.abs() < f64::EPSILON
                     && end.z.abs() < f64::EPSILON
                     && text_pos.z.abs() < f64::EPSILON

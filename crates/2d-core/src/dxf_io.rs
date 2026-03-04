@@ -219,9 +219,9 @@ impl Drawing {
                     e.common.color = color;
                     Some(e)
                 }
-                EntityKind::DimLinear { .. } => {
-                    // TODO: export as DXF DIMENSION entity (RotatedDimension)
-                    log::warn!("DXF export: DimLinear not yet exported");
+                EntityKind::DimAligned { .. } => {
+                    // TODO: export as DXF DIMENSION entity (AlignedDimension)
+                    log::warn!("DXF export: DimAligned not yet exported");
                     None
                 }
             };

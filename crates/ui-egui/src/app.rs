@@ -298,12 +298,12 @@ impl CadKitApp {
             }
         } else if matches!(self.dim_phase, DimPhase::FirstPoint) {
             self.dim_phase = DimPhase::SecondPoint { first: world };
-            self.command_log.push(format!("DIMLINEAR: First point ({:.4}, {:.4})", world.x, world.y));
+            self.command_log.push(format!("DIMALIGNED: First point ({:.4}, {:.4})", world.x, world.y));
         } else if let DimPhase::SecondPoint { first } = self.dim_phase {
             self.dim_phase = DimPhase::Placing { first, second: world };
-            self.command_log.push(format!("DIMLINEAR: Second point ({:.4}, {:.4})", world.x, world.y));
+            self.command_log.push(format!("DIMALIGNED: Second point ({:.4}, {:.4})", world.x, world.y));
         } else if let DimPhase::Placing { first, second } = self.dim_phase {
-            self.place_dim_linear(first, second, world);
+            self.place_dim_aligned(first, second, world);
         } else if self.text_phase == TextPhase::PlacingPosition {
             self.text_phase = TextPhase::EnteringHeight { position: world };
             self.command_input.clear();
@@ -464,9 +464,9 @@ impl CadKitApp {
                             CopyPhase::Idle => match self.rotate_phase {
                                 RotatePhase::Idle => match self.dim_phase {
                                     DimPhase::Idle => "Command:".into(),
-                                    DimPhase::FirstPoint => "DIMLINEAR  Specify first extension line origin:".into(),
-                                    DimPhase::SecondPoint { .. } => "DIMLINEAR  Specify second extension line origin:".into(),
-                                    DimPhase::Placing { .. } => "DIMLINEAR  Specify dimension line location:".into(),
+                                    DimPhase::FirstPoint => "DIMALIGNEDSpecify first extension line origin:".into(),
+                                    DimPhase::SecondPoint { .. } => "DIMALIGNEDSpecify second extension line origin:".into(),
+                                    DimPhase::Placing { .. } => "DIMALIGNEDSpecify dimension line location:".into(),
                                 },
                                 RotatePhase::SelectingEntities => "ROTATE  Select entities, press Enter to continue:".into(),
                                 RotatePhase::BasePoint => "ROTATE  Pick base point:".into(),
@@ -559,7 +559,7 @@ impl CadKitApp {
                             v.y += dy;
                         }
                     }
-                    EntityKind::DimLinear { start, end, text_pos, .. } => {
+                    EntityKind::DimAligned { start, end, text_pos, .. } => {
                         start.x += dx; start.y += dy;
                         end.x += dx;   end.y += dy;
                         text_pos.x += dx; text_pos.y += dy;
@@ -650,7 +650,7 @@ impl CadKitApp {
                         painter.line_segment([*shifted.last().unwrap(), shifted[0]], ghost_stroke);
                     }
                 }
-                EntityKind::DimLinear { start, end, offset, .. } => {
+                EntityKind::DimAligned { start, end, offset, .. } => {
                     let gsx = (start.x + dx) as f32; let gsy = (start.y + dy) as f32;
                     let gex = (end.x   + dx) as f32; let gey = (end.y   + dy) as f32;
                     let ddx2 = gex - gsx; let ddy2 = gey - gsy;
@@ -715,7 +715,7 @@ impl CadKitApp {
                         vertices: vertices.iter().map(|v| Vec3::xy(v.x + dx, v.y + dy)).collect(),
                         closed: *closed,
                     },
-                    EntityKind::DimLinear { start, end, offset, text_override, text_pos } => EntityKind::DimLinear {
+                    EntityKind::DimAligned { start, end, offset, text_override, text_pos } => EntityKind::DimAligned {
                         start: Vec3::xy(start.x + dx, start.y + dy),
                         end:   Vec3::xy(end.x   + dx, end.y   + dy),
                         offset: *offset,
@@ -810,7 +810,7 @@ impl CadKitApp {
                         painter.line_segment([*shifted.last().unwrap(), shifted[0]], ghost_stroke);
                     }
                 }
-                EntityKind::DimLinear { start, end, offset, .. } => {
+                EntityKind::DimAligned { start, end, offset, .. } => {
                     let gsx = (start.x + dx) as f32; let gsy = (start.y + dy) as f32;
                     let gex = (end.x   + dx) as f32; let gey = (end.y   + dy) as f32;
                     let ddx2 = gex - gsx; let ddy2 = gey - gsy;
@@ -879,7 +879,7 @@ impl CadKitApp {
                             *v = rotate_pt(*v, base.x, base.y, cos_a, sin_a);
                         }
                     }
-                    EntityKind::DimLinear { start, end, text_pos, .. } => {
+                    EntityKind::DimAligned { start, end, text_pos, .. } => {
                         *start    = rotate_pt(*start,    base.x, base.y, cos_a, sin_a);
                         *end      = rotate_pt(*end,      base.x, base.y, cos_a, sin_a);
                         *text_pos = rotate_pt(*text_pos, base.x, base.y, cos_a, sin_a);
@@ -979,7 +979,7 @@ impl CadKitApp {
                         painter.line_segment([*pts.last().unwrap(), pts[0]], ghost_stroke);
                     }
                 }
-                EntityKind::DimLinear { start, end, offset, .. } => {
+                EntityKind::DimAligned { start, end, offset, .. } => {
                     let (rs1x, rs1y) = rot(*start);
                     let (rs2x, rs2y) = rot(*end);
                     // Compute rotated dim line endpoints
@@ -1002,14 +1002,14 @@ impl CadKitApp {
         }
     }
 
-    /// Place a DimLinear entity. Called when the user clicks the dimension line location.
+    /// Place a DimAligned entity. Called when the user clicks the dimension line location.
     /// After placement, resets to FirstPoint so the user can continue dimensioning.
-    fn place_dim_linear(&mut self, first: Vec2, second: Vec2, offset_world: Vec2) {
+    fn place_dim_aligned(&mut self, first: Vec2, second: Vec2, offset_world: Vec2) {
         let dx = second.x - first.x;
         let dy = second.y - first.y;
         let len = (dx * dx + dy * dy).sqrt();
         if len < 1e-6 {
-            self.command_log.push("DIMLINEAR: Degenerate dimension, ignored".to_string());
+            self.command_log.push("DIMALIGNED: Degenerate dimension, ignored".to_string());
             return;
         }
         let dir = (dx / len, dy / len);
@@ -1026,7 +1026,7 @@ impl CadKitApp {
         let dim_layer = existing_dim_layer
             .unwrap_or_else(|| self.drawing.add_layer_with_color("Dim".to_string(), [0, 180, 220]));
         let entity = Entity::new(
-            EntityKind::DimLinear {
+            EntityKind::DimAligned {
                 start: Vec3::xy(first.x, first.y),
                 end: Vec3::xy(second.x, second.y),
                 offset,
@@ -1036,12 +1036,12 @@ impl CadKitApp {
             dim_layer,
         );
         self.drawing.add_entity(entity);
-        self.command_log.push(format!("DIMLINEAR: Distance = {:.4}", len));
+        self.command_log.push(format!("DIMALIGNED: Distance = {:.4}", len));
         // Stay in FirstPoint so user can chain dimensions.
         self.dim_phase = DimPhase::FirstPoint;
     }
 
-    /// Draw the DIMLINEAR rubber-band preview during SecondPoint and Placing phases.
+    /// Draw the DIMALIGNED rubber-band preview during SecondPoint and Placing phases.
     fn draw_dim_preview(&self, ui: &egui::Ui, rect: egui::Rect, viewport: &Viewport, world_cursor: Vec2) {
         let ghost_stroke = egui::Stroke::new(1.5, egui::Color32::from_rgba_premultiplied(220, 210, 80, 180));
         let painter = ui.painter_at(rect);
@@ -1352,7 +1352,7 @@ impl CadKitApp {
         }
     }
 
-    /// Render DimLinear text labels via egui (crisp, rotated, with background mask).
+    /// Render DimAligned text labels via egui (crisp, rotated, with background mask).
     fn draw_dim_entities(&self, ui: &egui::Ui, rect: egui::Rect, viewport: &Viewport) {
         const DIM_TEXT_HEIGHT: f64 = 2.5; // world units
         let [r, g, b] = viewport.bg_srgb();
@@ -1360,7 +1360,7 @@ impl CadKitApp {
         let painter = ui.painter_at(rect);
 
         for entity in self.drawing.visible_entities() {
-            let EntityKind::DimLinear { start, end, text_pos, text_override, .. } = &entity.kind
+            let EntityKind::DimAligned { start, end, text_pos, text_override, .. } = &entity.kind
             else { continue };
 
             let dist = start.distance_to(end);
@@ -1533,7 +1533,7 @@ impl CadKitApp {
                         );
                     }
                 }
-                EntityKind::DimLinear { .. } | EntityKind::Text { .. } => {}
+                EntityKind::DimAligned { .. } | EntityKind::Text { .. } => {}
             }
         }
     }
@@ -1602,7 +1602,7 @@ impl CadKitApp {
             EntityKind::Polyline { .. } => {
                 Err("OFFSET: Polyline offset not yet supported".to_string())
             }
-            EntityKind::DimLinear { .. } => {
+            EntityKind::DimAligned { .. } => {
                 Err("OFFSET: Cannot offset dimension entities".to_string())
             }
             EntityKind::Text { .. } => {
@@ -1678,7 +1678,7 @@ impl CadKitApp {
                         );
                     }
                 }
-                EntityKind::DimLinear { .. } | EntityKind::Text { .. } => {}
+                EntityKind::DimAligned { .. } | EntityKind::Text { .. } => {}
             }
         }
     }
@@ -1748,7 +1748,7 @@ impl CadKitApp {
                     );
                 }
             }
-            EntityKind::DimLinear { .. } | EntityKind::Text { .. } => {}
+            EntityKind::DimAligned { .. } | EntityKind::Text { .. } => {}
         }
     }
 
@@ -2024,7 +2024,7 @@ impl eframe::App for CadKitApp {
             if ok_clicked {
                 self.push_undo();
                 if let Some(entity) = self.drawing.get_entity_mut(&dlg.id) {
-                    if let EntityKind::DimLinear { text_override, .. } = &mut entity.kind {
+                    if let EntityKind::DimAligned { text_override, .. } = &mut entity.kind {
                         let s = dlg.override_str.trim();
                         *text_override = if s.is_empty() || s == "<>" { None } else { Some(s.to_string()) };
                     }
@@ -2084,7 +2084,7 @@ impl eframe::App for CadKitApp {
                         ui.separator();
                         egui::Grid::new("help_dim").striped(true).show(ui, |ui| {
                             for (alias, full, desc) in [
-                                ("DLI / DIM",   "DIMLINEAR",  "Place a linear dimension"),
+                                ("DAL / DLI",   "DIMALIGNED", "Place an aligned dimension"),
                                 ("ED / EDITDIM", "",          "Edit dimension text (<> = measured distance)"),
                             ] {
                                 ui.label(egui::RichText::new(alias).strong());
@@ -2710,7 +2710,7 @@ impl eframe::App for CadKitApp {
                                             self.apply_rotate(angle);
                                         }
                                     } else if !matches!(self.dim_phase, DimPhase::Idle) {
-                                        // DIMLINEAR point pick — same snap logic as MOVE/COPY/ROTATE.
+                                        // DIMALIGNED point pick — same snap logic as MOVE/COPY/ROTATE.
                                         let local = click_pos - response.rect.min;
                                         let raw_world = screen_to_world(local.x, local.y, viewport);
                                         let pick = self.pick_entity_point(viewport, response.rect, click_pos);
@@ -2724,15 +2724,15 @@ impl eframe::App for CadKitApp {
                                         }
                                         if matches!(self.dim_phase, DimPhase::FirstPoint) {
                                             self.dim_phase = DimPhase::SecondPoint { first: world };
-                                            self.command_log.push(format!("DIMLINEAR: First point ({:.4}, {:.4})", world.x, world.y));
+                                            self.command_log.push(format!("DIMALIGNED: First point ({:.4}, {:.4})", world.x, world.y));
                                         } else if let DimPhase::SecondPoint { first } = self.dim_phase {
                                             self.dim_phase = DimPhase::Placing { first, second: world };
-                                            self.command_log.push(format!("DIMLINEAR: Second point ({:.4}, {:.4})", world.x, world.y));
+                                            self.command_log.push(format!("DIMALIGNED: Second point ({:.4}, {:.4})", world.x, world.y));
                                         } else if let DimPhase::Placing { first, second } = self.dim_phase {
-                                            self.place_dim_linear(first, second, world);
+                                            self.place_dim_aligned(first, second, world);
                                         }
                                     } else if self.text_phase == TextPhase::PlacingPosition {
-                                        // TEXT insertion point pick — same snap logic as DIMLINEAR.
+                                        // TEXT insertion point pick — same snap logic as DIMALIGNED.
                                         let local = click_pos - response.rect.min;
                                         let raw_world = screen_to_world(local.x, local.y, viewport);
                                         let pick = self.pick_entity_point(viewport, response.rect, click_pos);
@@ -2768,7 +2768,7 @@ impl eframe::App for CadKitApp {
                                     } else if self.edit_dim_phase == EditDimPhase::SelectingEntity {
                                         if let Some(id) = self.entity_at_screen_pos(viewport, response.rect, click_pos) {
                                             if let Some(entity) = self.drawing.get_entity(&id) {
-                                                if let EntityKind::DimLinear { text_override, .. } = &entity.kind {
+                                                if let EntityKind::DimAligned { text_override, .. } = &entity.kind {
                                                     self.dim_edit_dialog = Some(DimEditDialog {
                                                         id,
                                                         override_str: text_override.clone().unwrap_or_else(|| "<>".to_string()),
@@ -3118,7 +3118,7 @@ impl eframe::App for CadKitApp {
                                 }
                             }
 
-                            // MOVE / COPY / ROTATE / DIMLINEAR / TEXT ghost preview.
+                            // MOVE / COPY / ROTATE / DIMALIGNED / TEXT ghost preview.
                             self.draw_move_preview(ui, response.rect, viewport, world);
                             self.draw_copy_preview(ui, response.rect, viewport, world);
                             self.draw_rotate_preview(ui, response.rect, viewport, world);
@@ -3634,7 +3634,7 @@ impl CadKitApp {
                 }
                 Some((min_x, min_y, max_x, max_y))
             }
-            EntityKind::DimLinear { start, end, offset, .. } => {
+            EntityKind::DimAligned { start, end, offset, .. } => {
                 let ddx = end.x - start.x;
                 let ddy = end.y - start.y;
                 let glen = (ddx*ddx + ddy*ddy).sqrt();
@@ -3784,7 +3784,7 @@ impl CadKitApp {
                         add_seg(a, b);
                     }
                 }
-                EntityKind::DimLinear { start, end, .. } => {
+                EntityKind::DimAligned { start, end, .. } => {
                     let s: Vec2 = (*start).into();
                     let e: Vec2 = (*end).into();
                     let mid = Vec2::new((s.x + e.x) * 0.5, (s.y + e.y) * 0.5);
@@ -4186,7 +4186,7 @@ impl CadKitApp {
                     "TRIM: Polyline trim not yet supported".to_string(),
                 );
             }
-            EntityKind::DimLinear { .. } => {
+            EntityKind::DimAligned { .. } => {
                 return TrimResult::Fail(
                     "TRIM: Cannot trim dimension entities".to_string(),
                 );

@@ -145,7 +145,7 @@ impl CadKitApp {
                         );
                     }
                 }
-                EntityKind::DimLinear { start, end, offset, .. } => {
+                EntityKind::DimAligned { start, end, offset, .. } => {
                     let sx = start.x as f32; let sy = start.y as f32;
                     let ex = end.x as f32;   let ey = end.y as f32;
                     let ddx = ex - sx; let ddy = ey - sy;
@@ -274,7 +274,7 @@ impl CadKitApp {
                 }
                 min_d
             }
-            EntityKind::DimLinear { start, end, offset, .. } => {
+            EntityKind::DimAligned { start, end, offset, .. } => {
                 let sx = start.x as f32; let sy = start.y as f32;
                 let ex = end.x as f32;   let ey = end.y as f32;
                 let ddx = ex - sx; let ddy = ey - sy;
@@ -379,7 +379,7 @@ impl CadKitApp {
             EntityKind::Polyline { vertices, closed } => Some(GeomPrim::Polyline(
                 GeomPolyline::new(vertices.clone(), *closed),
             )),
-            EntityKind::DimLinear { .. } | EntityKind::Text { .. } => None,
+            EntityKind::DimAligned { .. } | EntityKind::Text { .. } => None,
         }
     }
 
