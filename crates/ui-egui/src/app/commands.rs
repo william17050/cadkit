@@ -1,6 +1,6 @@
 use super::state::{
-    ActiveTool, CopyPhase, DimPhase, EditDimPhase, EditTextPhase, ExtendPhase, FromPhase,
-    MovePhase, OffsetPhase, RotatePhase, TextPhase, TrimPhase,
+    ActiveTool, CopyPhase, DimLinearPhase, DimPhase, EditDimPhase, EditTextPhase, ExtendPhase,
+    FromPhase, MovePhase, OffsetPhase, RotatePhase, TextPhase, TrimPhase,
 };
 use super::{create_arc_from_three_points, CadKitApp};
 use cadkit_2d_core::{create_circle, create_line};
@@ -219,7 +219,7 @@ impl CadKitApp {
                 log::info!("Command: EDITTEXT");
                 true
             }
-            "dal" | "dimaligned" | "dli" | "dimlinear" | "dim" => {
+            "dal" | "dimaligned" | "dim" => {
                 self.cancel_active_tool();
                 self.exit_trim();
                 self.exit_offset();
@@ -231,6 +231,28 @@ impl CadKitApp {
                 self.command_log
                     .push("DIMALIGNED: Specify first extension line origin".to_string());
                 log::info!("Command: DIMALIGNED");
+                true
+            }
+            "dli" | "dimlinear" => {
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.dim_linear_phase = DimLinearPhase::FirstPoint;
+                self.command_log
+                    .push("DIMLINEAR: Specify first extension line origin".to_string());
+                log::info!("Command: DIMLINEAR");
+                true
+            }
+            "grid" | "gr" => {
+                self.grid_visible = !self.grid_visible;
+                self.command_log.push(format!(
+                    "Grid {}",
+                    if self.grid_visible { "ON" } else { "OFF" }
+                ));
                 true
             }
             "help" | "?" => {

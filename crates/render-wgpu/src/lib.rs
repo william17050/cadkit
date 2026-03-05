@@ -465,6 +465,73 @@ impl Viewport {
                     // not by the wgpu vertex buffer.
                     let _ = (text_override, text_pos);
                 }
+                EntityKind::DimLinear { start, end, offset, text_override, text_pos, horizontal } => {
+                    let sx = start.x as f32;
+                    let sy = start.y as f32;
+                    let ex = end.x as f32;
+                    let ey = end.y as f32;
+                    let off = *offset as f32;
+                    let sign = if off >= 0.0 { 1.0f32 } else { -1.0f32 };
+                    let gap = 1.0f32;
+                    let arrow_len = 3.0f32;
+                    let arrow_hw = 0.75f32;
+                    let ec = [c[0] * 0.75, c[1] * 0.75, c[2] * 0.75];
+
+                    let (dl1, dl2, ext1_s, ext2_s, dir, perp) = if *horizontal {
+                        // Horizontal dim: measures X, dim line at mid_y + offset
+                        let mid_y = (sy + ey) * 0.5;
+                        let dim_y = mid_y + off;
+                        let dl1 = [sx, dim_y];
+                        let dl2 = [ex, dim_y];
+                        let ext1_s = [sx, sy + sign * gap];
+                        let ext2_s = [ex, ey + sign * gap];
+                        (dl1, dl2, ext1_s, ext2_s, [1.0f32, 0.0f32], [0.0f32, 1.0f32])
+                    } else {
+                        // Vertical dim: measures Y, dim line at mid_x + offset
+                        let mid_x = (sx + ex) * 0.5;
+                        let dim_x = mid_x + off;
+                        let dl1 = [dim_x, sy];
+                        let dl2 = [dim_x, ey];
+                        let ext1_s = [sx + sign * gap, sy];
+                        let ext2_s = [ex + sign * gap, ey];
+                        (dl1, dl2, ext1_s, ext2_s, [0.0f32, 1.0f32], [1.0f32, 0.0f32])
+                    };
+
+                    // Extension lines
+                    vertices.push(Vertex::new(ext1_s[0], ext1_s[1], ec[0], ec[1], ec[2]));
+                    vertices.push(Vertex::new(dl1[0], dl1[1], ec[0], ec[1], ec[2]));
+                    vertices.push(Vertex::new(ext2_s[0], ext2_s[1], ec[0], ec[1], ec[2]));
+                    vertices.push(Vertex::new(dl2[0], dl2[1], ec[0], ec[1], ec[2]));
+
+                    // Dimension line — orient so dl_a has lower coord value
+                    let (dl_a, dl_b) = if dir[0] > 0.5 {
+                        if dl1[0] <= dl2[0] { (dl1, dl2) } else { (dl2, dl1) }
+                    } else {
+                        if dl1[1] <= dl2[1] { (dl1, dl2) } else { (dl2, dl1) }
+                    };
+                    vertices.push(Vertex::new(dl_a[0], dl_a[1], c[0], c[1], c[2]));
+                    vertices.push(Vertex::new(dl_b[0], dl_b[1], c[0], c[1], c[2]));
+
+                    // Arrow at dl_a pointing in +dir
+                    let a1_base = [dl_a[0] + dir[0] * arrow_len, dl_a[1] + dir[1] * arrow_len];
+                    let a1_w1 = [a1_base[0] + perp[0] * arrow_hw, a1_base[1] + perp[1] * arrow_hw];
+                    let a1_w2 = [a1_base[0] - perp[0] * arrow_hw, a1_base[1] - perp[1] * arrow_hw];
+                    vertices.push(Vertex::new(dl_a[0], dl_a[1], c[0], c[1], c[2]));
+                    vertices.push(Vertex::new(a1_w1[0], a1_w1[1], c[0], c[1], c[2]));
+                    vertices.push(Vertex::new(dl_a[0], dl_a[1], c[0], c[1], c[2]));
+                    vertices.push(Vertex::new(a1_w2[0], a1_w2[1], c[0], c[1], c[2]));
+
+                    // Arrow at dl_b pointing in -dir
+                    let a2_base = [dl_b[0] - dir[0] * arrow_len, dl_b[1] - dir[1] * arrow_len];
+                    let a2_w1 = [a2_base[0] + perp[0] * arrow_hw, a2_base[1] + perp[1] * arrow_hw];
+                    let a2_w2 = [a2_base[0] - perp[0] * arrow_hw, a2_base[1] - perp[1] * arrow_hw];
+                    vertices.push(Vertex::new(dl_b[0], dl_b[1], c[0], c[1], c[2]));
+                    vertices.push(Vertex::new(a2_w1[0], a2_w1[1], c[0], c[1], c[2]));
+                    vertices.push(Vertex::new(dl_b[0], dl_b[1], c[0], c[1], c[2]));
+                    vertices.push(Vertex::new(a2_w2[0], a2_w2[1], c[0], c[1], c[2]));
+
+                    let _ = (text_override, text_pos);
+                }
                 EntityKind::Text { .. } => {
                     // Text entities are rendered by the egui overlay (painter.text),
                     // not by the wgpu vertex buffer.  Nothing to emit here.

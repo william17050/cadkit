@@ -71,6 +71,16 @@ pub enum EntityKind {
         text_pos: Vec3,                 // world-space centre of dimension text
     },
 
+    /// Horizontal or vertical (linear) dimension
+    DimLinear {
+        start: Vec3,                    // first extension line origin
+        end: Vec3,                      // second extension line origin
+        offset: f64,                    // signed displacement from mid-Y (horiz) or mid-X (vert) to dim line
+        text_override: Option<String>,
+        text_pos: Vec3,
+        horizontal: bool,               // true = measures X distance; false = measures Y distance
+    },
+
     /// Free-standing text label
     Text {
         position: Vec3,   // insertion point (baseline-left), z=0
@@ -93,7 +103,8 @@ impl EntityKind {
             EntityKind::Polyline { vertices, .. } => {
                 vertices.iter().all(|v| v.z.abs() < f64::EPSILON)
             }
-            EntityKind::DimAligned { start, end, text_pos, .. } => {
+            EntityKind::DimAligned { start, end, text_pos, .. }
+            | EntityKind::DimLinear { start, end, text_pos, .. } => {
                 start.z.abs() < f64::EPSILON
                     && end.z.abs() < f64::EPSILON
                     && text_pos.z.abs() < f64::EPSILON

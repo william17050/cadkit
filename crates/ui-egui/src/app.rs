@@ -24,6 +24,8 @@ pub struct CadKitApp {
     viewport_init_error: Option<String>,
     hover_world_pos: Option<cadkit_types::Vec2>,
     snap_enabled: bool,
+    grid_visible: bool,
+    grid_spacing: f64,
     active_tool: ActiveTool,
     selection: Option<Selection>,
     selected_entities: HashSet<Guid>,
@@ -55,6 +57,7 @@ pub struct CadKitApp {
     from_phase: FromPhase,
     from_base: Option<Vec2>,
     dim_phase: DimPhase,
+    dim_linear_phase: DimLinearPhase,
     text_phase: TextPhase,
     last_text_height: f64,
     last_text_rotation: f64,
@@ -93,6 +96,8 @@ impl Default for CadKitApp {
             viewport_init_error: None,
             hover_world_pos: None,
             snap_enabled: true,
+            grid_visible: true,
+            grid_spacing: 12.0,
             active_tool: ActiveTool::None,
             selection: None,
             selected_entities: HashSet::new(),
@@ -124,6 +129,7 @@ impl Default for CadKitApp {
             from_phase: FromPhase::Idle,
             from_base: None,
             dim_phase: DimPhase::Idle,
+            dim_linear_phase: DimLinearPhase::Idle,
             text_phase: TextPhase::Idle,
             last_text_height: 2.5,
             last_text_rotation: 0.0,
@@ -152,7 +158,6 @@ impl Default for CadKitApp {
 impl CadKitApp {
     const UNDO_LIMIT: usize = 50;
     const PAN_SENSITIVITY: f32 = 0.3;
-    const GRID_SPACING: f64 = 12.0;
     const GRID_MAX_POINTS: usize = 20_000;
     const PICK_RADIUS: f32 = 16.0; // screen-space pixels
     const GEOM_TOL: f64 = 1e-9;
@@ -173,6 +178,7 @@ impl CadKitApp {
 
     fn exit_dim(&mut self) {
         self.dim_phase = DimPhase::Idle;
+        self.dim_linear_phase = DimLinearPhase::Idle;
     }
 
     fn exit_text(&mut self) {
@@ -202,6 +208,7 @@ impl CadKitApp {
                     || matches!(self.copy_phase, CopyPhase::BasePoint | CopyPhase::Destination)
                     || matches!(self.rotate_phase, RotatePhase::BasePoint | RotatePhase::Rotation)
                     || !matches!(self.dim_phase, DimPhase::Idle)
+                    || !matches!(self.dim_linear_phase, DimLinearPhase::Idle)
                     || self.text_phase == TextPhase::PlacingPosition
             }
         }
@@ -306,6 +313,14 @@ impl CadKitApp {
             self.command_log.push(format!("DIMALIGNED: Second point ({:.4}, {:.4})", world.x, world.y));
         } else if let DimPhase::Placing { first, second } = self.dim_phase {
             self.place_dim_aligned(first, second, world);
+        } else if matches!(self.dim_linear_phase, DimLinearPhase::FirstPoint) {
+            self.dim_linear_phase = DimLinearPhase::SecondPoint { first: world };
+            self.command_log.push(format!("DIMLINEAR: First point ({:.4}, {:.4})", world.x, world.y));
+        } else if let DimLinearPhase::SecondPoint { first } = self.dim_linear_phase {
+            self.dim_linear_phase = DimLinearPhase::Placing { first, second: world };
+            self.command_log.push(format!("DIMLINEAR: Second point ({:.4}, {:.4})", world.x, world.y));
+        } else if let DimLinearPhase::Placing { first, second } = self.dim_linear_phase {
+            self.place_dim_linear(first, second, world);
         } else if self.text_phase == TextPhase::PlacingPosition {
             self.text_phase = TextPhase::EnteringHeight { position: world };
             self.command_input.clear();
@@ -409,9 +424,10 @@ impl CadKitApp {
         }
     }
 
-    fn snap_to_grid(world: cadkit_types::Vec2) -> cadkit_types::Vec2 {
-        let gx = (world.x / Self::GRID_SPACING).round() * Self::GRID_SPACING;
-        let gy = (world.y / Self::GRID_SPACING).round() * Self::GRID_SPACING;
+    fn snap_to_grid(&self, world: cadkit_types::Vec2) -> cadkit_types::Vec2 {
+        let s = self.grid_spacing;
+        let gx = (world.x / s).round() * s;
+        let gy = (world.y / s).round() * s;
         cadkit_types::Vec2::new(gx, gy)
     }
 
@@ -465,10 +481,15 @@ impl CadKitApp {
                         ExtendPhase::Idle => match self.copy_phase {
                             CopyPhase::Idle => match self.rotate_phase {
                                 RotatePhase::Idle => match self.dim_phase {
-                                    DimPhase::Idle => "Command:".into(),
-                                    DimPhase::FirstPoint => "DIMALIGNEDSpecify first extension line origin:".into(),
-                                    DimPhase::SecondPoint { .. } => "DIMALIGNEDSpecify second extension line origin:".into(),
-                                    DimPhase::Placing { .. } => "DIMALIGNEDSpecify dimension line location:".into(),
+                                    DimPhase::FirstPoint => "DIMALIGNED  Specify first extension line origin:".into(),
+                                    DimPhase::SecondPoint { .. } => "DIMALIGNED  Specify second extension line origin:".into(),
+                                    DimPhase::Placing { .. } => "DIMALIGNED  Specify dimension line location:".into(),
+                                    DimPhase::Idle => match self.dim_linear_phase {
+                                        DimLinearPhase::FirstPoint => "DIMLINEAR  Specify first extension line origin:".into(),
+                                        DimLinearPhase::SecondPoint { .. } => "DIMLINEAR  Specify second extension line origin:".into(),
+                                        DimLinearPhase::Placing { .. } => "DIMLINEAR  Drag to set H or V dimension line location:".into(),
+                                        DimLinearPhase::Idle => "Command:".into(),
+                                    },
                                 },
                                 RotatePhase::SelectingEntities => "ROTATE  Select entities, press Enter to continue:".into(),
                                 RotatePhase::BasePoint => "ROTATE  Pick base point:".into(),
@@ -561,7 +582,8 @@ impl CadKitApp {
                             v.y += dy;
                         }
                     }
-                    EntityKind::DimAligned { start, end, text_pos, .. } => {
+                    EntityKind::DimAligned { start, end, text_pos, .. }
+                    | EntityKind::DimLinear { start, end, text_pos, .. } => {
                         start.x += dx; start.y += dy;
                         end.x += dx;   end.y += dy;
                         text_pos.x += dx; text_pos.y += dy;
@@ -668,6 +690,29 @@ impl CadKitApp {
                     painter.line_segment([rect.min + egui::vec2(p1x, p1y), rect.min + egui::vec2(dl1x, dl1y)], ghost_stroke);
                     painter.line_segment([rect.min + egui::vec2(p2x, p2y), rect.min + egui::vec2(dl2x, dl2y)], ghost_stroke);
                 }
+                EntityKind::DimLinear { start, end, offset, horizontal, .. } => {
+                    let gsx = start.x + dx; let gsy = start.y + dy;
+                    let gex = end.x + dx;   let gey = end.y + dy;
+                    let off = *offset;
+                    let (p1x, p1y, p2x, p2y, dl1x, dl1y, dl2x, dl2y) = if *horizontal {
+                        let x1 = gsx.min(gex); let x2 = gsx.max(gex);
+                        let (p1x, p1y) = world_to_screen(x1 as f32, gsy as f32, viewport);
+                        let (p2x, p2y) = world_to_screen(x2 as f32, gey as f32, viewport);
+                        let (dl1x, dl1y) = world_to_screen(x1 as f32, ((gsy+gey)*0.5 + off) as f32, viewport);
+                        let (dl2x, dl2y) = world_to_screen(x2 as f32, ((gsy+gey)*0.5 + off) as f32, viewport);
+                        (p1x, p1y, p2x, p2y, dl1x, dl1y, dl2x, dl2y)
+                    } else {
+                        let y1 = gsy.min(gey); let y2 = gsy.max(gey);
+                        let (p1x, p1y) = world_to_screen(gsx as f32, y1 as f32, viewport);
+                        let (p2x, p2y) = world_to_screen(gex as f32, y2 as f32, viewport);
+                        let (dl1x, dl1y) = world_to_screen(((gsx+gex)*0.5 + off) as f32, y1 as f32, viewport);
+                        let (dl2x, dl2y) = world_to_screen(((gsx+gex)*0.5 + off) as f32, y2 as f32, viewport);
+                        (p1x, p1y, p2x, p2y, dl1x, dl1y, dl2x, dl2y)
+                    };
+                    painter.line_segment([rect.min + egui::vec2(dl1x, dl1y), rect.min + egui::vec2(dl2x, dl2y)], ghost_stroke);
+                    painter.line_segment([rect.min + egui::vec2(p1x, p1y), rect.min + egui::vec2(dl1x, dl1y)], ghost_stroke);
+                    painter.line_segment([rect.min + egui::vec2(p2x, p2y), rect.min + egui::vec2(dl2x, dl2y)], ghost_stroke);
+                }
                 EntityKind::Text { .. } => {} // text ghost not rendered (position marker only)
             }
         }
@@ -723,6 +768,14 @@ impl CadKitApp {
                         offset: *offset,
                         text_override: text_override.clone(),
                         text_pos: Vec3::xy(text_pos.x + dx, text_pos.y + dy),
+                    },
+                    EntityKind::DimLinear { start, end, offset, text_override, text_pos, horizontal } => EntityKind::DimLinear {
+                        start: Vec3::xy(start.x + dx, start.y + dy),
+                        end:   Vec3::xy(end.x   + dx, end.y   + dy),
+                        offset: *offset,
+                        text_override: text_override.clone(),
+                        text_pos: Vec3::xy(text_pos.x + dx, text_pos.y + dy),
+                        horizontal: *horizontal,
                     },
                     EntityKind::Text { position, content, height, rotation } => EntityKind::Text {
                         position: Vec3::xy(position.x + dx, position.y + dy),
@@ -828,6 +881,29 @@ impl CadKitApp {
                     painter.line_segment([rect.min + egui::vec2(p1x, p1y), rect.min + egui::vec2(dl1x, dl1y)], ghost_stroke);
                     painter.line_segment([rect.min + egui::vec2(p2x, p2y), rect.min + egui::vec2(dl2x, dl2y)], ghost_stroke);
                 }
+                EntityKind::DimLinear { start, end, offset, horizontal, .. } => {
+                    let gsx = start.x + dx; let gsy = start.y + dy;
+                    let gex = end.x + dx;   let gey = end.y + dy;
+                    let off = *offset;
+                    let (p1x, p1y, p2x, p2y, dl1x, dl1y, dl2x, dl2y) = if *horizontal {
+                        let x1 = gsx.min(gex); let x2 = gsx.max(gex);
+                        let (p1x, p1y) = world_to_screen(x1 as f32, gsy as f32, viewport);
+                        let (p2x, p2y) = world_to_screen(x2 as f32, gey as f32, viewport);
+                        let (dl1x, dl1y) = world_to_screen(x1 as f32, ((gsy+gey)*0.5 + off) as f32, viewport);
+                        let (dl2x, dl2y) = world_to_screen(x2 as f32, ((gsy+gey)*0.5 + off) as f32, viewport);
+                        (p1x, p1y, p2x, p2y, dl1x, dl1y, dl2x, dl2y)
+                    } else {
+                        let y1 = gsy.min(gey); let y2 = gsy.max(gey);
+                        let (p1x, p1y) = world_to_screen(gsx as f32, y1 as f32, viewport);
+                        let (p2x, p2y) = world_to_screen(gex as f32, y2 as f32, viewport);
+                        let (dl1x, dl1y) = world_to_screen(((gsx+gex)*0.5 + off) as f32, y1 as f32, viewport);
+                        let (dl2x, dl2y) = world_to_screen(((gsx+gex)*0.5 + off) as f32, y2 as f32, viewport);
+                        (p1x, p1y, p2x, p2y, dl1x, dl1y, dl2x, dl2y)
+                    };
+                    painter.line_segment([rect.min + egui::vec2(dl1x, dl1y), rect.min + egui::vec2(dl2x, dl2y)], ghost_stroke);
+                    painter.line_segment([rect.min + egui::vec2(p1x, p1y), rect.min + egui::vec2(dl1x, dl1y)], ghost_stroke);
+                    painter.line_segment([rect.min + egui::vec2(p2x, p2y), rect.min + egui::vec2(dl2x, dl2y)], ghost_stroke);
+                }
                 EntityKind::Text { .. } => {}
             }
         }
@@ -881,11 +957,12 @@ impl CadKitApp {
                             *v = rotate_pt(*v, base.x, base.y, cos_a, sin_a);
                         }
                     }
-                    EntityKind::DimAligned { start, end, text_pos, .. } => {
+                    EntityKind::DimAligned { start, end, text_pos, .. }
+                    | EntityKind::DimLinear { start, end, text_pos, .. } => {
                         *start    = rotate_pt(*start,    base.x, base.y, cos_a, sin_a);
                         *end      = rotate_pt(*end,      base.x, base.y, cos_a, sin_a);
                         *text_pos = rotate_pt(*text_pos, base.x, base.y, cos_a, sin_a);
-                        // offset scalar is preserved by rotation (see geometry proof)
+                        // offset scalar is preserved by rotation
                     }
                     EntityKind::Text { position, rotation, .. } => {
                         *position = rotate_pt(*position, base.x, base.y, cos_a, sin_a);
@@ -984,7 +1061,6 @@ impl CadKitApp {
                 EntityKind::DimAligned { start, end, offset, .. } => {
                     let (rs1x, rs1y) = rot(*start);
                     let (rs2x, rs2y) = rot(*end);
-                    // Compute rotated dim line endpoints
                     let ddx = end.x - start.x;
                     let ddy = end.y - start.y;
                     let glen = (ddx*ddx + ddy*ddy).sqrt();
@@ -993,6 +1069,27 @@ impl CadKitApp {
                     let off = *offset;
                     let dl1 = Vec3::xy(start.x + perp.x * off, start.y + perp.y * off);
                     let dl2 = Vec3::xy(end.x   + perp.x * off, end.y   + perp.y * off);
+                    let (rdl1x, rdl1y) = rot(dl1);
+                    let (rdl2x, rdl2y) = rot(dl2);
+                    painter.line_segment([rect.min + egui::vec2(rdl1x, rdl1y), rect.min + egui::vec2(rdl2x, rdl2y)], ghost_stroke);
+                    painter.line_segment([rect.min + egui::vec2(rs1x, rs1y), rect.min + egui::vec2(rdl1x, rdl1y)], ghost_stroke);
+                    painter.line_segment([rect.min + egui::vec2(rs2x, rs2y), rect.min + egui::vec2(rdl2x, rdl2y)], ghost_stroke);
+                }
+                EntityKind::DimLinear { start, end, offset, horizontal, .. } => {
+                    // Rotate the start/end points and approximate the dim line.
+                    let (rs1x, rs1y) = rot(*start);
+                    let (rs2x, rs2y) = rot(*end);
+                    let off = *offset;
+                    // dim line endpoints in world space before rotation
+                    let mid_x = (start.x + end.x) * 0.5;
+                    let mid_y = (start.y + end.y) * 0.5;
+                    let (dl1, dl2) = if *horizontal {
+                        let x1 = start.x.min(end.x); let x2 = start.x.max(end.x);
+                        (Vec3::xy(x1, mid_y + off), Vec3::xy(x2, mid_y + off))
+                    } else {
+                        let y1 = start.y.min(end.y); let y2 = start.y.max(end.y);
+                        (Vec3::xy(mid_x + off, y1), Vec3::xy(mid_x + off, y2))
+                    };
                     let (rdl1x, rdl1y) = rot(dl1);
                     let (rdl2x, rdl2y) = rot(dl2);
                     painter.line_segment([rect.min + egui::vec2(rdl1x, rdl1y), rect.min + egui::vec2(rdl2x, rdl2y)], ghost_stroke);
@@ -1041,6 +1138,55 @@ impl CadKitApp {
         self.command_log.push(format!("DIMALIGNED: Distance = {:.4}", len));
         // Stay in FirstPoint so user can chain dimensions.
         self.dim_phase = DimPhase::FirstPoint;
+    }
+
+    /// Place a DimLinear (H or V locked) entity.
+    /// `offset_world` is the cursor position during the Placing phase;
+    /// the axis lock is determined by which displacement component is larger.
+    fn place_dim_linear(&mut self, first: Vec2, second: Vec2, offset_world: Vec2) {
+        let dx = (second.x - first.x).abs();
+        let dy = (second.y - first.y).abs();
+        if dx < 1e-6 && dy < 1e-6 {
+            self.command_log.push("DIMLINEAR: Degenerate dimension, ignored".to_string());
+            return;
+        }
+        // Axis lock: if the user drags mostly vertically from the midpoint,
+        // the dimension is horizontal (measures X distance) and vice versa.
+        let mid_x = (first.x + second.x) * 0.5;
+        let mid_y = (first.y + second.y) * 0.5;
+        let horizontal = (offset_world.y - mid_y).abs() > (offset_world.x - mid_x).abs();
+        let offset = if horizontal {
+            let raw = offset_world.y - mid_y;
+            if raw.abs() < 5.0 { if raw >= 0.0 { 5.0 } else { -5.0 } } else { raw }
+        } else {
+            let raw = offset_world.x - mid_x;
+            if raw.abs() < 5.0 { if raw >= 0.0 { 5.0 } else { -5.0 } } else { raw }
+        };
+        let text_pos = if horizontal {
+            Vec3::xy(mid_x, mid_y + offset)
+        } else {
+            Vec3::xy(mid_x + offset, mid_y)
+        };
+        let dist = if horizontal { dx } else { dy };
+        self.push_undo();
+        let existing_dim_layer = self.drawing.layers().find(|l| l.name == "Dim").map(|l| l.id);
+        let dim_layer = existing_dim_layer
+            .unwrap_or_else(|| self.drawing.add_layer_with_color("Dim".to_string(), [0, 180, 220]));
+        let entity = Entity::new(
+            EntityKind::DimLinear {
+                start: Vec3::xy(first.x, first.y),
+                end: Vec3::xy(second.x, second.y),
+                offset,
+                text_override: None,
+                text_pos,
+                horizontal,
+            },
+            dim_layer,
+        );
+        self.drawing.add_entity(entity);
+        self.command_log.push(format!("DIMLINEAR: {} = {:.4}", if horizontal { "Width" } else { "Height" }, dist));
+        // Stay in FirstPoint for chaining.
+        self.dim_linear_phase = DimLinearPhase::FirstPoint;
     }
 
     /// Draw the DIMALIGNED rubber-band preview during SecondPoint and Placing phases.
@@ -1119,6 +1265,87 @@ impl CadKitApp {
                     override_text_color: None,
                     opacity_factor:      1.0,
                     angle:               screen_angle,
+                }));
+            }
+            _ => {}
+        }
+    }
+
+    /// Draw the DIMLINEAR rubber-band preview during SecondPoint and Placing phases.
+    fn draw_dim_linear_preview(&self, ui: &egui::Ui, rect: egui::Rect, viewport: &Viewport, world_cursor: Vec2) {
+        let ghost_stroke = egui::Stroke::new(1.5, egui::Color32::from_rgba_premultiplied(220, 210, 80, 180));
+        let painter = ui.painter_at(rect);
+
+        match &self.dim_linear_phase {
+            DimLinearPhase::SecondPoint { first } => {
+                let (x1, y1) = world_to_screen(first.x as f32, first.y as f32, viewport);
+                let p1 = rect.min + egui::vec2(x1, y1);
+                let r = 5.0_f32;
+                painter.line_segment([p1 - egui::vec2(r, r), p1 + egui::vec2(r, r)], ghost_stroke);
+                painter.line_segment([p1 - egui::vec2(r, -r), p1 + egui::vec2(r, -r)], ghost_stroke);
+                let (x2, y2) = world_to_screen(world_cursor.x as f32, world_cursor.y as f32, viewport);
+                let p2 = rect.min + egui::vec2(x2, y2);
+                painter.line_segment([p1, p2], ghost_stroke);
+            }
+            DimLinearPhase::Placing { first, second } => {
+                let mid_x = (first.x + second.x) * 0.5;
+                let mid_y = (first.y + second.y) * 0.5;
+                let horizontal = (world_cursor.y - mid_y).abs() > (world_cursor.x - mid_x).abs();
+                let (dist, dim_line_val) = if horizontal {
+                    let raw = world_cursor.y - mid_y;
+                    let offset = if raw.abs() < 5.0 { if raw >= 0.0 { 5.0 } else { -5.0 } } else { raw };
+                    ((second.x - first.x).abs(), mid_y + offset)
+                } else {
+                    let raw = world_cursor.x - mid_x;
+                    let offset = if raw.abs() < 5.0 { if raw >= 0.0 { 5.0 } else { -5.0 } } else { raw };
+                    ((second.y - first.y).abs(), mid_x + offset)
+                };
+                // Draw H or V dim line + extension lines
+                let (p_s1, p_s2, p_d1, p_d2, text_world) = if horizontal {
+                    // Horizontal dim: measures X. Dim line is horizontal at Y = dim_line_val.
+                    let x1 = first.x.min(second.x); let x2 = first.x.max(second.x);
+                    let (ex1, ey1) = world_to_screen(x1 as f32, first.y.min(second.y) as f32, viewport);
+                    let (ex2, ey2) = world_to_screen(x2 as f32, first.y.max(second.y) as f32, viewport);
+                    let (dl1x, dl1y) = world_to_screen(x1 as f32, dim_line_val as f32, viewport);
+                    let (dl2x, dl2y) = world_to_screen(x2 as f32, dim_line_val as f32, viewport);
+                    let _ = (ey1, ey2);
+                    (rect.min + egui::vec2(ex1, world_to_screen(x1 as f32, first.y as f32, viewport).1),
+                     rect.min + egui::vec2(ex2, world_to_screen(x2 as f32, second.y as f32, viewport).1),
+                     rect.min + egui::vec2(dl1x, dl1y),
+                     rect.min + egui::vec2(dl2x, dl2y),
+                     [mid_x, dim_line_val])
+                } else {
+                    let y1 = first.y.min(second.y); let y2 = first.y.max(second.y);
+                    let (dl1x, dl1y) = world_to_screen(dim_line_val as f32, y1 as f32, viewport);
+                    let (dl2x, dl2y) = world_to_screen(dim_line_val as f32, y2 as f32, viewport);
+                    (rect.min + egui::vec2(world_to_screen(first.x as f32, y1 as f32, viewport).0, world_to_screen(first.x as f32, y1 as f32, viewport).1),
+                     rect.min + egui::vec2(world_to_screen(second.x as f32, y2 as f32, viewport).0, world_to_screen(second.x as f32, y2 as f32, viewport).1),
+                     rect.min + egui::vec2(dl1x, dl1y),
+                     rect.min + egui::vec2(dl2x, dl2y),
+                     [dim_line_val, mid_y])
+                };
+                painter.line_segment([p_d1, p_d2], ghost_stroke);
+                painter.line_segment([p_s1, p_d1], ghost_stroke);
+                painter.line_segment([p_s2, p_d2], ghost_stroke);
+                // Text label
+                let dist_text = format!("{:.3}", dist);
+                let (tcsx, tcsy) = world_to_screen(text_world[0] as f32, text_world[1] as f32, viewport);
+                let text_center = rect.min + egui::vec2(tcsx, tcsy);
+                let font_size = (2.5 * viewport.zoom as f64).clamp(8.0, 48.0) as f32;
+                let ghost_color = egui::Color32::from_rgba_premultiplied(220, 210, 80, 180);
+                let galley = painter.ctx().fonts(|f| {
+                    f.layout_no_wrap(dist_text, egui::FontId::proportional(font_size), ghost_color)
+                });
+                let w = galley.size().x;
+                let h = galley.size().y;
+                let anchor = text_center - egui::vec2(w * 0.5, h * 0.5);
+                painter.add(egui::Shape::Text(egui::epaint::TextShape {
+                    pos: anchor, galley,
+                    underline: egui::epaint::Stroke::NONE,
+                    fallback_color: ghost_color,
+                    override_text_color: None,
+                    opacity_factor: 1.0,
+                    angle: 0.0,
                 }));
             }
             _ => {}
@@ -1362,28 +1589,36 @@ impl CadKitApp {
         let painter = ui.painter_at(rect);
 
         for entity in self.drawing.visible_entities() {
-            let EntityKind::DimAligned { start, end, text_pos, text_override, .. } = &entity.kind
-            else { continue };
+            let (text_pos, text_override, dist, screen_angle) = match &entity.kind {
+                EntityKind::DimAligned { start, end, text_pos, text_override, .. } => {
+                    let dist = start.distance_to(end);
+                    let dx = (end.x - start.x) as f32;
+                    let dy = (end.y - start.y) as f32;
+                    let len = (dx * dx + dy * dy).sqrt();
+                    if len < 1e-6 { continue; }
+                    let dir = [dx / len, dy / len];
+                    let text_dir = if dir[0] < -1e-6 || (dir[0].abs() < 1e-6 && dir[1] < -1e-6) {
+                        [-dir[0], -dir[1]] } else { dir };
+                    let screen_angle = -(text_dir[1].atan2(text_dir[0]));
+                    (text_pos, text_override, dist, screen_angle)
+                }
+                EntityKind::DimLinear { start, end, text_pos, text_override, horizontal, .. } => {
+                    let dist = if *horizontal {
+                        (end.x - start.x).abs()
+                    } else {
+                        (end.y - start.y).abs()
+                    };
+                    (text_pos, text_override, dist, 0.0_f32) // always horizontal text
+                }
+                _ => continue,
+            };
 
-            let dist = start.distance_to(end);
             let measurement = format!("{:.3}", dist);
             let label = match text_override {
                 None => measurement.clone(),
                 Some(s) if s.trim().is_empty() || s.trim() == "<>" => measurement.clone(),
                 Some(s) => s.replace("<>", &measurement),
             };
-
-            // Direction — normalised to always point in a readable direction.
-            let dx = (end.x - start.x) as f32;
-            let dy = (end.y - start.y) as f32;
-            let len = (dx * dx + dy * dy).sqrt();
-            if len < 1e-6 { continue; }
-            let dir = [dx / len, dy / len];
-            let text_dir = if dir[0] < -1e-6 || (dir[0].abs() < 1e-6 && dir[1] < -1e-6) {
-                [-dir[0], -dir[1]]
-            } else { dir };
-            // World CCW angle from +X → screen CW (negate for screen coords).
-            let screen_angle = -(text_dir[1].atan2(text_dir[0]));
 
             // Text centre in screen space.
             let (tx, ty) = world_to_screen(text_pos.x as f32, text_pos.y as f32, viewport);
@@ -1535,7 +1770,7 @@ impl CadKitApp {
                         );
                     }
                 }
-                EntityKind::DimAligned { .. } | EntityKind::Text { .. } => {}
+                EntityKind::DimAligned { .. } | EntityKind::DimLinear { .. } | EntityKind::Text { .. } => {}
             }
         }
     }
@@ -1604,7 +1839,7 @@ impl CadKitApp {
             EntityKind::Polyline { .. } => {
                 Err("OFFSET: Polyline offset not yet supported".to_string())
             }
-            EntityKind::DimAligned { .. } => {
+            EntityKind::DimAligned { .. } | EntityKind::DimLinear { .. } => {
                 Err("OFFSET: Cannot offset dimension entities".to_string())
             }
             EntityKind::Text { .. } => {
@@ -1680,7 +1915,7 @@ impl CadKitApp {
                         );
                     }
                 }
-                EntityKind::DimAligned { .. } | EntityKind::Text { .. } => {}
+                EntityKind::DimAligned { .. } | EntityKind::DimLinear { .. } | EntityKind::Text { .. } => {}
             }
         }
     }
@@ -1750,7 +1985,7 @@ impl CadKitApp {
                     );
                 }
             }
-            EntityKind::DimAligned { .. } | EntityKind::Text { .. } => {}
+            EntityKind::DimAligned { .. } | EntityKind::DimLinear { .. } | EntityKind::Text { .. } => {}
         }
     }
 
@@ -2086,7 +2321,8 @@ impl eframe::App for CadKitApp {
                         ui.separator();
                         egui::Grid::new("help_dim").striped(true).show(ui, |ui| {
                             for (alias, full, desc) in [
-                                ("DAL / DLI",   "DIMALIGNED", "Place an aligned dimension"),
+                                ("DAL",         "DIMALIGNED", "Place an aligned dimension (true distance)"),
+                                ("DLI",         "DIMLINEAR",  "Place a H or V linear dimension (drag to lock axis)"),
                                 ("ED / EDITDIM", "",          "Edit dimension text (<> = measured distance)"),
                             ] {
                                 ui.label(egui::RichText::new(alias).strong());
@@ -2115,6 +2351,7 @@ impl eframe::App for CadKitApp {
                         egui::Grid::new("help_view").striped(true).show(ui, |ui| {
                             for (alias, full, desc) in [
                                 ("BGCOLOR",     "",  "Open background colour picker"),
+                                ("GR / GRID",   "",  "Toggle grid visibility (dots off, snap still works)"),
                                 ("LA / LAYER",  "",  "Manage layers (see right panel)"),
                             ] {
                                 ui.label(egui::RichText::new(alias).strong());
@@ -2454,7 +2691,9 @@ impl eframe::App for CadKitApp {
                     );
 
                     if let Some(viewport) = self.viewport.as_ref() {
-                        Self::draw_grid_overlay(ui, response.rect, viewport);
+                        if self.grid_visible {
+                            Self::draw_grid_overlay(ui, response.rect, viewport, self.grid_spacing);
+                        }
                         self.draw_selected_entities_overlay(ui, response.rect, viewport);
                         self.draw_arc_input_ticks(ui, response.rect, viewport);
                         self.draw_trim_overlay(ui, response.rect, viewport);
@@ -2578,11 +2817,15 @@ impl eframe::App for CadKitApp {
                                         let raw_world = screen_to_world(local.x, local.y, viewport);
                                         let pick = self.pick_entity_point(viewport, response.rect, click_pos);
                                         let mut world = pick.as_ref().map(|(s, _)| s.world).unwrap_or_else(|| {
-                                            if self.snap_enabled { Self::snap_to_grid(raw_world) } else { raw_world }
+                                            if self.snap_enabled && self.grid_visible { self.snap_to_grid(raw_world) } else { raw_world }
                                         });
                                         if pick.is_none() {
                                             if let Some(snap_pt) = self.snap_intersection_point {
                                                 world = snap_pt;
+                                            } else if self.hover_snap_kind.is_some() {
+                                                if let Some(hw) = self.hover_world_pos {
+                                                    world = hw;
+                                                }
                                             }
                                         }
                                         if self.from_phase == FromPhase::WaitingBase {
@@ -2656,11 +2899,15 @@ impl eframe::App for CadKitApp {
                                         // Always attempt entity-point snap (matches hover highlight behaviour).
                                         let pick = self.pick_entity_point(viewport, response.rect, click_pos);
                                         let mut world = pick.as_ref().map(|(s, _)| s.world).unwrap_or_else(|| {
-                                            if self.snap_enabled { Self::snap_to_grid(raw_world) } else { raw_world }
+                                            if self.snap_enabled && self.grid_visible { self.snap_to_grid(raw_world) } else { raw_world }
                                         });
                                         if pick.is_none() {
                                             if let Some(snap_pt) = self.snap_intersection_point {
                                                 world = snap_pt;
+                                            } else if self.hover_snap_kind.is_some() {
+                                                if let Some(hw) = self.hover_world_pos {
+                                                    world = hw;
+                                                }
                                             }
                                         }
                                         if self.move_phase == MovePhase::BasePoint {
@@ -2676,11 +2923,15 @@ impl eframe::App for CadKitApp {
                                         let raw_world = screen_to_world(local.x, local.y, viewport);
                                         let pick = self.pick_entity_point(viewport, response.rect, click_pos);
                                         let mut world = pick.as_ref().map(|(s, _)| s.world).unwrap_or_else(|| {
-                                            if self.snap_enabled { Self::snap_to_grid(raw_world) } else { raw_world }
+                                            if self.snap_enabled && self.grid_visible { self.snap_to_grid(raw_world) } else { raw_world }
                                         });
                                         if pick.is_none() {
                                             if let Some(snap_pt) = self.snap_intersection_point {
                                                 world = snap_pt;
+                                            } else if self.hover_snap_kind.is_some() {
+                                                if let Some(hw) = self.hover_world_pos {
+                                                    world = hw;
+                                                }
                                             }
                                         }
                                         if self.copy_phase == CopyPhase::BasePoint {
@@ -2696,11 +2947,15 @@ impl eframe::App for CadKitApp {
                                         let raw_world = screen_to_world(local.x, local.y, viewport);
                                         let pick = self.pick_entity_point(viewport, response.rect, click_pos);
                                         let mut world = pick.as_ref().map(|(s, _)| s.world).unwrap_or_else(|| {
-                                            if self.snap_enabled { Self::snap_to_grid(raw_world) } else { raw_world }
+                                            if self.snap_enabled && self.grid_visible { self.snap_to_grid(raw_world) } else { raw_world }
                                         });
                                         if pick.is_none() {
                                             if let Some(snap_pt) = self.snap_intersection_point {
                                                 world = snap_pt;
+                                            } else if self.hover_snap_kind.is_some() {
+                                                if let Some(hw) = self.hover_world_pos {
+                                                    world = hw;
+                                                }
                                             }
                                         }
                                         if self.rotate_phase == RotatePhase::BasePoint {
@@ -2717,11 +2972,15 @@ impl eframe::App for CadKitApp {
                                         let raw_world = screen_to_world(local.x, local.y, viewport);
                                         let pick = self.pick_entity_point(viewport, response.rect, click_pos);
                                         let mut world = pick.as_ref().map(|(s, _)| s.world).unwrap_or_else(|| {
-                                            if self.snap_enabled { Self::snap_to_grid(raw_world) } else { raw_world }
+                                            if self.snap_enabled && self.grid_visible { self.snap_to_grid(raw_world) } else { raw_world }
                                         });
                                         if pick.is_none() {
                                             if let Some(snap_pt) = self.snap_intersection_point {
                                                 world = snap_pt;
+                                            } else if self.hover_snap_kind.is_some() {
+                                                if let Some(hw) = self.hover_world_pos {
+                                                    world = hw;
+                                                }
                                             }
                                         }
                                         if matches!(self.dim_phase, DimPhase::FirstPoint) {
@@ -2733,17 +2992,47 @@ impl eframe::App for CadKitApp {
                                         } else if let DimPhase::Placing { first, second } = self.dim_phase {
                                             self.place_dim_aligned(first, second, world);
                                         }
+                                    } else if !matches!(self.dim_linear_phase, DimLinearPhase::Idle) {
+                                        // DIMLINEAR point pick.
+                                        let local = click_pos - response.rect.min;
+                                        let raw_world = screen_to_world(local.x, local.y, viewport);
+                                        let pick = self.pick_entity_point(viewport, response.rect, click_pos);
+                                        let mut world = pick.as_ref().map(|(s, _)| s.world).unwrap_or_else(|| {
+                                            if self.snap_enabled && self.grid_visible { self.snap_to_grid(raw_world) } else { raw_world }
+                                        });
+                                        if pick.is_none() {
+                                            if let Some(snap_pt) = self.snap_intersection_point {
+                                                world = snap_pt;
+                                            } else if self.hover_snap_kind.is_some() {
+                                                if let Some(hw) = self.hover_world_pos {
+                                                    world = hw;
+                                                }
+                                            }
+                                        }
+                                        if matches!(self.dim_linear_phase, DimLinearPhase::FirstPoint) {
+                                            self.dim_linear_phase = DimLinearPhase::SecondPoint { first: world };
+                                            self.command_log.push(format!("DIMLINEAR: First point ({:.4}, {:.4})", world.x, world.y));
+                                        } else if let DimLinearPhase::SecondPoint { first } = self.dim_linear_phase {
+                                            self.dim_linear_phase = DimLinearPhase::Placing { first, second: world };
+                                            self.command_log.push(format!("DIMLINEAR: Second point ({:.4}, {:.4})", world.x, world.y));
+                                        } else if let DimLinearPhase::Placing { first, second } = self.dim_linear_phase {
+                                            self.place_dim_linear(first, second, world);
+                                        }
                                     } else if self.text_phase == TextPhase::PlacingPosition {
                                         // TEXT insertion point pick — same snap logic as DIMALIGNED.
                                         let local = click_pos - response.rect.min;
                                         let raw_world = screen_to_world(local.x, local.y, viewport);
                                         let pick = self.pick_entity_point(viewport, response.rect, click_pos);
                                         let mut world = pick.as_ref().map(|(s, _)| s.world).unwrap_or_else(|| {
-                                            if self.snap_enabled { Self::snap_to_grid(raw_world) } else { raw_world }
+                                            if self.snap_enabled && self.grid_visible { self.snap_to_grid(raw_world) } else { raw_world }
                                         });
                                         if pick.is_none() {
                                             if let Some(snap_pt) = self.snap_intersection_point {
                                                 world = snap_pt;
+                                            } else if self.hover_snap_kind.is_some() {
+                                                if let Some(hw) = self.hover_world_pos {
+                                                    world = hw;
+                                                }
                                             }
                                         }
                                         self.deliver_point(world);
@@ -2961,8 +3250,8 @@ impl eframe::App for CadKitApp {
                                 .as_ref()
                                 .map(|(s, _)| s.world)
                                 .unwrap_or_else(|| {
-                                    if self.snap_enabled {
-                                        Self::snap_to_grid(raw_world)
+                                    if self.snap_enabled && self.grid_visible {
+                                        self.snap_to_grid(raw_world)
                                     } else {
                                         raw_world
                                     }
@@ -3148,15 +3437,17 @@ impl eframe::App for CadKitApp {
                                 }
                             }
 
-                            // MOVE / COPY / ROTATE / DIMALIGNED / TEXT ghost preview.
+                            // MOVE / COPY / ROTATE / DIMALIGNED / DIMLINEAR / TEXT ghost preview.
                             self.draw_move_preview(ui, response.rect, viewport, world);
                             self.draw_copy_preview(ui, response.rect, viewport, world);
                             self.draw_rotate_preview(ui, response.rect, viewport, world);
                             self.draw_dim_preview(ui, response.rect, viewport, world);
+                            self.draw_dim_linear_preview(ui, response.rect, viewport, world);
                             self.draw_text_preview(ui, response.rect, viewport, world);
 
                             // Grid-snap dot (suppress when any entity/intersection/nearest/perp/tangent snap active).
                             if self.snap_enabled
+                                && self.grid_visible
                                 && hover_pick.is_none()
                                 && self.snap_intersection_point.is_none()
                                 && self.hover_snap_kind.is_none()
@@ -3287,8 +3578,8 @@ impl eframe::App for CadKitApp {
                                         .as_ref()
                                         .map(|(s, _)| s.world)
                                         .unwrap_or_else(|| {
-                                            if self.snap_enabled {
-                                                Self::snap_to_grid(raw_world)
+                                            if self.snap_enabled && self.grid_visible {
+                                                self.snap_to_grid(raw_world)
                                             } else {
                                                 raw_world
                                             }
@@ -3345,10 +3636,14 @@ impl eframe::App for CadKitApp {
                                             _ => {}
                                         }
                                     }
-                                // Apply intersection snap if no point-snap pick.
+                                // Apply hover snaps (intersection/perp/tangent/nearest) if no point-snap pick.
                                 if pick.is_none() {
                                     if let Some(snap_pt) = self.snap_intersection_point {
                                         world = snap_pt;
+                                    } else if self.hover_snap_kind.is_some() {
+                                        if let Some(hw) = self.hover_world_pos {
+                                            world = hw;
+                                        }
                                     }
                                 }
 
@@ -3518,79 +3813,6 @@ impl eframe::App for CadKitApp {
                 ui.label("Initializing viewport...");
             }
 
-            if let Some(viewport) = &self.viewport {
-                let zoom = viewport.zoom;
-                let pan_x = viewport.pan_x;
-                let pan_y = viewport.pan_y;
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.checkbox(&mut self.snap_enabled, "Snap (12\")");
-                    ui.separator();
-                    ui.label(format!(
-                        "Zoom: {:.2}x  Pan: ({:.2}, {:.2})",
-                        zoom, pan_x, pan_y
-                    ));
-                    if let Some(world) = self.hover_world_pos {
-                        ui.separator();
-                        ui.label(format!("X: {:.3}  Y: {:.3}", world.x, world.y));
-                    }
-                    ui.separator();
-                    ui.checkbox(&mut self.ortho_enabled, "Ortho");
-                    ui.add(
-                        egui::DragValue::new(&mut self.ortho_increment_deg)
-                            .clamp_range(0.1..=360.0)
-                            .speed(1.0)
-                            .suffix("°"),
-                    );
-                    for preset in [90.0, 45.0, 22.5] {
-                        if ui.small_button(format!("{:.1}°", preset)).clicked() {
-                            self.ortho_increment_deg = preset;
-                            self.ortho_enabled = true;
-                        }
-                    }
-                    if let ActiveTool::Circle { center: Some(_) } = self.active_tool {
-                        ui.separator();
-                        ui.checkbox(&mut self.circle_use_diameter, "⌀ Diameter");
-                    }
-                    ui.separator();
-                    ui.label(match &self.active_tool {
-                        ActiveTool::None => "Tool: none".to_string(),
-                        ActiveTool::Line { start: None } => "Tool: line (pick start)".to_string(),
-                        ActiveTool::Line { start: Some(s) } => format!(
-                            "Tool: line (start at {:.3}, {:.3})",
-                            s.x, s.y
-                        ),
-                        ActiveTool::Circle { center: None } => "Tool: circle (pick center)".to_string(),
-                        ActiveTool::Circle { center: Some(c) } => format!(
-                            "Tool: circle (center at {:.3}, {:.3})",
-                            c.x, c.y
-                        ),
-                        ActiveTool::Arc { start: None, .. } => "Tool: arc (pick start)".to_string(),
-                        ActiveTool::Arc { start: Some(s), mid: None } => format!(
-                            "Tool: arc (start {:.3}, {:.3}, pick mid)",
-                            s.x, s.y
-                        ),
-                        ActiveTool::Arc { start: Some(s), mid: Some(m) } => format!(
-                            "Tool: arc (start {:.3}, {:.3}, mid {:.3}, {:.3}, pick end)",
-                            s.x, s.y, m.x, m.y
-                        ),
-                        ActiveTool::Polyline { points } => {
-                            match points.len() {
-                                0 => "Tool: polyline (pick start)".to_string(),
-                                1 => format!(
-                                    "Tool: polyline (start {:.3}, {:.3}, pick next)",
-                                    points[0].x, points[0].y
-                                ),
-                                n => format!("Tool: polyline ({} pts, pick next / right-click to finish / 'C' to close)", n),
-                            }
-                        }
-                    });
-                    if !self.selected_entities.is_empty() {
-                        ui.separator();
-                        ui.label(format!("Selected: {}", self.selected_entities.len()));
-                    }
-                });
-            }
         });
     }
 }
@@ -3657,6 +3879,22 @@ impl CadKitApp {
                 let dl1y = start.y + perp.1 * offset;
                 let dl2x = end.x   + perp.0 * offset;
                 let dl2y = end.y   + perp.1 * offset;
+                let min_x = start.x.min(end.x).min(dl1x).min(dl2x);
+                let min_y = start.y.min(end.y).min(dl1y).min(dl2y);
+                let max_x = start.x.max(end.x).max(dl1x).max(dl2x);
+                let max_y = start.y.max(end.y).max(dl1y).max(dl2y);
+                Some((min_x, min_y, max_x, max_y))
+            }
+            EntityKind::DimLinear { start, end, offset, horizontal, .. } => {
+                let mid_x = (start.x + end.x) * 0.5;
+                let mid_y = (start.y + end.y) * 0.5;
+                let (dl1x, dl1y, dl2x, dl2y) = if *horizontal {
+                    let x1 = start.x.min(end.x); let x2 = start.x.max(end.x);
+                    (x1, mid_y + offset, x2, mid_y + offset)
+                } else {
+                    let y1 = start.y.min(end.y); let y2 = start.y.max(end.y);
+                    (mid_x + offset, y1, mid_x + offset, y2)
+                };
                 let min_x = start.x.min(end.x).min(dl1x).min(dl2x);
                 let min_y = start.y.min(end.y).min(dl1y).min(dl2y);
                 let max_x = start.x.max(end.x).max(dl1x).max(dl2x);
@@ -3805,7 +4043,8 @@ impl CadKitApp {
                         add_seg(a, b);
                     }
                 }
-                EntityKind::DimAligned { start, end, .. } => {
+                EntityKind::DimAligned { start, end, .. }
+                | EntityKind::DimLinear { start, end, .. } => {
                     let s: Vec2 = (*start).into();
                     let e: Vec2 = (*end).into();
                     let mid = Vec2::new((s.x + e.x) * 0.5, (s.y + e.y) * 0.5);
@@ -4202,7 +4441,7 @@ impl CadKitApp {
                     "TRIM: Polyline trim not yet supported".to_string(),
                 );
             }
-            EntityKind::DimAligned { .. } => {
+            EntityKind::DimAligned { .. } | EntityKind::DimLinear { .. } => {
                 return TrimResult::Fail(
                     "TRIM: Cannot trim dimension entities".to_string(),
                 );

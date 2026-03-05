@@ -1,6 +1,6 @@
 use super::state::{
-    ActiveTool, CopyPhase, DimPhase, EditDimPhase, EditTextPhase, ExtendPhase, FromPhase,
-    MovePhase, OffsetPhase, RotatePhase, TextPhase, TrimPhase,
+    ActiveTool, CopyPhase, DimLinearPhase, DimPhase, EditDimPhase, EditTextPhase, ExtendPhase,
+    FromPhase, MovePhase, OffsetPhase, RotatePhase, TextPhase, TrimPhase,
 };
 use super::CadKitApp;
 use cadkit_2d_core::EntityKind;
@@ -11,8 +11,8 @@ impl CadKitApp {
     pub fn draw_ui_panels(&mut self, ctx: &egui::Context) {
         self.draw_menu_bar(ctx);
         self.draw_left_toolbar(ctx);
+        self.draw_command_line(ctx); // must come before right_panel so available_height() is correct
         self.draw_right_panel(ctx);
-        self.draw_command_line(ctx);
     }
 
     fn draw_menu_bar(&mut self, ctx: &egui::Context) {
@@ -164,8 +164,15 @@ impl CadKitApp {
                 self.command_log.push("DIMALIGNED: Specify first extension line origin".to_string());
             }
             if ui.button("↔ Dim Linear").clicked() {
-                // TODO: true DimLinear (H/V locked) — not yet implemented
-                self.command_log.push("DIMLINEAR: Not yet implemented — use DAL for aligned dims".to_string());
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.dim_linear_phase = DimLinearPhase::FirstPoint;
+                self.command_log.push("DIMLINEAR: Specify first extension line origin".to_string());
             }
             if ui.button("✏ Edit Dim").clicked() {
                 self.cancel_active_tool();
@@ -433,6 +440,7 @@ impl CadKitApp {
                                     EntityKind::Arc { .. } => "Arc",
                                     EntityKind::Polyline { .. } => "Polyline",
                                     EntityKind::DimAligned { .. } => "DimAligned",
+                                    EntityKind::DimLinear { horizontal, .. } => if *horizontal { "DimLinear (H)" } else { "DimLinear (V)" },
                                     EntityKind::Text { .. } => "Text",
                                 };
                                 ui.label(egui::RichText::new(type_name).strong());
@@ -483,6 +491,23 @@ impl CadKitApp {
                                                 ui.label("End X:"); ui.label(format!("{:.4}", end.x)); ui.end_row();
                                                 ui.label("End Y:"); ui.label(format!("{:.4}", end.y)); ui.end_row();
                                                 ui.label("Distance:"); ui.label(format!("{:.4}", dist)); ui.end_row();
+                                                ui.label("Offset:"); ui.label(format!("{:.4}", offset)); ui.end_row();
+                                                if let Some(t) = text_override {
+                                                    ui.label("Text:"); ui.label(t.as_str()); ui.end_row();
+                                                }
+                                            }
+                                            EntityKind::DimLinear { start, end, offset, text_override, horizontal, .. } => {
+                                                let dist = if *horizontal {
+                                                    (end.x - start.x).abs()
+                                                } else {
+                                                    (end.y - start.y).abs()
+                                                };
+                                                ui.label("Axis:"); ui.label(if *horizontal { "Horizontal" } else { "Vertical" }); ui.end_row();
+                                                ui.label("Start X:"); ui.label(format!("{:.4}", start.x)); ui.end_row();
+                                                ui.label("Start Y:"); ui.label(format!("{:.4}", start.y)); ui.end_row();
+                                                ui.label("End X:"); ui.label(format!("{:.4}", end.x)); ui.end_row();
+                                                ui.label("End Y:"); ui.label(format!("{:.4}", end.y)); ui.end_row();
+                                                ui.label("Measured:"); ui.label(format!("{:.4}", dist)); ui.end_row();
                                                 ui.label("Offset:"); ui.label(format!("{:.4}", offset)); ui.end_row();
                                                 if let Some(t) = text_override {
                                                     ui.label("Text:"); ui.label(t.as_str()); ui.end_row();
@@ -653,6 +678,65 @@ impl CadKitApp {
             .resizable(false)
             .show(ctx, |ui| {
                 ui.vertical(|ui| {
+                    // ── Status bar (full-width, no overflow into right panel) ──────────
+                    if let Some(viewport) = &self.viewport {
+                        let zoom = viewport.zoom;
+                        let pan_x = viewport.pan_x;
+                        let pan_y = viewport.pan_y;
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut self.snap_enabled, "Snap (F3)");
+                            ui.separator();
+                            ui.checkbox(&mut self.grid_visible, "Grid");
+                            ui.add(
+                                egui::DragValue::new(&mut self.grid_spacing)
+                                    .clamp_range(0.5..=500.0)
+                                    .speed(0.5)
+                                    .suffix("\""),
+                            );
+                            ui.separator();
+                            ui.label(format!("Zoom: {:.2}x  Pan: ({:.2}, {:.2})", zoom, pan_x, pan_y));
+                            if let Some(world) = self.hover_world_pos {
+                                ui.separator();
+                                ui.label(format!("X: {:.3}  Y: {:.3}", world.x, world.y));
+                            }
+                            ui.separator();
+                            ui.checkbox(&mut self.ortho_enabled, "Ortho");
+                            ui.add(
+                                egui::DragValue::new(&mut self.ortho_increment_deg)
+                                    .clamp_range(0.1..=360.0)
+                                    .speed(1.0)
+                                    .suffix("°"),
+                            );
+                            for preset in [90.0_f64, 45.0, 22.5] {
+                                if ui.small_button(format!("{preset:.1}°")).clicked() {
+                                    self.ortho_increment_deg = preset;
+                                    self.ortho_enabled = true;
+                                }
+                            }
+                            if let ActiveTool::Circle { center: Some(_) } = self.active_tool {
+                                ui.separator();
+                                ui.checkbox(&mut self.circle_use_diameter, "⌀ Diameter");
+                            }
+                            ui.separator();
+                            ui.label(match &self.active_tool {
+                                ActiveTool::None => "Tool: none".to_string(),
+                                ActiveTool::Line { start: None } => "Tool: line (pick start)".to_string(),
+                                ActiveTool::Line { start: Some(s) } => format!("Tool: line ({:.3}, {:.3})", s.x, s.y),
+                                ActiveTool::Circle { center: None } => "Tool: circle (pick center)".to_string(),
+                                ActiveTool::Circle { center: Some(c) } => format!("Tool: circle ({:.3}, {:.3})", c.x, c.y),
+                                ActiveTool::Arc { start: None, .. } => "Tool: arc (pick start)".to_string(),
+                                ActiveTool::Arc { start: Some(s), mid: None } => format!("Tool: arc start ({:.3}, {:.3})", s.x, s.y),
+                                ActiveTool::Arc { start: Some(_), mid: Some(_) } => "Tool: arc (pick end)".to_string(),
+                                ActiveTool::Polyline { points } => format!("Tool: polyline ({} pts)", points.len()),
+                            });
+                            if !self.selected_entities.is_empty() {
+                                ui.separator();
+                                ui.label(format!("Sel: {}", self.selected_entities.len()));
+                            }
+                        });
+                        ui.separator();
+                    }
+                    // ── Command input ────────────────────────────────────────────────
                     let prompt = self.current_prompt();
                     let mut committed_cmd: Option<String> = None;
 

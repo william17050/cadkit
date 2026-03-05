@@ -22,7 +22,7 @@ fn point_to_segment_dist(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32 {
 }
 
 impl CadKitApp {
-    pub(crate) fn draw_grid_overlay(ui: &egui::Ui, rect: egui::Rect, viewport: &Viewport) {
+    pub(crate) fn draw_grid_overlay(ui: &egui::Ui, rect: egui::Rect, viewport: &Viewport, spacing: f64) {
         let (w, h) = viewport.size();
         if w == 0 || h == 0 {
             return;
@@ -34,8 +34,6 @@ impl CadKitApp {
         let max_x = top_left.x.max(bottom_right.x);
         let min_y = top_left.y.min(bottom_right.y);
         let max_y = top_left.y.max(bottom_right.y);
-
-        let spacing = Self::GRID_SPACING;
         let start_x = (min_x / spacing).floor() * spacing;
         let end_x = (max_x / spacing).ceil() * spacing;
         let start_y = (min_y / spacing).floor() * spacing;
@@ -160,6 +158,29 @@ impl CadKitApp {
                     painter.line_segment([rect.min + egui::vec2(dl1x, dl1y), rect.min + egui::vec2(dl2x, dl2y)], stroke);
                     painter.line_segment([rect.min + egui::vec2(sx1, sy1), rect.min + egui::vec2(dl1x, dl1y)], stroke);
                     painter.line_segment([rect.min + egui::vec2(sx2, sy2), rect.min + egui::vec2(dl2x, dl2y)], stroke);
+                }
+                EntityKind::DimLinear { start, end, offset, horizontal, .. } => {
+                    let off = *offset;
+                    let mid_x = (start.x + end.x) * 0.5;
+                    let mid_y = (start.y + end.y) * 0.5;
+                    let (p1x, p1y, p2x, p2y, dl1x, dl1y, dl2x, dl2y) = if *horizontal {
+                        let x1 = start.x.min(end.x); let x2 = start.x.max(end.x);
+                        let (p1x, p1y) = world_to_screen(x1 as f32, start.y as f32, viewport);
+                        let (p2x, p2y) = world_to_screen(x2 as f32, end.y as f32, viewport);
+                        let (dl1x, dl1y) = world_to_screen(x1 as f32, (mid_y + off) as f32, viewport);
+                        let (dl2x, dl2y) = world_to_screen(x2 as f32, (mid_y + off) as f32, viewport);
+                        (p1x, p1y, p2x, p2y, dl1x, dl1y, dl2x, dl2y)
+                    } else {
+                        let y1 = start.y.min(end.y); let y2 = start.y.max(end.y);
+                        let (p1x, p1y) = world_to_screen(start.x as f32, y1 as f32, viewport);
+                        let (p2x, p2y) = world_to_screen(end.x as f32, y2 as f32, viewport);
+                        let (dl1x, dl1y) = world_to_screen((mid_x + off) as f32, y1 as f32, viewport);
+                        let (dl2x, dl2y) = world_to_screen((mid_x + off) as f32, y2 as f32, viewport);
+                        (p1x, p1y, p2x, p2y, dl1x, dl1y, dl2x, dl2y)
+                    };
+                    painter.line_segment([rect.min + egui::vec2(dl1x, dl1y), rect.min + egui::vec2(dl2x, dl2y)], stroke);
+                    painter.line_segment([rect.min + egui::vec2(p1x, p1y), rect.min + egui::vec2(dl1x, dl1y)], stroke);
+                    painter.line_segment([rect.min + egui::vec2(p2x, p2y), rect.min + egui::vec2(dl2x, dl2y)], stroke);
                 }
                 EntityKind::Text { position, .. } => {
                     // Draw a small selection box around the insertion point.
@@ -379,6 +400,27 @@ impl CadKitApp {
                     rect.min + egui::vec2(dl2x, dl2y),
                 )
             }
+            EntityKind::DimLinear { start, end, offset, horizontal, .. } => {
+                let off = *offset;
+                let mid_x = (start.x + end.x) * 0.5;
+                let mid_y = (start.y + end.y) * 0.5;
+                let (dl1x, dl1y, dl2x, dl2y) = if *horizontal {
+                    let x1 = start.x.min(end.x); let x2 = start.x.max(end.x);
+                    let (dl1x, dl1y) = world_to_screen(x1 as f32, (mid_y + off) as f32, viewport);
+                    let (dl2x, dl2y) = world_to_screen(x2 as f32, (mid_y + off) as f32, viewport);
+                    (dl1x, dl1y, dl2x, dl2y)
+                } else {
+                    let y1 = start.y.min(end.y); let y2 = start.y.max(end.y);
+                    let (dl1x, dl1y) = world_to_screen((mid_x + off) as f32, y1 as f32, viewport);
+                    let (dl2x, dl2y) = world_to_screen((mid_x + off) as f32, y2 as f32, viewport);
+                    (dl1x, dl1y, dl2x, dl2y)
+                };
+                point_to_segment_dist(
+                    screen_pos,
+                    rect.min + egui::vec2(dl1x, dl1y),
+                    rect.min + egui::vec2(dl2x, dl2y),
+                )
+            }
             EntityKind::Text { position, .. } => {
                 let (sx, sy) = world_to_screen(position.x as f32, position.y as f32, viewport);
                 screen_pos.distance(rect.min + egui::vec2(sx, sy))
@@ -468,7 +510,7 @@ impl CadKitApp {
             EntityKind::Polyline { vertices, closed } => Some(GeomPrim::Polyline(
                 GeomPolyline::new(vertices.clone(), *closed),
             )),
-            EntityKind::DimAligned { .. } | EntityKind::Text { .. } => None,
+            EntityKind::DimAligned { .. } | EntityKind::DimLinear { .. } | EntityKind::Text { .. } => None,
         }
     }
 

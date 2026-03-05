@@ -224,6 +224,11 @@ impl Drawing {
                     log::warn!("DXF export: DimAligned not yet exported");
                     None
                 }
+                EntityKind::DimLinear { .. } => {
+                    // TODO: export as DXF DIMENSION entity (RotatedDimension)
+                    log::warn!("DXF export: DimLinear not yet exported");
+                    None
+                }
             };
 
             if let Some(e) = opt {

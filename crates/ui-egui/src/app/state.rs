@@ -140,6 +140,15 @@ pub enum DimPhase {
     Placing { first: Vec2, second: Vec2 },
 }
 
+/// DimLinear (H/V locked) placement workflow phases.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DimLinearPhase {
+    Idle,
+    FirstPoint,
+    SecondPoint { first: Vec2 },
+    Placing { first: Vec2, second: Vec2 },
+}
+
 /// Result of a read-only trim computation; mutations are applied by the caller.
 pub enum TrimResult {
     /// Operation failed; the string is the log message.
