@@ -35,6 +35,7 @@ pub struct CadKitApp {
     circle_use_diameter: bool,
     command_log: Vec<String>,
     snap_intersection_point: Option<Vec2>,
+    hover_snap_kind: Option<SnapKind>,
     trim_cutting_edges: Vec<Guid>,
     trim_phase: TrimPhase,
     offset_distance: Option<f64>,
@@ -103,6 +104,7 @@ impl Default for CadKitApp {
             circle_use_diameter: false,
             command_log: Vec::new(),
             snap_intersection_point: None,
+            hover_snap_kind: None,
             trim_cutting_edges: Vec::new(),
             trim_phase: TrimPhase::Idle,
             offset_distance: None,
@@ -2575,7 +2577,7 @@ impl eframe::App for CadKitApp {
                                         let local = click_pos - response.rect.min;
                                         let raw_world = screen_to_world(local.x, local.y, viewport);
                                         let pick = self.pick_entity_point(viewport, response.rect, click_pos);
-                                        let mut world = pick.as_ref().map(|p| p.world).unwrap_or_else(|| {
+                                        let mut world = pick.as_ref().map(|(s, _)| s.world).unwrap_or_else(|| {
                                             if self.snap_enabled { Self::snap_to_grid(raw_world) } else { raw_world }
                                         });
                                         if pick.is_none() {
@@ -2653,7 +2655,7 @@ impl eframe::App for CadKitApp {
                                         let raw_world = screen_to_world(local.x, local.y, viewport);
                                         // Always attempt entity-point snap (matches hover highlight behaviour).
                                         let pick = self.pick_entity_point(viewport, response.rect, click_pos);
-                                        let mut world = pick.as_ref().map(|p| p.world).unwrap_or_else(|| {
+                                        let mut world = pick.as_ref().map(|(s, _)| s.world).unwrap_or_else(|| {
                                             if self.snap_enabled { Self::snap_to_grid(raw_world) } else { raw_world }
                                         });
                                         if pick.is_none() {
@@ -2673,7 +2675,7 @@ impl eframe::App for CadKitApp {
                                         let local = click_pos - response.rect.min;
                                         let raw_world = screen_to_world(local.x, local.y, viewport);
                                         let pick = self.pick_entity_point(viewport, response.rect, click_pos);
-                                        let mut world = pick.as_ref().map(|p| p.world).unwrap_or_else(|| {
+                                        let mut world = pick.as_ref().map(|(s, _)| s.world).unwrap_or_else(|| {
                                             if self.snap_enabled { Self::snap_to_grid(raw_world) } else { raw_world }
                                         });
                                         if pick.is_none() {
@@ -2693,7 +2695,7 @@ impl eframe::App for CadKitApp {
                                         let local = click_pos - response.rect.min;
                                         let raw_world = screen_to_world(local.x, local.y, viewport);
                                         let pick = self.pick_entity_point(viewport, response.rect, click_pos);
-                                        let mut world = pick.as_ref().map(|p| p.world).unwrap_or_else(|| {
+                                        let mut world = pick.as_ref().map(|(s, _)| s.world).unwrap_or_else(|| {
                                             if self.snap_enabled { Self::snap_to_grid(raw_world) } else { raw_world }
                                         });
                                         if pick.is_none() {
@@ -2714,7 +2716,7 @@ impl eframe::App for CadKitApp {
                                         let local = click_pos - response.rect.min;
                                         let raw_world = screen_to_world(local.x, local.y, viewport);
                                         let pick = self.pick_entity_point(viewport, response.rect, click_pos);
-                                        let mut world = pick.as_ref().map(|p| p.world).unwrap_or_else(|| {
+                                        let mut world = pick.as_ref().map(|(s, _)| s.world).unwrap_or_else(|| {
                                             if self.snap_enabled { Self::snap_to_grid(raw_world) } else { raw_world }
                                         });
                                         if pick.is_none() {
@@ -2736,7 +2738,7 @@ impl eframe::App for CadKitApp {
                                         let local = click_pos - response.rect.min;
                                         let raw_world = screen_to_world(local.x, local.y, viewport);
                                         let pick = self.pick_entity_point(viewport, response.rect, click_pos);
-                                        let mut world = pick.as_ref().map(|p| p.world).unwrap_or_else(|| {
+                                        let mut world = pick.as_ref().map(|(s, _)| s.world).unwrap_or_else(|| {
                                             if self.snap_enabled { Self::snap_to_grid(raw_world) } else { raw_world }
                                         });
                                         if pick.is_none() {
@@ -2944,6 +2946,10 @@ impl eframe::App for CadKitApp {
                         if let (Some(pointer_pos), Some(viewport)) =
                             (ui.input(|i| i.pointer.hover_pos()), self.viewport.as_ref())
                         {
+                            // Clear stale snap state each hover frame.
+                            self.snap_intersection_point = None;
+                            self.hover_snap_kind = None;
+
                             let local = pointer_pos - response.rect.min;
                             let raw_world = screen_to_world(local.x, local.y, viewport);
                             let hover_pick = if self.snap_enabled {
@@ -2953,7 +2959,7 @@ impl eframe::App for CadKitApp {
                             };
                             let mut world = hover_pick
                                 .as_ref()
-                                .map(|p| p.world)
+                                .map(|(s, _)| s.world)
                                 .unwrap_or_else(|| {
                                     if self.snap_enabled {
                                         Self::snap_to_grid(raw_world)
@@ -3059,16 +3065,40 @@ impl eframe::App for CadKitApp {
                                 }
                             }
 
-                            // Intersection snap: overrides grid/ortho snap, lower priority than point snap.
+                            // Intersection snap (priority 2: below entity point, above perp/tangent/nearest).
                             if hover_pick.is_none() && self.snap_enabled {
-                                let isect_snap = self.find_intersection_snap(
-                                    viewport,
-                                    response.rect,
-                                    pointer_pos,
-                                );
-                                if let Some(snap_pt) = isect_snap {
+                                if let Some(snap_pt) = self.find_intersection_snap(viewport, response.rect, pointer_pos) {
                                     world = snap_pt;
                                     self.snap_intersection_point = Some(snap_pt);
+                                    self.hover_snap_kind = Some(SnapKind::Intersection);
+                                }
+                            }
+
+                            // Perpendicular snap (priority 3: foot on entity from last placed point).
+                            if hover_pick.is_none() && self.snap_intersection_point.is_none() && self.snap_enabled {
+                                if let Some(from_pt) = self.current_from_point() {
+                                    if let Some(pt) = self.perpendicular_snap(viewport, response.rect, pointer_pos, from_pt) {
+                                        world = pt;
+                                        self.hover_snap_kind = Some(SnapKind::Perpendicular);
+                                    }
+                                }
+                            }
+
+                            // Tangent snap (priority 4: tangent point on circle/arc from last placed point).
+                            if hover_pick.is_none() && self.snap_intersection_point.is_none() && self.hover_snap_kind.is_none() && self.snap_enabled {
+                                if let Some(from_pt) = self.current_from_point() {
+                                    if let Some(pt) = self.tangent_snap(viewport, response.rect, pointer_pos, from_pt) {
+                                        world = pt;
+                                        self.hover_snap_kind = Some(SnapKind::Tangent);
+                                    }
+                                }
+                            }
+
+                            // Nearest snap (priority 5: closest point on any entity curve).
+                            if hover_pick.is_none() && self.snap_intersection_point.is_none() && self.hover_snap_kind.is_none() && self.snap_enabled {
+                                if let Some(pt) = self.nearest_entity_snap(viewport, response.rect, pointer_pos) {
+                                    world = pt;
+                                    self.hover_snap_kind = Some(SnapKind::Nearest);
                                 }
                             }
 
@@ -3125,10 +3155,11 @@ impl eframe::App for CadKitApp {
                             self.draw_dim_preview(ui, response.rect, viewport, world);
                             self.draw_text_preview(ui, response.rect, viewport, world);
 
-                            // Grid-snap dot (suppress when intersection snap is active).
+                            // Grid-snap dot (suppress when any entity/intersection/nearest/perp/tangent snap active).
                             if self.snap_enabled
                                 && hover_pick.is_none()
                                 && self.snap_intersection_point.is_none()
+                                && self.hover_snap_kind.is_none()
                             {
                                 let (sx, sy) =
                                     world_to_screen(world.x as f32, world.y as f32, viewport);
@@ -3217,17 +3248,6 @@ impl eframe::App for CadKitApp {
                                 }
                             }
 
-                            // Intersection snap X marker (cyan).
-                            if let Some(snap_pt) = self.snap_intersection_point {
-                                Self::draw_tick_marker(
-                                    ui,
-                                    response.rect,
-                                    viewport,
-                                    snap_pt,
-                                    egui::Color32::from_rgb(0, 230, 230),
-                                );
-                            }
-
                             ctx.request_repaint();
                         }
 
@@ -3236,21 +3256,14 @@ impl eframe::App for CadKitApp {
                             (ui.input(|i| i.pointer.hover_pos()), self.viewport.as_ref())
                         {
                             if self.snap_enabled || matches!(self.active_tool, ActiveTool::None) {
-                                if let Some(candidate) =
+                                if let Some((candidate, kind)) =
                                     self.pick_entity_point(viewport, response.rect, pointer_pos)
                                 {
-                                    let (sx, sy) = world_to_screen(
-                                        candidate.world.x as f32,
-                                        candidate.world.y as f32,
-                                        viewport,
-                                    );
-                                    let pos = response.rect.min + egui::vec2(sx, sy);
-                                    let painter = ui.painter_at(response.rect);
-                                    painter.circle_filled(
-                                        pos,
-                                        6.0,
-                                        egui::Color32::from_rgb(255, 200, 40),
-                                    );
+                                    Self::draw_snap_glyph(ui, response.rect, viewport, candidate.world, kind);
+                                } else if let Some(snap_kind) = self.hover_snap_kind {
+                                    if let Some(world) = self.hover_world_pos {
+                                        Self::draw_snap_glyph(ui, response.rect, viewport, world, snap_kind);
+                                    }
                                 }
                             }
                         }
@@ -3272,7 +3285,7 @@ impl eframe::App for CadKitApp {
                                 };
                                     let mut world = pick
                                         .as_ref()
-                                        .map(|p| p.world)
+                                        .map(|(s, _)| s.world)
                                         .unwrap_or_else(|| {
                                             if self.snap_enabled {
                                                 Self::snap_to_grid(raw_world)
@@ -3340,7 +3353,7 @@ impl eframe::App for CadKitApp {
                                 }
 
                                 // Update snap marker when a point pick happens during drawing.
-                                if let Some(p) = pick {
+                                if let Some((p, _)) = pick {
                                     self.selection = Some(p);
                                 }
 
@@ -3683,14 +3696,22 @@ impl CadKitApp {
         hits
     }
 
-    /// Pick nearest entity point (line endpoints/midpoint, arc endpoints/mid-angle, circle center) in screen space.
+    fn snap_kind_from_label(label: &str) -> SnapKind {
+        if label.contains("mid")    { SnapKind::Midpoint }
+        else if label.contains("center") { SnapKind::Center }
+        else if label.contains("east") || label.contains("west")
+             || label.contains("north") || label.contains("south") { SnapKind::Quadrant }
+        else { SnapKind::Endpoint }
+    }
+
+    /// Pick nearest entity point (endpoints, midpoints, centers, quadrants) in screen space.
     fn pick_entity_point(
         &self,
         viewport: &Viewport,
         rect: egui::Rect,
         screen_pos: egui::Pos2,
-    ) -> Option<Selection> {
-        let mut best: Option<(f32, Selection)> = None;
+    ) -> Option<(Selection, SnapKind)> {
+        let mut best: Option<(f32, Selection, SnapKind)> = None;
 
         for entity in self.drawing.visible_entities() {
             match &entity.kind {
@@ -3803,33 +3824,28 @@ impl CadKitApp {
             }
         }
 
-        best.map(|(_, sel)| sel)
+        best.map(|(_, sel, kind)| (sel, kind))
     }
 
     fn push_pick_candidates(
         &self,
-        best: &mut Option<(f32, Selection)>,
+        best: &mut Option<(f32, Selection, SnapKind)>,
         viewport: &Viewport,
         rect: egui::Rect,
         screen_pos: egui::Pos2,
         entity: Guid,
         candidates: &[(&'static str, Vec2)],
     ) {
-        for (_label, world) in candidates {
+        for (label, world) in candidates {
+            let kind = Self::snap_kind_from_label(label);
             let (sx, sy) = world_to_screen(world.x as f32, world.y as f32, viewport);
             let pos = rect.min + egui::vec2(sx, sy);
             let dist = pos.distance(screen_pos);
             if dist <= Self::PICK_RADIUS {
                 match best {
-                    Some((best_dist, _)) if dist >= *best_dist => {}
+                    Some((best_dist, _, _)) if dist >= *best_dist => {}
                     _ => {
-                        *best = Some((
-                            dist,
-                            Selection {
-                                entity,
-                                world: *world,
-                            },
-                        ));
+                        *best = Some((dist, Selection { entity, world: *world }, kind));
                     }
                 }
             }
@@ -4225,6 +4241,217 @@ impl CadKitApp {
                 points.clear();
             }
         }
+    }
+
+    // ── Snap math helpers ────────────────────────────────────────────────────
+
+    /// Foot of perpendicular from `p` onto segment `[a, b]`, clamped to the segment.
+    fn nearest_on_segment(p: Vec2, a: Vec2, b: Vec2) -> Vec2 {
+        let abx = b.x - a.x; let aby = b.y - a.y;
+        let len_sq = abx * abx + aby * aby;
+        if len_sq < 1e-12 { return a; }
+        let t = ((p.x - a.x) * abx + (p.y - a.y) * aby) / len_sq;
+        let t = t.clamp(0.0, 1.0);
+        Vec2::new(a.x + t * abx, a.y + t * aby)
+    }
+
+    /// Foot of perpendicular from `p` onto the INFINITE line through `[a, b]`.
+    fn perp_foot_on_line(p: Vec2, a: Vec2, b: Vec2) -> Option<Vec2> {
+        let abx = b.x - a.x; let aby = b.y - a.y;
+        let len_sq = abx * abx + aby * aby;
+        if len_sq < 1e-12 { return None; }
+        let t = ((p.x - a.x) * abx + (p.y - a.y) * aby) / len_sq;
+        Some(Vec2::new(a.x + t * abx, a.y + t * aby))
+    }
+
+    /// Closest point on a circle's circumference to `p`.
+    fn nearest_on_circle(p: Vec2, c: Vec2, r: f64) -> Option<Vec2> {
+        let dx = p.x - c.x; let dy = p.y - c.y;
+        let d = (dx * dx + dy * dy).sqrt();
+        if d < 1e-12 { return None; }
+        Some(Vec2::new(c.x + r * dx / d, c.y + r * dy / d))
+    }
+
+    /// Closest point on an arc to `p` (clamped to arc angle range).
+    fn nearest_on_arc(p: Vec2, c: Vec2, r: f64, start_angle: f64, end_angle: f64) -> Option<Vec2> {
+        let dx = p.x - c.x; let dy = p.y - c.y;
+        let d = (dx * dx + dy * dy).sqrt();
+        if d < 1e-12 { return None; }
+        let mut angle = f64::atan2(dy, dx);
+        // Arcs stored CCW (end_angle > start_angle). Normalise into range.
+        while angle < start_angle { angle += std::f64::consts::TAU; }
+        if angle <= end_angle {
+            Some(Vec2::new(c.x + r * angle.cos(), c.y + r * angle.sin()))
+        } else {
+            // Return the nearer endpoint
+            let ps = Vec2::new(c.x + r * start_angle.cos(), c.y + r * start_angle.sin());
+            let pe = Vec2::new(c.x + r * end_angle.cos(),   c.y + r * end_angle.sin());
+            let ds = (p.x - ps.x).powi(2) + (p.y - ps.y).powi(2);
+            let de = (p.x - pe.x).powi(2) + (p.y - pe.y).powi(2);
+            Some(if ds < de { ps } else { pe })
+        }
+    }
+
+    /// Two tangent-touch points on circle `(c, r)` from external point `from_pt`.
+    /// Returns empty vec when `from_pt` is inside or on the circle.
+    fn tangent_points_to_circle(from_pt: Vec2, c: Vec2, r: f64) -> Vec<Vec2> {
+        let dx = c.x - from_pt.x; let dy = c.y - from_pt.y;
+        let d = (dx * dx + dy * dy).sqrt();
+        if d <= r + 1e-9 { return vec![]; }
+        let phi = f64::atan2(dy, dx);
+        let gamma = f64::asin((r / d).clamp(-1.0, 1.0));
+        let tlen = (d * d - r * r).sqrt();
+        vec![
+            Vec2::new(from_pt.x + tlen * f64::cos(phi + gamma),
+                      from_pt.y + tlen * f64::sin(phi + gamma)),
+            Vec2::new(from_pt.x + tlen * f64::cos(phi - gamma),
+                      from_pt.y + tlen * f64::sin(phi - gamma)),
+        ]
+    }
+
+    // ── New snap functions ────────────────────────────────────────────────────
+
+    /// Returns the most-recently-placed world point in the current drawing command,
+    /// used as the "from" origin for perpendicular and tangent snaps.
+    fn current_from_point(&self) -> Option<Vec2> {
+        match &self.active_tool {
+            ActiveTool::Line { start: Some(s) }    => Some(*s),
+            ActiveTool::Polyline { points } if !points.is_empty() => points.last().copied(),
+            _ => None,
+        }
+    }
+
+    /// Snap to the closest point ON any entity's geometry (not just special points).
+    fn nearest_entity_snap(
+        &self,
+        viewport: &Viewport,
+        rect: egui::Rect,
+        screen_pos: egui::Pos2,
+    ) -> Option<Vec2> {
+        let local = screen_pos - rect.min;
+        let cw = screen_to_world(local.x, local.y, viewport);
+        let cursor = Vec2::new(cw.x, cw.y);
+        let mut best: Option<(f32, Vec2)> = None;
+
+        for entity in self.drawing.visible_entities() {
+            let foot: Option<Vec2> = match &entity.kind {
+                EntityKind::Line { start, end } => {
+                    let s: Vec2 = (*start).into();
+                    let e: Vec2 = (*end).into();
+                    Some(Self::nearest_on_segment(cursor, s, e))
+                }
+                EntityKind::Circle { center, radius } => {
+                    let c: Vec2 = (*center).into();
+                    Self::nearest_on_circle(cursor, c, *radius)
+                }
+                EntityKind::Arc { center, radius, start_angle, end_angle } => {
+                    let c: Vec2 = (*center).into();
+                    Self::nearest_on_arc(cursor, c, *radius, *start_angle, *end_angle)
+                }
+                EntityKind::Polyline { vertices, closed } => {
+                    if vertices.is_empty() { None } else {
+                        let vv: Vec<Vec2> = vertices.iter().map(|v| (*v).into()).collect();
+                        let mut min_d = f64::MAX;
+                        let mut min_foot = None;
+                        let mut check = |a: Vec2, b: Vec2| {
+                            let f = Self::nearest_on_segment(cursor, a, b);
+                            let d = (f.x - cursor.x).powi(2) + (f.y - cursor.y).powi(2);
+                            if d < min_d { min_d = d; min_foot = Some(f); }
+                        };
+                        for w in vv.windows(2) { check(w[0], w[1]); }
+                        if *closed && vv.len() >= 2 { check(*vv.last().unwrap(), vv[0]); }
+                        min_foot
+                    }
+                }
+                _ => None,
+            };
+            if let Some(w) = foot {
+                let (sx, sy) = world_to_screen(w.x as f32, w.y as f32, viewport);
+                let sp = rect.min + egui::vec2(sx, sy);
+                let d = sp.distance(screen_pos);
+                if d <= Self::PICK_RADIUS {
+                    match best { Some((bd, _)) if d >= bd => {} _ => best = Some((d, w)) }
+                }
+            }
+        }
+        best.map(|(_, w)| w)
+    }
+
+    /// Snap to the perpendicular foot on an entity from `from_pt` (last placed point).
+    fn perpendicular_snap(
+        &self,
+        viewport: &Viewport,
+        rect: egui::Rect,
+        screen_pos: egui::Pos2,
+        from_pt: Vec2,
+    ) -> Option<Vec2> {
+        let mut best: Option<(f32, Vec2)> = None;
+
+        for entity in self.drawing.visible_entities() {
+            let foot: Option<Vec2> = match &entity.kind {
+                EntityKind::Line { start, end } => {
+                    let s: Vec2 = (*start).into();
+                    let e: Vec2 = (*end).into();
+                    Self::perp_foot_on_line(from_pt, s, e)
+                }
+                EntityKind::Circle { center, radius } => {
+                    let c: Vec2 = (*center).into();
+                    // Perpendicular from from_pt = closest point on circle along from_pt→center
+                    Self::nearest_on_circle(from_pt, c, *radius)
+                }
+                _ => None,
+            };
+            if let Some(w) = foot {
+                let (sx, sy) = world_to_screen(w.x as f32, w.y as f32, viewport);
+                let sp = rect.min + egui::vec2(sx, sy);
+                let d = sp.distance(screen_pos);
+                if d <= Self::PICK_RADIUS {
+                    match best { Some((bd, _)) if d >= bd => {} _ => best = Some((d, w)) }
+                }
+            }
+        }
+        best.map(|(_, w)| w)
+    }
+
+    /// Snap to the tangent-touch point on a circle/arc from `from_pt`.
+    fn tangent_snap(
+        &self,
+        viewport: &Viewport,
+        rect: egui::Rect,
+        screen_pos: egui::Pos2,
+        from_pt: Vec2,
+    ) -> Option<Vec2> {
+        let mut best: Option<(f32, Vec2)> = None;
+
+        for entity in self.drawing.visible_entities() {
+            let candidates: Vec<Vec2> = match &entity.kind {
+                EntityKind::Circle { center, radius } => {
+                    let c: Vec2 = (*center).into();
+                    Self::tangent_points_to_circle(from_pt, c, *radius)
+                }
+                EntityKind::Arc { center, radius, start_angle, end_angle } => {
+                    let c: Vec2 = (*center).into();
+                    Self::tangent_points_to_circle(from_pt, c, *radius)
+                        .into_iter()
+                        .filter(|pt| {
+                            let mut a = f64::atan2(pt.y - c.y, pt.x - c.x);
+                            while a < *start_angle { a += std::f64::consts::TAU; }
+                            a <= *end_angle
+                        })
+                        .collect()
+                }
+                _ => vec![],
+            };
+            for w in candidates {
+                let (sx, sy) = world_to_screen(w.x as f32, w.y as f32, viewport);
+                let sp = rect.min + egui::vec2(sx, sy);
+                let d = sp.distance(screen_pos);
+                if d <= Self::PICK_RADIUS {
+                    match best { Some((bd, _)) if d >= bd => {} _ => best = Some((d, w)) }
+                }
+            }
+        }
+        best.map(|(_, w)| w)
     }
 }
 

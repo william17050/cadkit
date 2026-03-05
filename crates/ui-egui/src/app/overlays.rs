@@ -1,4 +1,4 @@
-use super::state::{ActiveTool, GeomPrim};
+use super::state::{ActiveTool, GeomPrim, SnapKind};
 use super::CadKitApp;
 use cadkit_geometry::{
     Arc as GeomArc, Circle as GeomCircle, Intersects, Line as GeomLine, Polyline as GeomPolyline,
@@ -194,6 +194,95 @@ impl CadKitApp {
             [center + egui::vec2(-r, r), center + egui::vec2(r, -r)],
             egui::Stroke::new(2.0, color),
         );
+    }
+
+    /// Draw a per-type snap glyph at `world` in yellow (AutoCAD-style icons).
+    pub(crate) fn draw_snap_glyph(
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        viewport: &Viewport,
+        world: Vec2,
+        kind: SnapKind,
+    ) {
+        let (sx, sy) = world_to_screen(world.x as f32, world.y as f32, viewport);
+        let pos = rect.min + egui::vec2(sx, sy);
+        let painter = ui.painter_at(rect);
+        let yellow = egui::Color32::from_rgb(255, 220, 40);
+        let stroke = egui::Stroke::new(1.5, yellow);
+
+        match kind {
+            SnapKind::Endpoint => {
+                // Hollow square
+                let h = 5.0_f32;
+                let c = [
+                    pos + egui::vec2(-h, -h), pos + egui::vec2(h, -h),
+                    pos + egui::vec2(h,  h),  pos + egui::vec2(-h, h),
+                ];
+                painter.line_segment([c[0], c[1]], stroke);
+                painter.line_segment([c[1], c[2]], stroke);
+                painter.line_segment([c[2], c[3]], stroke);
+                painter.line_segment([c[3], c[0]], stroke);
+            }
+            SnapKind::Midpoint => {
+                // Upward triangle
+                let r = 6.0_f32;
+                let p1 = pos + egui::vec2(0.0, -r);
+                let p2 = pos + egui::vec2(r * 0.866, r * 0.5);
+                let p3 = pos + egui::vec2(-r * 0.866, r * 0.5);
+                painter.line_segment([p1, p2], stroke);
+                painter.line_segment([p2, p3], stroke);
+                painter.line_segment([p3, p1], stroke);
+            }
+            SnapKind::Center => {
+                // Circle with crosshairs
+                painter.circle_stroke(pos, 6.0, stroke);
+                let r = 9.0_f32;
+                painter.line_segment([pos - egui::vec2(r, 0.0), pos + egui::vec2(r, 0.0)], stroke);
+                painter.line_segment([pos - egui::vec2(0.0, r), pos + egui::vec2(0.0, r)], stroke);
+            }
+            SnapKind::Quadrant => {
+                // Diamond
+                let r = 6.0_f32;
+                let top   = pos + egui::vec2(0.0, -r);
+                let right = pos + egui::vec2(r,   0.0);
+                let bot   = pos + egui::vec2(0.0,  r);
+                let left  = pos + egui::vec2(-r,  0.0);
+                painter.line_segment([top,   right], stroke);
+                painter.line_segment([right, bot  ], stroke);
+                painter.line_segment([bot,   left ], stroke);
+                painter.line_segment([left,  top  ], stroke);
+            }
+            SnapKind::Intersection => {
+                // X mark
+                let r = 7.0_f32;
+                painter.line_segment([pos + egui::vec2(-r, -r), pos + egui::vec2(r, r)], stroke);
+                painter.line_segment([pos + egui::vec2(-r,  r), pos + egui::vec2(r,-r)], stroke);
+            }
+            SnapKind::Nearest => {
+                // Circle with inner X
+                painter.circle_stroke(pos, 6.0, stroke);
+                let r = 4.0_f32;
+                painter.line_segment([pos + egui::vec2(-r, -r), pos + egui::vec2(r, r)], stroke);
+                painter.line_segment([pos + egui::vec2(-r,  r), pos + egui::vec2(r,-r)], stroke);
+            }
+            SnapKind::Perpendicular => {
+                // Right-angle symbol: vertical arm + horizontal arm + corner square
+                let r = 7.0_f32;
+                painter.line_segment([pos + egui::vec2(0.0, -r), pos], stroke);
+                painter.line_segment([pos, pos + egui::vec2(r, 0.0)], stroke);
+                let sq = 3.0_f32;
+                painter.line_segment([pos + egui::vec2(sq, 0.0), pos + egui::vec2(sq, -sq)], stroke);
+                painter.line_segment([pos + egui::vec2(sq, -sq), pos + egui::vec2(0.0, -sq)], stroke);
+            }
+            SnapKind::Tangent => {
+                // Small circle with horizontal tangent line above it
+                painter.circle_stroke(pos, 5.0, stroke);
+                painter.line_segment(
+                    [pos + egui::vec2(-8.0, -7.0), pos + egui::vec2(8.0, -7.0)],
+                    stroke,
+                );
+            }
+        }
     }
 
     pub(crate) fn screen_dist_to_entity(

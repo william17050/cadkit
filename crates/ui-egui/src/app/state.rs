@@ -151,6 +151,19 @@ pub enum TrimResult {
     },
 }
 
+/// Identifies what kind of geometric snap point was found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapKind {
+    Endpoint,       // end/start of line, arc, polyline vertex
+    Midpoint,       // midpoint of a segment
+    Center,         // circle or arc center
+    Quadrant,       // circle cardinal points (N/S/E/W)
+    Intersection,   // intersection of two entities
+    Nearest,        // closest point on entity curve to cursor
+    Perpendicular,  // foot of perpendicular from previous drawn point
+    Tangent,        // tangent point on circle/arc from previous drawn point
+}
+
 #[derive(Debug, Clone)]
 pub struct Selection {
     pub entity: Guid,

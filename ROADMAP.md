@@ -22,8 +22,8 @@
 - [x] Center snap
 - [x] Intersection snap search with pixel radius
 - [x] FROM offset workflow (base point + typed offset)
-- [ ] Nearest / perpendicular / tangent snaps
-- [ ] Visual snap glyphs (icon per snap type)
+- [x] Nearest / perpendicular / tangent snaps
+- [x] Visual snap glyphs (icon per snap type — square/triangle/circle/diamond/X/perp/tangent)
 
 ### Milestone 1.4: Selection & Basic Edits
 - [x] Click and box selection (window/crossing)
