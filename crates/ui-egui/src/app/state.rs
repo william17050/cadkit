@@ -1,6 +1,7 @@
 use cadkit_2d_core::Entity;
 use cadkit_geometry::{Arc as GeomArc, Circle as GeomCircle, Line as GeomLine, Polyline as GeomPolyline};
 use cadkit_types::{Guid, Vec2};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
 pub enum ActiveTool {
@@ -131,6 +132,39 @@ pub struct DimEditDialog {
     pub focus_requested: bool,
 }
 
+/// Global dimension style values used for new dimensions and text rendering.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DimStyle {
+    pub text_height: f64,
+    pub precision: usize,
+    pub color: [u8; 3],
+    pub arrow_length: f64,
+    pub arrow_half_width: f64,
+}
+
+impl Default for DimStyle {
+    fn default() -> Self {
+        Self {
+            text_height: 2.5,
+            precision: 3,
+            color: [0, 180, 220],
+            arrow_length: 3.0,
+            arrow_half_width: 0.75,
+        }
+    }
+}
+
+/// State held while the DimStyle dialog is open.
+#[derive(Debug, Clone)]
+pub struct DimStyleDialog {
+    pub text_height_str: String,
+    pub precision_str: String,
+    pub color: [u8; 3],
+    pub arrow_length_str: String,
+    pub arrow_half_width_str: String,
+}
+
 /// DimAligned placement workflow phases.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DimPhase {
@@ -177,6 +211,20 @@ pub enum SnapKind {
 pub struct Selection {
     pub entity: Guid,
     pub world: Vec2,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DimGripKind {
+    Start,
+    End,
+    Offset,
+    Text,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DimGripHandle {
+    pub entity: Guid,
+    pub kind: DimGripKind,
 }
 
 /// Geometry-crate primitive, used for intersection dispatch.

@@ -1,15 +1,138 @@
-use super::CadKitApp;
+use super::{AppPrefs, CadKitApp};
 use cadkit_2d_core::Drawing;
 use cadkit_2d_core::DxfImportResult;
 use eframe::egui;
+use std::path::PathBuf;
 
 impl CadKitApp {
+    const MAX_RECENT_FILES: usize = 8;
+
+    fn prefs_path() -> Option<PathBuf> {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .map(|home| home.join(".config").join("cadkit").join("prefs.json"))
+    }
+
+    fn collect_preferences(&self) -> AppPrefs {
+        AppPrefs {
+            snap_enabled: self.snap_enabled,
+            ortho_enabled: self.ortho_enabled,
+            grid_visible: self.grid_visible,
+            grid_spacing: self.grid_spacing,
+            current_file: self.current_file.clone(),
+            recent_files: self.recent_files.clone(),
+            dim_style: self.dim_style.clone(),
+        }
+    }
+
+    fn touch_recent_file(&mut self, path: &str) {
+        let p = path.to_string();
+        self.recent_files.retain(|x| x != &p);
+        self.recent_files.insert(0, p);
+        self.recent_files.truncate(Self::MAX_RECENT_FILES);
+    }
+
+    pub(crate) fn clear_recent_files(&mut self) {
+        self.recent_files.clear();
+    }
+
+    pub(crate) fn prune_recent_files(&mut self) {
+        let mut out = Vec::with_capacity(Self::MAX_RECENT_FILES);
+        for p in &self.recent_files {
+            if out.iter().any(|x: &String| x == p) {
+                continue;
+            }
+            out.push(p.clone());
+            if out.len() >= Self::MAX_RECENT_FILES {
+                break;
+            }
+        }
+        self.recent_files = out;
+    }
+
+    pub(crate) fn open_path(&mut self, ctx: &egui::Context, path_str: &str) {
+        match Drawing::load_from_file(path_str) {
+            Ok(drawing) => {
+                self.drawing = drawing;
+                self.current_file = Some(path_str.to_string());
+                self.touch_recent_file(path_str);
+                self.selected_entities.clear();
+                self.selection = None;
+                self.command_log.push(format!("Opened: {}", path_str));
+                Self::update_title(ctx, path_str);
+            }
+            Err(e) => self.command_log.push(format!("Open failed: {}", e)),
+        }
+    }
+
+    pub(crate) fn load_preferences(&mut self) {
+        let Some(path) = Self::prefs_path() else {
+            self.last_saved_prefs = Some(self.collect_preferences());
+            return;
+        };
+        match std::fs::read_to_string(&path) {
+            Ok(json) => match serde_json::from_str::<AppPrefs>(&json) {
+                Ok(prefs) => {
+                    self.snap_enabled = prefs.snap_enabled;
+                    self.ortho_enabled = prefs.ortho_enabled;
+                    self.grid_visible = prefs.grid_visible;
+                    self.grid_spacing = prefs.grid_spacing.max(0.5);
+                    self.current_file = prefs.current_file.clone();
+                    self.recent_files = prefs.recent_files;
+                    self.dim_style = prefs.dim_style;
+                    self.prune_recent_files();
+                    self.last_saved_prefs = Some(self.collect_preferences());
+                }
+                Err(e) => {
+                    log::warn!("Failed to parse prefs at {}: {}", path.display(), e);
+                    self.last_saved_prefs = Some(self.collect_preferences());
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                self.last_saved_prefs = Some(self.collect_preferences());
+            }
+            Err(e) => {
+                log::warn!("Failed to read prefs at {}: {}", path.display(), e);
+                self.last_saved_prefs = Some(self.collect_preferences());
+            }
+        }
+    }
+
+    pub(crate) fn persist_preferences_if_changed(&mut self) {
+        let prefs = self.collect_preferences();
+        if self.last_saved_prefs.as_ref() == Some(&prefs) {
+            return;
+        }
+        let Some(path) = Self::prefs_path() else {
+            return;
+        };
+        if let Some(parent) = path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                log::warn!("Failed to create prefs directory {}: {}", parent.display(), e);
+                return;
+            }
+        }
+        match serde_json::to_string_pretty(&prefs) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(&path, json) {
+                    log::warn!("Failed to write prefs at {}: {}", path.display(), e);
+                    return;
+                }
+                self.last_saved_prefs = Some(prefs);
+            }
+            Err(e) => {
+                log::warn!("Failed to serialize prefs: {}", e);
+            }
+        }
+    }
+
     /// Save to the current file path, or run Save As if none is set.
     pub(crate) fn save(&mut self, ctx: &egui::Context) {
         if let Some(path) = self.current_file.clone() {
             match self.drawing.save_to_file(&path) {
                 Ok(()) => {
                     self.command_log.push(format!("Saved: {}", path));
+                    self.touch_recent_file(&path);
                     Self::update_title(ctx, &path);
                 }
                 Err(e) => self.command_log.push(format!("Save failed: {}", e)),
@@ -30,6 +153,7 @@ impl CadKitApp {
             match self.drawing.save_to_file(&path_str) {
                 Ok(()) => {
                     self.current_file = Some(path_str.clone());
+                    self.touch_recent_file(&path_str);
                     self.command_log.push(format!("Saved: {}", path_str));
                     Self::update_title(ctx, &path_str);
                 }
@@ -46,17 +170,7 @@ impl CadKitApp {
             .pick_file();
         if let Some(path) = path {
             let path_str = path.to_string_lossy().to_string();
-            match Drawing::load_from_file(&path_str) {
-                Ok(drawing) => {
-                    self.drawing = drawing;
-                    self.current_file = Some(path_str.clone());
-                    self.selected_entities.clear();
-                    self.selection = None;
-                    self.command_log.push(format!("Opened: {}", path_str));
-                    Self::update_title(ctx, &path_str);
-                }
-                Err(e) => self.command_log.push(format!("Open failed: {}", e)),
-            }
+            self.open_path(ctx, &path_str);
         }
     }
 

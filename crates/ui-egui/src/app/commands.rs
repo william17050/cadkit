@@ -13,6 +13,13 @@ impl CadKitApp {
         if cmd.is_empty() {
             return false;
         }
+        let keeps_dim_context = matches!(
+            cmd.as_str(),
+            "dal" | "dimaligned" | "dim" | "dli" | "dimlinear" | "from" | "fr"
+        ) || self.from_phase != FromPhase::Idle;
+        if !keeps_dim_context {
+            self.exit_dim();
+        }
 
         match cmd.as_str() {
             "l" | "line" => {
@@ -145,7 +152,23 @@ impl CadKitApp {
                 true
             }
             "from" | "fr" => {
-                if self.is_picking_point() {
+                if let DimPhase::SecondPoint { first } = self.dim_phase {
+                    // Inside DIMALIGNED after first point: use first point as FROM base.
+                    self.from_phase = FromPhase::WaitingOffset;
+                    self.from_base = Some(first);
+                    self.command_log
+                        .push(format!("  Base: {:.4}, {:.4}", first.x, first.y));
+                    self.command_log
+                        .push("FROM  Offset (@dx,dy  or  @dist<angle  or click):".to_string());
+                } else if let DimLinearPhase::SecondPoint { first } = self.dim_linear_phase {
+                    // Inside DIMLINEAR after first point: use first point as FROM base.
+                    self.from_phase = FromPhase::WaitingOffset;
+                    self.from_base = Some(first);
+                    self.command_log
+                        .push(format!("  Base: {:.4}, {:.4}", first.x, first.y));
+                    self.command_log
+                        .push("FROM  Offset (@dx,dy  or  @dist<angle  or click):".to_string());
+                } else if self.is_picking_point() {
                     self.from_phase = FromPhase::WaitingBase;
                     self.from_base = None;
                     self.command_log
@@ -220,6 +243,7 @@ impl CadKitApp {
                 true
             }
             "dal" | "dimaligned" | "dim" => {
+                self.exit_dim();
                 self.cancel_active_tool();
                 self.exit_trim();
                 self.exit_offset();
@@ -234,6 +258,7 @@ impl CadKitApp {
                 true
             }
             "dli" | "dimlinear" => {
+                self.exit_dim();
                 self.cancel_active_tool();
                 self.exit_trim();
                 self.exit_offset();
@@ -245,6 +270,11 @@ impl CadKitApp {
                 self.command_log
                     .push("DIMLINEAR: Specify first extension line origin".to_string());
                 log::info!("Command: DIMLINEAR");
+                true
+            }
+            "dimstyle" | "dst" => {
+                self.open_dim_style_dialog();
+                self.command_log.push("DIMSTYLE: Edit dimension style".to_string());
                 true
             }
             "grid" | "gr" => {

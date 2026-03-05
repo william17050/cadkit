@@ -16,6 +16,32 @@ mod commands;
 mod state;
 use state::*;
 
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub(crate) struct AppPrefs {
+    pub snap_enabled: bool,
+    pub ortho_enabled: bool,
+    pub grid_visible: bool,
+    pub grid_spacing: f64,
+    pub current_file: Option<String>,
+    pub recent_files: Vec<String>,
+    pub dim_style: DimStyle,
+}
+
+impl Default for AppPrefs {
+    fn default() -> Self {
+        Self {
+            snap_enabled: true,
+            ortho_enabled: true,
+            grid_visible: true,
+            grid_spacing: 12.0,
+            current_file: None,
+            recent_files: Vec::new(),
+            dim_style: DimStyle::default(),
+        }
+    }
+}
+
 pub struct CadKitApp {
     drawing: Drawing,
     command_input: String,
@@ -23,6 +49,7 @@ pub struct CadKitApp {
     viewport_texture_id: Option<egui::TextureId>,
     viewport_init_error: Option<String>,
     hover_world_pos: Option<cadkit_types::Vec2>,
+    last_hover_world_pos: Option<cadkit_types::Vec2>,
     snap_enabled: bool,
     grid_visible: bool,
     grid_spacing: f64,
@@ -31,6 +58,9 @@ pub struct CadKitApp {
     selected_entities: HashSet<Guid>,
     selection_drag_start: Option<egui::Pos2>,
     selection_drag_current: Option<egui::Pos2>,
+    dim_grip_drag: Option<DimGripHandle>,
+    dim_grip_is_dragging: bool,
+    hover_dim_grip: Option<DimGripHandle>,
     ortho_enabled: bool,
     ortho_increment_deg: f64,
     distance_input: String,
@@ -65,7 +95,10 @@ pub struct CadKitApp {
     text_edit_dialog: Option<TextEditDialog>,
     edit_dim_phase: EditDimPhase,
     dim_edit_dialog: Option<DimEditDialog>,
+    dim_style: DimStyle,
+    dim_style_dialog: Option<DimStyleDialog>,
     current_file: Option<String>,
+    recent_files: Vec<String>,
     // Layer management
     current_layer: u32,
     next_layer_number: u32,
@@ -82,19 +115,21 @@ pub struct CadKitApp {
     redo_stack: Vec<Drawing>,
     help_open: bool,
     bgcolor_picker_open: bool,
+    last_saved_prefs: Option<AppPrefs>,
 }
 
 impl Default for CadKitApp {
     fn default() -> Self {
         let drawing = Drawing::new("New Drawing".to_string());
 
-        Self {
+        let mut app = Self {
             drawing,
             command_input: String::new(),
             viewport: None,
             viewport_texture_id: None,
             viewport_init_error: None,
             hover_world_pos: None,
+            last_hover_world_pos: None,
             snap_enabled: true,
             grid_visible: true,
             grid_spacing: 12.0,
@@ -103,6 +138,9 @@ impl Default for CadKitApp {
             selected_entities: HashSet::new(),
             selection_drag_start: None,
             selection_drag_current: None,
+            dim_grip_drag: None,
+            dim_grip_is_dragging: false,
+            hover_dim_grip: None,
             ortho_enabled: true,
             ortho_increment_deg: 90.0,
             distance_input: String::new(),
@@ -137,7 +175,10 @@ impl Default for CadKitApp {
             text_edit_dialog: None,
             edit_dim_phase: EditDimPhase::Idle,
             dim_edit_dialog: None,
+            dim_style: DimStyle::default(),
+            dim_style_dialog: None,
             current_file: None,
+            recent_files: Vec::new(),
             current_layer: 0,
             next_layer_number: 1,
             layer_color_picking: None,
@@ -151,7 +192,10 @@ impl Default for CadKitApp {
             redo_stack: Vec::new(),
             help_open: false,
             bgcolor_picker_open: false,
-        }
+            last_saved_prefs: None,
+        };
+        app.load_preferences();
+        app
     }
 }
 
@@ -160,7 +204,358 @@ impl CadKitApp {
     const PAN_SENSITIVITY: f32 = 0.3;
     const GRID_MAX_POINTS: usize = 20_000;
     const PICK_RADIUS: f32 = 16.0; // screen-space pixels
+    pub(crate) const DIM_GRIP_RADIUS: f32 = 7.0;
     const GEOM_TOL: f64 = 1e-9;
+
+    pub(crate) fn dim_grip_points(kind: &EntityKind) -> Option<Vec<(DimGripKind, Vec2)>> {
+        match kind {
+            EntityKind::DimAligned { start, end, offset, text_pos, .. } => {
+                let sx = start.x;
+                let sy = start.y;
+                let ex = end.x;
+                let ey = end.y;
+                let ddx = ex - sx;
+                let ddy = ey - sy;
+                let len = (ddx * ddx + ddy * ddy).sqrt();
+                if len < 1e-9 {
+                    return None;
+                }
+                let perp = Vec2::new(-ddy / len, ddx / len);
+                let mid = Vec2::new((sx + ex) * 0.5, (sy + ey) * 0.5);
+                let offset_grip = Vec2::new(mid.x + perp.x * *offset, mid.y + perp.y * *offset);
+                let text_grip = Vec2::new(text_pos.x, text_pos.y);
+                Some(vec![
+                    (DimGripKind::Start, Vec2::new(sx, sy)),
+                    (DimGripKind::End, Vec2::new(ex, ey)),
+                    (DimGripKind::Offset, offset_grip),
+                    (DimGripKind::Text, text_grip),
+                ])
+            }
+            EntityKind::DimLinear { start, end, offset, text_pos, horizontal, .. } => {
+                let mid_x = (start.x + end.x) * 0.5;
+                let mid_y = (start.y + end.y) * 0.5;
+                let offset_grip = if *horizontal {
+                    Vec2::new(mid_x, mid_y + *offset)
+                } else {
+                    Vec2::new(mid_x + *offset, mid_y)
+                };
+                let text_grip = Vec2::new(text_pos.x, text_pos.y);
+                Some(vec![
+                    (DimGripKind::Start, Vec2::new(start.x, start.y)),
+                    (DimGripKind::End, Vec2::new(end.x, end.y)),
+                    (DimGripKind::Offset, offset_grip),
+                    (DimGripKind::Text, text_grip),
+                ])
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn dim_grip_display_points(
+        kind: &EntityKind,
+        viewport: &Viewport,
+        rect: egui::Rect,
+    ) -> Option<Vec<(DimGripKind, egui::Pos2)>> {
+        let grips = Self::dim_grip_points(kind)?;
+        let mut points: Vec<(DimGripKind, egui::Pos2)> = grips
+            .into_iter()
+            .map(|(kind, world)| {
+                let (sx, sy) = world_to_screen(world.x as f32, world.y as f32, viewport);
+                (kind, rect.min + egui::vec2(sx, sy))
+            })
+            .collect();
+
+        let off_idx = points.iter().position(|(k, _)| *k == DimGripKind::Offset);
+        let txt_idx = points.iter().position(|(k, _)| *k == DimGripKind::Text);
+        if let (Some(oi), Some(ti)) = (off_idx, txt_idx) {
+            let mut offset_pos = points[oi].1;
+            let mut text_pos = points[ti].1;
+            if offset_pos.distance(text_pos) < 8.0 {
+            let mut n = egui::vec2(0.0, -1.0);
+            match kind {
+                EntityKind::DimAligned { start, end, .. } => {
+                    let (sx, sy) = world_to_screen(start.x as f32, start.y as f32, viewport);
+                    let (ex, ey) = world_to_screen(end.x as f32, end.y as f32, viewport);
+                    let dir = egui::vec2(ex - sx, ey - sy);
+                    let len = dir.length();
+                    if len > f32::EPSILON {
+                        n = egui::vec2(-dir.y / len, dir.x / len);
+                    }
+                }
+                EntityKind::DimLinear { horizontal, .. } => {
+                    n = if *horizontal {
+                        egui::vec2(0.0, -1.0)
+                    } else {
+                        egui::vec2(1.0, 0.0)
+                    };
+                }
+                _ => {}
+            }
+            let center = offset_pos + (text_pos - offset_pos) * 0.5;
+            let sep = 8.0;
+            offset_pos = center + n * sep;
+            text_pos = center - n * sep;
+            points[oi].1 = offset_pos;
+            points[ti].1 = text_pos;
+            }
+        }
+
+        Some(points)
+    }
+
+    fn pick_dim_grip_handle(
+        &self,
+        viewport: &Viewport,
+        rect: egui::Rect,
+        screen_pos: egui::Pos2,
+    ) -> Option<DimGripHandle> {
+        let mut best: Option<(f32, DimGripHandle)> = None;
+        for entity in self.drawing.visible_entities() {
+            if !self.selected_entities.contains(&entity.id) {
+                continue;
+            }
+            let Some(points) = Self::dim_grip_display_points(&entity.kind, viewport, rect) else {
+                continue;
+            };
+            for (kind, pos) in points {
+                let dist = pos.distance(screen_pos);
+                if dist <= Self::DIM_GRIP_RADIUS + 3.0 {
+                    match best {
+                        Some((best_dist, _)) if dist >= best_dist => {}
+                        _ => {
+                            best = Some((dist, DimGripHandle { entity: entity.id, kind }));
+                        }
+                    }
+                }
+            }
+        }
+        best.map(|(_, handle)| handle)
+    }
+
+    fn apply_dim_grip_drag(&mut self, handle: DimGripHandle, world: Vec2) {
+        let Some(entity) = self.drawing.get_entity_mut(&handle.entity) else {
+            return;
+        };
+        match &mut entity.kind {
+            EntityKind::DimAligned { start, end, offset, text_pos, .. } => {
+                let sx = start.x;
+                let sy = start.y;
+                let ex = end.x;
+                let ey = end.y;
+                let ddx = ex - sx;
+                let ddy = ey - sy;
+                let len = (ddx * ddx + ddy * ddy).sqrt();
+                if len < 1e-9 {
+                    return;
+                }
+                let perp = Vec2::new(-ddy / len, ddx / len);
+                let mid = Vec2::new((sx + ex) * 0.5, (sy + ey) * 0.5);
+                match handle.kind {
+                    DimGripKind::Start => {
+                        let old_mid = mid;
+                        start.x = world.x;
+                        start.y = world.y;
+                        let new_mid = Vec2::new((start.x + end.x) * 0.5, (start.y + end.y) * 0.5);
+                        text_pos.x += new_mid.x - old_mid.x;
+                        text_pos.y += new_mid.y - old_mid.y;
+                    }
+                    DimGripKind::End => {
+                        let old_mid = mid;
+                        end.x = world.x;
+                        end.y = world.y;
+                        let new_mid = Vec2::new((start.x + end.x) * 0.5, (start.y + end.y) * 0.5);
+                        text_pos.x += new_mid.x - old_mid.x;
+                        text_pos.y += new_mid.y - old_mid.y;
+                    }
+                    DimGripKind::Offset => {
+                        let new_offset = (world.x - mid.x) * perp.x + (world.y - mid.y) * perp.y;
+                        let delta = new_offset - *offset;
+                        *offset = new_offset;
+                        text_pos.x += perp.x * delta;
+                        text_pos.y += perp.y * delta;
+                    }
+                    DimGripKind::Text => {
+                        text_pos.x = world.x;
+                        text_pos.y = world.y;
+                    }
+                }
+            }
+            EntityKind::DimLinear { start, end, offset, text_pos, horizontal, .. } => {
+                let mid_x = (start.x + end.x) * 0.5;
+                let mid_y = (start.y + end.y) * 0.5;
+                match handle.kind {
+                    DimGripKind::Start => {
+                        let old_mid = Vec2::new(mid_x, mid_y);
+                        start.x = world.x;
+                        start.y = world.y;
+                        let new_mid = Vec2::new((start.x + end.x) * 0.5, (start.y + end.y) * 0.5);
+                        text_pos.x += new_mid.x - old_mid.x;
+                        text_pos.y += new_mid.y - old_mid.y;
+                    }
+                    DimGripKind::End => {
+                        let old_mid = Vec2::new(mid_x, mid_y);
+                        end.x = world.x;
+                        end.y = world.y;
+                        let new_mid = Vec2::new((start.x + end.x) * 0.5, (start.y + end.y) * 0.5);
+                        text_pos.x += new_mid.x - old_mid.x;
+                        text_pos.y += new_mid.y - old_mid.y;
+                    }
+                    DimGripKind::Offset => {
+                        if *horizontal {
+                            let new_offset = world.y - mid_y;
+                            let delta = new_offset - *offset;
+                            *offset = new_offset;
+                            text_pos.y += delta;
+                        } else {
+                            let new_offset = world.x - mid_x;
+                            let delta = new_offset - *offset;
+                            *offset = new_offset;
+                            text_pos.x += delta;
+                        }
+                    }
+                    DimGripKind::Text => {
+                        text_pos.x = world.x;
+                        text_pos.y = world.y;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn constrained_dim_grip_world(&self, handle: DimGripHandle, world: Vec2) -> Vec2 {
+        if handle.kind != DimGripKind::Offset {
+            return world;
+        }
+        let Some(entity) = self.drawing.get_entity(&handle.entity) else {
+            return world;
+        };
+        match &entity.kind {
+            EntityKind::DimAligned { start, end, .. } => {
+                let sx = start.x;
+                let sy = start.y;
+                let ex = end.x;
+                let ey = end.y;
+                let ddx = ex - sx;
+                let ddy = ey - sy;
+                let len = (ddx * ddx + ddy * ddy).sqrt();
+                if len < 1e-9 {
+                    return world;
+                }
+                let perp = Vec2::new(-ddy / len, ddx / len);
+                let mid = Vec2::new((sx + ex) * 0.5, (sy + ey) * 0.5);
+                let d = Vec2::new(world.x - mid.x, world.y - mid.y);
+                let t = d.x * perp.x + d.y * perp.y;
+                Vec2::new(mid.x + perp.x * t, mid.y + perp.y * t)
+            }
+            EntityKind::DimLinear { start, end, horizontal, .. } => {
+                let mid_x = (start.x + end.x) * 0.5;
+                let mid_y = (start.y + end.y) * 0.5;
+                if *horizontal {
+                    Vec2::new(mid_x, world.y)
+                } else {
+                    Vec2::new(world.x, mid_y)
+                }
+            }
+            _ => world,
+        }
+    }
+
+    fn snapped_world_for_grip_drag(
+        &self,
+        handle: DimGripHandle,
+        viewport: &Viewport,
+        rect: egui::Rect,
+        screen_pos: egui::Pos2,
+    ) -> (Vec2, Option<SnapKind>) {
+        let local = screen_pos - rect.min;
+        let raw_world = screen_to_world(local.x, local.y, viewport);
+        // Object-snap only: explicit snap points first, excluding the dragged dimension itself.
+        let pick = self.pick_entity_point_excluding(viewport, rect, screen_pos, Some(handle.entity));
+        let mut world = pick.as_ref().map(|(s, _)| s.world).unwrap_or(raw_world);
+        let mut kind = pick.as_ref().map(|(_, k)| *k);
+
+        // Intersection snap as fallback (still object-based).
+        if pick.is_none() && self.snap_enabled {
+            if let Some(pt) =
+                self.find_intersection_snap_excluding(viewport, rect, screen_pos, Some(handle.entity))
+            {
+                world = pt;
+                kind = Some(SnapKind::Intersection);
+            }
+        }
+        (world, kind)
+    }
+
+    fn is_layer_locked(&self, layer_id: u32) -> bool {
+        self.drawing.get_layer(layer_id).map(|l| l.locked).unwrap_or(false)
+    }
+
+    fn is_entity_on_locked_layer(&self, id: &Guid) -> bool {
+        self.drawing
+            .get_entity(id)
+            .map(|e| self.is_layer_locked(e.layer))
+            .unwrap_or(false)
+    }
+
+    fn filter_editable_entity_ids(&mut self, ids: &[Guid], op: &str) -> Vec<Guid> {
+        let editable: Vec<Guid> = ids
+            .iter()
+            .copied()
+            .filter(|id| !self.is_entity_on_locked_layer(id))
+            .collect();
+        let skipped = ids.len().saturating_sub(editable.len());
+        if skipped > 0 {
+            self.command_log.push(format!(
+                "{op}: {} entit{} on locked layer{} skipped",
+                skipped,
+                if skipped == 1 { "y" } else { "ies" },
+                if skipped == 1 { "" } else { "s" }
+            ));
+        }
+        editable
+    }
+
+    fn format_dim_measurement(&self, value: f64) -> String {
+        format!("{:.*}", self.dim_style.precision, value)
+    }
+
+    fn dim_label_text(&self, text_override: &Option<String>, value: f64) -> String {
+        let measurement = self.format_dim_measurement(value);
+        match text_override {
+            None => measurement,
+            Some(s) if s.trim().is_empty() || s.trim() == "<>" => measurement,
+            Some(s) => s.replace("<>", &measurement),
+        }
+    }
+
+    fn ensure_dim_layer(&mut self) -> u32 {
+        let existing = self
+            .drawing
+            .layers()
+            .find(|l| l.name == "Dim")
+            .map(|l| l.id);
+        let dim_layer = if let Some(id) = existing {
+            id
+        } else {
+            self.drawing
+                .add_layer_with_color("Dim".to_string(), self.dim_style.color)
+        };
+        if let Some(layer) = self.drawing.get_layer_mut(dim_layer) {
+            layer.color = self.dim_style.color;
+        }
+        dim_layer
+    }
+
+    pub(crate) fn open_dim_style_dialog(&mut self) {
+        self.dim_style_dialog = Some(DimStyleDialog {
+            text_height_str: format!("{:.4}", self.dim_style.text_height),
+            precision_str: self.dim_style.precision.to_string(),
+            color: self.dim_style.color,
+            arrow_length_str: format!("{:.4}", self.dim_style.arrow_length),
+            arrow_half_width_str: format!("{:.4}", self.dim_style.arrow_half_width),
+        });
+    }
 
     fn cancel_active_tool(&mut self) {
         self.active_tool = ActiveTool::None;
@@ -331,6 +726,27 @@ impl CadKitApp {
         }
     }
 
+    fn apply_from_result_point(&mut self, world: Vec2) {
+        self.exit_from();
+        if let DimPhase::SecondPoint { first } = self.dim_phase.clone() {
+            self.dim_phase = DimPhase::Placing { first, second: world };
+            self.command_log.push(format!(
+                "DIMALIGNED: Second point ({:.4}, {:.4})",
+                world.x, world.y
+            ));
+            return;
+        }
+        if let DimLinearPhase::SecondPoint { first } = self.dim_linear_phase.clone() {
+            self.dim_linear_phase = DimLinearPhase::Placing { first, second: world };
+            self.command_log.push(format!(
+                "DIMLINEAR: Second point ({:.4}, {:.4})",
+                world.x, world.y
+            ));
+            return;
+        }
+        self.deliver_point(world);
+    }
+
     /// Request focus on the command line input if nothing else currently has it.
     fn auto_focus_command_line(&self, ctx: &egui::Context) {
         if !ctx.wants_keyboard_input() {
@@ -464,6 +880,17 @@ impl CadKitApp {
         if self.edit_dim_phase == EditDimPhase::SelectingEntity {
             return "EDITDIM  Click a dimension entity to edit:".into();
         }
+        if let Some(handle) = self.dim_grip_drag {
+            if !self.dim_grip_is_dragging {
+                return match handle.kind {
+                    DimGripKind::Start | DimGripKind::End => {
+                        "DIM GRIP  Base fixed. Drag direction, type distance, or click target:".into()
+                    }
+                    DimGripKind::Offset => "DIM GRIP  Drag or click to set offset:".into(),
+                    DimGripKind::Text => "DIM GRIP  Drag or click to place text:".into(),
+                };
+            }
+        }
         match &self.text_phase {
             TextPhase::PlacingPosition => return "TEXT  Specify insertion point:".into(),
             TextPhase::EnteringHeight { .. } => return format!(
@@ -527,6 +954,78 @@ impl CadKitApp {
         }
     }
 
+    fn dim_grip_anchor_point(&self, handle: DimGripHandle) -> Option<Vec2> {
+        let entity = self.drawing.get_entity(&handle.entity)?;
+        match (&entity.kind, handle.kind) {
+            (EntityKind::DimAligned { start, .. }, DimGripKind::Start)
+            | (EntityKind::DimLinear { start, .. }, DimGripKind::Start) => {
+                Some((*start).into())
+            }
+            (EntityKind::DimAligned { end, .. }, DimGripKind::End)
+            | (EntityKind::DimLinear { end, .. }, DimGripKind::End) => {
+                Some((*end).into())
+            }
+            _ => None,
+        }
+    }
+
+    fn dim_grip_tracking_target_handle(&self, handle: DimGripHandle) -> DimGripHandle {
+        let kind = match handle.kind {
+            DimGripKind::Start => DimGripKind::End,
+            DimGripKind::End => DimGripKind::Start,
+            other => other,
+        };
+        DimGripHandle { entity: handle.entity, kind }
+    }
+
+    pub(crate) fn apply_typed_dim_grip_input(&mut self, text: &str) -> bool {
+        let Some(handle) = self.dim_grip_drag else {
+            return false;
+        };
+        if self.dim_grip_is_dragging {
+            return false;
+        }
+        if !matches!(handle.kind, DimGripKind::Start | DimGripKind::End) {
+            self.command_log
+                .push("DIM GRIP: distance entry is only for Start/End grips".to_string());
+            return true;
+        }
+        let dist = match text.trim().parse::<f64>() {
+            Ok(v) if v > f64::EPSILON => v,
+            _ => return false,
+        };
+        let Some(base) = self.dim_grip_anchor_point(handle) else {
+            self.command_log
+                .push("DIM GRIP: could not determine anchor point".to_string());
+            return true;
+        };
+        let Some(mut hover) = self.hover_world_pos else {
+            self.command_log
+                .push("DIM GRIP: move cursor to set direction".to_string());
+            return true;
+        };
+        if self.ortho_enabled {
+            hover = Self::snap_angle(base, hover, self.ortho_increment_deg);
+        }
+        let dx = hover.x - base.x;
+        let dy = hover.y - base.y;
+        let len = (dx * dx + dy * dy).sqrt();
+        if len <= f64::EPSILON {
+            self.command_log
+                .push("DIM GRIP: need a non-zero direction".to_string());
+            return true;
+        }
+        let mut world = Vec2::new(base.x + dx / len * dist, base.y + dy / len * dist);
+        let target_handle = self.dim_grip_tracking_target_handle(handle);
+        world = self.constrained_dim_grip_world(target_handle, world);
+        self.push_undo();
+        self.apply_dim_grip_drag(target_handle, world);
+        self.dim_grip_drag = None;
+        self.dim_grip_is_dragging = false;
+        self.command_log.push(format!("DIM GRIP: distance {:.4} applied", dist));
+        true
+    }
+
 
     /// Exit trim mode, clearing all trim state.
     fn exit_trim(&mut self) {
@@ -561,8 +1060,14 @@ impl CadKitApp {
             self.exit_move();
             return;
         }
+        let requested: Vec<Guid> = self.move_entities.clone();
+        let ids = self.filter_editable_entity_ids(&requested, "MOVE");
+        if ids.is_empty() {
+            self.command_log.push("MOVE: No editable entities selected".to_string());
+            self.exit_move();
+            return;
+        }
         self.push_undo();
-        let ids: Vec<Guid> = self.move_entities.clone();
         for id in &ids {
             if let Some(entity) = self.drawing.get_entity_mut(id) {
                 match &mut entity.kind {
@@ -738,8 +1243,13 @@ impl CadKitApp {
             self.command_log.push("COPY: Zero distance, skipped".to_string());
             return;
         }
+        let requested: Vec<Guid> = self.copy_entities.clone();
+        let ids = self.filter_editable_entity_ids(&requested, "COPY");
+        if ids.is_empty() {
+            self.command_log.push("COPY: No editable entities selected".to_string());
+            return;
+        }
         self.push_undo();
-        let ids: Vec<Guid> = self.copy_entities.clone();
         let mut count = 0usize;
         for id in &ids {
             if let Some(entity) = self.drawing.get_entity(id) {
@@ -762,20 +1272,24 @@ impl CadKitApp {
                         vertices: vertices.iter().map(|v| Vec3::xy(v.x + dx, v.y + dy)).collect(),
                         closed: *closed,
                     },
-                    EntityKind::DimAligned { start, end, offset, text_override, text_pos } => EntityKind::DimAligned {
+                    EntityKind::DimAligned { start, end, offset, text_override, text_pos, arrow_length, arrow_half_width } => EntityKind::DimAligned {
                         start: Vec3::xy(start.x + dx, start.y + dy),
                         end:   Vec3::xy(end.x   + dx, end.y   + dy),
                         offset: *offset,
                         text_override: text_override.clone(),
                         text_pos: Vec3::xy(text_pos.x + dx, text_pos.y + dy),
+                        arrow_length: *arrow_length,
+                        arrow_half_width: *arrow_half_width,
                     },
-                    EntityKind::DimLinear { start, end, offset, text_override, text_pos, horizontal } => EntityKind::DimLinear {
+                    EntityKind::DimLinear { start, end, offset, text_override, text_pos, horizontal, arrow_length, arrow_half_width } => EntityKind::DimLinear {
                         start: Vec3::xy(start.x + dx, start.y + dy),
                         end:   Vec3::xy(end.x   + dx, end.y   + dy),
                         offset: *offset,
                         text_override: text_override.clone(),
                         text_pos: Vec3::xy(text_pos.x + dx, text_pos.y + dy),
                         horizontal: *horizontal,
+                        arrow_length: *arrow_length,
+                        arrow_half_width: *arrow_half_width,
                     },
                     EntityKind::Text { position, content, height, rotation } => EntityKind::Text {
                         position: Vec3::xy(position.x + dx, position.y + dy),
@@ -927,7 +1441,6 @@ impl CadKitApp {
             self.exit_rotate();
             return;
         }
-        self.push_undo();
         let (cos_a, sin_a) = (angle_rad.cos(), angle_rad.sin());
 
         fn rotate_pt(p: Vec3, bx: f64, by: f64, cos_a: f64, sin_a: f64) -> Vec3 {
@@ -936,7 +1449,14 @@ impl CadKitApp {
             Vec3::xy(bx + dx * cos_a - dy * sin_a, by + dx * sin_a + dy * cos_a)
         }
 
-        let ids: Vec<Guid> = self.rotate_entities.clone();
+        let requested: Vec<Guid> = self.rotate_entities.clone();
+        let ids = self.filter_editable_entity_ids(&requested, "ROTATE");
+        if ids.is_empty() {
+            self.command_log.push("ROTATE: No editable entities selected".to_string());
+            self.exit_rotate();
+            return;
+        }
+        self.push_undo();
         for id in &ids {
             if let Some(entity) = self.drawing.get_entity_mut(id) {
                 match &mut entity.kind {
@@ -1120,10 +1640,8 @@ impl CadKitApp {
         let offset = if offset.abs() < 5.0 { if offset >= 0.0 { 5.0 } else { -5.0 } } else { offset };
         let text_pos = Vec3::xy(mx + perp.0 * offset, my + perp.1 * offset);
         self.push_undo();
-        // Find or create the "Dim" layer so dimensions are easy to manage.
-        let existing_dim_layer = self.drawing.layers().find(|l| l.name == "Dim").map(|l| l.id);
-        let dim_layer = existing_dim_layer
-            .unwrap_or_else(|| self.drawing.add_layer_with_color("Dim".to_string(), [0, 180, 220]));
+        // Keep dimensions on a dedicated layer managed by current DimStyle.
+        let dim_layer = self.ensure_dim_layer();
         let entity = Entity::new(
             EntityKind::DimAligned {
                 start: Vec3::xy(first.x, first.y),
@@ -1131,11 +1649,14 @@ impl CadKitApp {
                 offset,
                 text_override: None,
                 text_pos,
+                arrow_length: self.dim_style.arrow_length,
+                arrow_half_width: self.dim_style.arrow_half_width,
             },
             dim_layer,
         );
         self.drawing.add_entity(entity);
-        self.command_log.push(format!("DIMALIGNED: Distance = {:.4}", len));
+        self.command_log
+            .push(format!("DIMALIGNED: Distance = {}", self.format_dim_measurement(len)));
         // Stay in FirstPoint so user can chain dimensions.
         self.dim_phase = DimPhase::FirstPoint;
     }
@@ -1169,9 +1690,7 @@ impl CadKitApp {
         };
         let dist = if horizontal { dx } else { dy };
         self.push_undo();
-        let existing_dim_layer = self.drawing.layers().find(|l| l.name == "Dim").map(|l| l.id);
-        let dim_layer = existing_dim_layer
-            .unwrap_or_else(|| self.drawing.add_layer_with_color("Dim".to_string(), [0, 180, 220]));
+        let dim_layer = self.ensure_dim_layer();
         let entity = Entity::new(
             EntityKind::DimLinear {
                 start: Vec3::xy(first.x, first.y),
@@ -1180,11 +1699,17 @@ impl CadKitApp {
                 text_override: None,
                 text_pos,
                 horizontal,
+                arrow_length: self.dim_style.arrow_length,
+                arrow_half_width: self.dim_style.arrow_half_width,
             },
             dim_layer,
         );
         self.drawing.add_entity(entity);
-        self.command_log.push(format!("DIMLINEAR: {} = {:.4}", if horizontal { "Width" } else { "Height" }, dist));
+        self.command_log.push(format!(
+            "DIMLINEAR: {} = {}",
+            if horizontal { "Width" } else { "Height" },
+            self.format_dim_measurement(dist)
+        ));
         // Stay in FirstPoint for chaining.
         self.dim_linear_phase = DimLinearPhase::FirstPoint;
     }
@@ -1583,14 +2108,14 @@ impl CadKitApp {
 
     /// Render DimAligned text labels via egui (crisp, rotated, with background mask).
     fn draw_dim_entities(&self, ui: &egui::Ui, rect: egui::Rect, viewport: &Viewport) {
-        const DIM_TEXT_HEIGHT: f64 = 2.5; // world units
         let [r, g, b] = viewport.bg_srgb();
         let bg = egui::Color32::from_rgb(r, g, b);
         let painter = ui.painter_at(rect);
 
         for entity in self.drawing.visible_entities() {
-            let (text_pos, text_override, dist, screen_angle) = match &entity.kind {
-                EntityKind::DimAligned { start, end, text_pos, text_override, .. } => {
+            let (text_pos, text_override, dist, screen_angle, dim_p1, dim_p2, mut dim_dir_screen) =
+                match &entity.kind {
+                EntityKind::DimAligned { start, end, offset, text_pos, text_override, .. } => {
                     let dist = start.distance_to(end);
                     let dx = (end.x - start.x) as f32;
                     let dy = (end.y - start.y) as f32;
@@ -1600,29 +2125,48 @@ impl CadKitApp {
                     let text_dir = if dir[0] < -1e-6 || (dir[0].abs() < 1e-6 && dir[1] < -1e-6) {
                         [-dir[0], -dir[1]] } else { dir };
                     let screen_angle = -(text_dir[1].atan2(text_dir[0]));
-                    (text_pos, text_override, dist, screen_angle)
+                    let perp = [-dir[1], dir[0]];
+                    let dl1 = Vec2::new(start.x + perp[0] as f64 * *offset, start.y + perp[1] as f64 * *offset);
+                    let dl2 = Vec2::new(end.x + perp[0] as f64 * *offset, end.y + perp[1] as f64 * *offset);
+                    let (p1x, p1y) = world_to_screen(dl1.x as f32, dl1.y as f32, viewport);
+                    let (p2x, p2y) = world_to_screen(dl2.x as f32, dl2.y as f32, viewport);
+                    let dim_p1 = rect.min + egui::vec2(p1x, p1y);
+                    let dim_p2 = rect.min + egui::vec2(p2x, p2y);
+                    let dim_dir_screen = egui::vec2(text_dir[0], -text_dir[1]);
+                    (text_pos, text_override, dist, screen_angle, dim_p1, dim_p2, dim_dir_screen)
                 }
-                EntityKind::DimLinear { start, end, text_pos, text_override, horizontal, .. } => {
+                EntityKind::DimLinear { start, end, offset, text_pos, text_override, horizontal, .. } => {
                     let dist = if *horizontal {
                         (end.x - start.x).abs()
                     } else {
                         (end.y - start.y).abs()
                     };
-                    (text_pos, text_override, dist, 0.0_f32) // always horizontal text
+                    let (dl1, dl2, dim_dir_world) = if *horizontal {
+                        let x1 = start.x.min(end.x);
+                        let x2 = start.x.max(end.x);
+                        let y = (start.y + end.y) * 0.5 + *offset;
+                        (Vec2::new(x1, y), Vec2::new(x2, y), egui::vec2(1.0, 0.0))
+                    } else {
+                        let y1 = start.y.min(end.y);
+                        let y2 = start.y.max(end.y);
+                        let x = (start.x + end.x) * 0.5 + *offset;
+                        (Vec2::new(x, y1), Vec2::new(x, y2), egui::vec2(0.0, 1.0))
+                    };
+                    let (p1x, p1y) = world_to_screen(dl1.x as f32, dl1.y as f32, viewport);
+                    let (p2x, p2y) = world_to_screen(dl2.x as f32, dl2.y as f32, viewport);
+                    let dim_p1 = rect.min + egui::vec2(p1x, p1y);
+                    let dim_p2 = rect.min + egui::vec2(p2x, p2y);
+                    let dim_dir_screen = egui::vec2(dim_dir_world.x, -dim_dir_world.y);
+                    (text_pos, text_override, dist, 0.0_f32, dim_p1, dim_p2, dim_dir_screen) // always horizontal text
                 }
                 _ => continue,
             };
 
-            let measurement = format!("{:.3}", dist);
-            let label = match text_override {
-                None => measurement.clone(),
-                Some(s) if s.trim().is_empty() || s.trim() == "<>" => measurement.clone(),
-                Some(s) => s.replace("<>", &measurement),
-            };
+            let label = self.dim_label_text(text_override, dist);
 
             // Text centre in screen space.
             let (tx, ty) = world_to_screen(text_pos.x as f32, text_pos.y as f32, viewport);
-            let text_center = rect.min + egui::vec2(tx, ty);
+            let mut text_center = rect.min + egui::vec2(tx, ty);
 
             // Colour.
             let [r, g, b] = entity.color.unwrap_or_else(|| {
@@ -1636,13 +2180,32 @@ impl CadKitApp {
                 egui::Color32::from_rgb(r, g, b)
             };
 
-            let font_size = (DIM_TEXT_HEIGHT * viewport.zoom as f64).clamp(8.0, 48.0) as f32;
+            let font_size = (self.dim_style.text_height * viewport.zoom as f64).clamp(8.0, 48.0) as f32;
             let galley = ui.ctx().fonts(|f| {
                 f.layout_no_wrap(label, egui::FontId::proportional(font_size), color)
             });
             let w = galley.size().x;
             let h = galley.size().y;
             let pad = 3.0_f32;
+
+            let mut leader: Option<(egui::Pos2, egui::Pos2)> = None;
+            let available = dim_p1.distance(dim_p2);
+            let needed = w + pad * 2.0 + 8.0;
+            if needed > available {
+                let dir_len = dim_dir_screen.length();
+                if dir_len > 1e-6 {
+                    dim_dir_screen /= dir_len;
+                } else {
+                    dim_dir_screen = egui::vec2(1.0, 0.0);
+                }
+                let s1 = dim_p1.to_vec2().dot(dim_dir_screen);
+                let s2 = dim_p2.to_vec2().dot(dim_dir_screen);
+                let base = if s2 >= s1 { dim_p2 } else { dim_p1 };
+                let gap = 10.0_f32;
+                text_center = base + dim_dir_screen * (gap + w * 0.5 + pad);
+                let end = text_center - dim_dir_screen * (w * 0.5 + pad);
+                leader = Some((base, end));
+            }
 
             // Compute the TextShape anchor so the galley is centred at text_center.
             // TextShape rotates the galley around `pos`; galley origin is top-left.
@@ -1660,6 +2223,9 @@ impl CadKitApp {
                 rot(-pad,      h + pad),
             ];
             let mask_pts: Vec<egui::Pos2> = corners.iter().map(|&v| anchor + v).collect();
+            if let Some((from, to)) = leader {
+                painter.line_segment([from, to], egui::Stroke::new(1.5, color));
+            }
             painter.add(egui::Shape::convex_polygon(mask_pts, bg, egui::Stroke::NONE));
 
             // Rotated text.
@@ -1790,6 +2356,9 @@ impl CadKitApp {
             Some(e) => e,
             None => return Err("OFFSET: Entity not found".to_string()),
         };
+        if self.is_layer_locked(entity.layer) {
+            return Err("OFFSET: Entity is on a locked layer".to_string());
+        }
         let layer = entity.layer;
 
         match &entity.kind {
@@ -2104,10 +2673,11 @@ impl eframe::App for CadKitApp {
             && matches!(self.active_tool, ActiveTool::None)
             && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete))
         {
-            if !self.selected_entities.is_empty() {
+            let requested: Vec<Guid> = self.selected_entities.iter().copied().collect();
+            let ids = self.filter_editable_entity_ids(&requested, "DELETE");
+            if !ids.is_empty() {
                 self.push_undo();
             }
-            let ids: Vec<Guid> = self.selected_entities.iter().copied().collect();
             for id in &ids {
                 let _ = self.drawing.remove_entity(id);
             }
@@ -2207,14 +2777,19 @@ impl eframe::App for CadKitApp {
                 let content = dlg.content.clone();
 
                 if !content.is_empty() {
-                    self.last_text_height = height;
-                    self.last_text_rotation = rotation;
-                    self.push_undo();
-                    if let Some(entity) = self.drawing.get_entity_mut(&dlg.id) {
-                        if let EntityKind::Text { content: c, height: h, rotation: r, .. } = &mut entity.kind {
-                            *c = content;
-                            *h = height;
-                            *r = rotation;
+                    if self.is_entity_on_locked_layer(&dlg.id) {
+                        self.command_log
+                            .push("EDITTEXT: Entity is on a locked layer".to_string());
+                    } else {
+                        self.last_text_height = height;
+                        self.last_text_rotation = rotation;
+                        self.push_undo();
+                        if let Some(entity) = self.drawing.get_entity_mut(&dlg.id) {
+                            if let EntityKind::Text { content: c, height: h, rotation: r, .. } = &mut entity.kind {
+                                *c = content;
+                                *h = height;
+                                *r = rotation;
+                            }
                         }
                     }
                 }
@@ -2259,15 +2834,115 @@ impl eframe::App for CadKitApp {
                 });
 
             if ok_clicked {
-                self.push_undo();
-                if let Some(entity) = self.drawing.get_entity_mut(&dlg.id) {
-                    if let EntityKind::DimAligned { text_override, .. } = &mut entity.kind {
-                        let s = dlg.override_str.trim();
-                        *text_override = if s.is_empty() || s == "<>" { None } else { Some(s.to_string()) };
+                if self.is_entity_on_locked_layer(&dlg.id) {
+                    self.command_log
+                        .push("EDITDIM: Entity is on a locked layer".to_string());
+                } else {
+                    self.push_undo();
+                    if let Some(entity) = self.drawing.get_entity_mut(&dlg.id) {
+                        match &mut entity.kind {
+                            EntityKind::DimAligned { text_override, .. }
+                            | EntityKind::DimLinear { text_override, .. } => {
+                                let s = dlg.override_str.trim();
+                                *text_override = if s.is_empty() || s == "<>" { None } else { Some(s.to_string()) };
+                            }
+                            _ => {}
+                        }
                     }
                 }
             } else if !cancel_clicked {
                 self.dim_edit_dialog = Some(dlg);
+            }
+        }
+
+        // === DimStyle dialog ===
+        if self.dim_style_dialog.is_some() {
+            let mut ok_clicked = false;
+            let mut cancel_clicked = false;
+            let mut dlg = self.dim_style_dialog.take().unwrap();
+
+            egui::Window::new("DimStyle")
+                .resizable(false)
+                .collapsible(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    egui::Grid::new("dimstyle_grid")
+                        .num_columns(2)
+                        .spacing([8.0, 6.0])
+                        .show(ui, |ui| {
+                            ui.label("Text height:");
+                            ui.add(egui::TextEdit::singleline(&mut dlg.text_height_str).desired_width(90.0));
+                            ui.end_row();
+
+                            ui.label("Precision:");
+                            ui.add(egui::TextEdit::singleline(&mut dlg.precision_str).desired_width(90.0));
+                            ui.end_row();
+
+                            ui.label("Layer color:");
+                            ui.color_edit_button_srgb(&mut dlg.color);
+                            ui.end_row();
+
+                            ui.label("Arrow length:");
+                            ui.add(egui::TextEdit::singleline(&mut dlg.arrow_length_str).desired_width(90.0));
+                            ui.end_row();
+
+                            ui.label("Arrow half-width:");
+                            ui.add(egui::TextEdit::singleline(&mut dlg.arrow_half_width_str).desired_width(90.0));
+                            ui.end_row();
+                        });
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("OK").clicked() { ok_clicked = true; }
+                        if ui.button("Cancel").clicked() { cancel_clicked = true; }
+                    });
+                    if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        ok_clicked = true;
+                    }
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        cancel_clicked = true;
+                    }
+                });
+
+            if ok_clicked {
+                let text_height = dlg
+                    .text_height_str
+                    .trim()
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|v| *v > f64::EPSILON)
+                    .unwrap_or(self.dim_style.text_height);
+                let precision = dlg
+                    .precision_str
+                    .trim()
+                    .parse::<usize>()
+                    .ok()
+                    .map(|p| p.min(8))
+                    .unwrap_or(self.dim_style.precision);
+                let arrow_length = dlg
+                    .arrow_length_str
+                    .trim()
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|v| *v > f64::EPSILON)
+                    .unwrap_or(self.dim_style.arrow_length);
+                let arrow_half_width = dlg
+                    .arrow_half_width_str
+                    .trim()
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|v| *v > f64::EPSILON)
+                    .unwrap_or(self.dim_style.arrow_half_width);
+                self.dim_style = DimStyle {
+                    text_height,
+                    precision,
+                    color: dlg.color,
+                    arrow_length,
+                    arrow_half_width,
+                };
+                let _ = self.ensure_dim_layer();
+                self.command_log.push("DIMSTYLE: Updated".to_string());
+            } else if !cancel_clicked {
+                self.dim_style_dialog = Some(dlg);
             }
         }
 
@@ -2324,6 +2999,7 @@ impl eframe::App for CadKitApp {
                                 ("DAL",         "DIMALIGNED", "Place an aligned dimension (true distance)"),
                                 ("DLI",         "DIMLINEAR",  "Place a H or V linear dimension (drag to lock axis)"),
                                 ("ED / EDITDIM", "",          "Edit dimension text (<> = measured distance)"),
+                                ("DIMSTYLE",    "",           "Edit dimension style defaults"),
                             ] {
                                 ui.label(egui::RichText::new(alias).strong());
                                 ui.label(full);
@@ -2648,7 +3324,8 @@ impl eframe::App for CadKitApp {
                 });
 
             if let Some(rgb) = picked_color {
-                let ids: Vec<Guid> = self.selected_entities.iter().copied().collect();
+                let requested: Vec<Guid> = self.selected_entities.iter().copied().collect();
+                let ids = self.filter_editable_entity_ids(&requested, "PROPERTIES");
                 for id in &ids {
                     if let Some(e) = self.drawing.get_entity_mut(id) {
                         e.color = Some(rgb);
@@ -2670,6 +3347,7 @@ impl eframe::App for CadKitApp {
             let height = available.y.max(1.0) as u32;
             self.hover_world_pos = None;
             self.snap_intersection_point = None;
+            self.hover_dim_grip = None;
 
             // Auto-focus command line when nothing else has keyboard focus
             self.auto_focus_command_line(ctx);
@@ -2701,6 +3379,7 @@ impl eframe::App for CadKitApp {
                         self.draw_extend_overlay(ui, response.rect, viewport);
                         self.draw_text_entities(ui, response.rect, viewport);
                         self.draw_dim_entities(ui, response.rect, viewport);
+                        self.draw_dimension_grips(ui, response.rect, viewport);
                     }
 
                     // Draw current snap/pick marker (if any).
@@ -2789,14 +3468,20 @@ impl eframe::App for CadKitApp {
                                                     self.command_log.push(msg);
                                                 }
                                                 TrimResult::Apply { target_id, new_entities } => {
-                                                    self.push_undo();
-                                                    let _ = self.drawing.remove_entity(&target_id);
-                                                    self.trim_cutting_edges
-                                                        .retain(|&id| id != target_id);
-                                                    for entity in new_entities {
-                                                        self.drawing.add_entity(entity);
+                                                    if self.is_entity_on_locked_layer(&target_id) {
+                                                        self.command_log.push(
+                                                            "TRIM: Target entity is on a locked layer".to_string(),
+                                                        );
+                                                    } else {
+                                                        self.push_undo();
+                                                        let _ = self.drawing.remove_entity(&target_id);
+                                                        self.trim_cutting_edges
+                                                            .retain(|&id| id != target_id);
+                                                        for entity in new_entities {
+                                                            self.drawing.add_entity(entity);
+                                                        }
+                                                        log::info!("TRIM: entity trimmed");
                                                     }
-                                                    log::info!("TRIM: entity trimmed");
                                                 }
                                             }
                                         }
@@ -2811,7 +3496,48 @@ impl eframe::App for CadKitApp {
                                     response.interact_pointer_pos(),
                                     self.viewport.as_ref(),
                                 ) {
-                                    if self.from_phase == FromPhase::WaitingBase || self.from_phase == FromPhase::WaitingOffset {
+                                    if let Some(handle) = self.dim_grip_drag {
+                                        if self.dim_grip_is_dragging {
+                                            // Drag release click: ignore normal click routing.
+                                        } else {
+                                            let apply_handle = if matches!(handle.kind, DimGripKind::Start | DimGripKind::End) {
+                                                self.dim_grip_tracking_target_handle(handle)
+                                            } else {
+                                                handle
+                                            };
+                                            let (world, _) = self.snapped_world_for_grip_drag(
+                                                handle,
+                                                viewport,
+                                                response.rect,
+                                                click_pos,
+                                            );
+                                            let world = self.constrained_dim_grip_world(apply_handle, world);
+                                            self.push_undo();
+                                            self.apply_dim_grip_drag(apply_handle, world);
+                                            self.dim_grip_drag = None;
+                                            self.dim_grip_is_dragging = false;
+                                        }
+                                    } else if self
+                                        .pick_dim_grip_handle(viewport, response.rect, click_pos)
+                                        .is_some()
+                                    {
+                                        if let Some(handle) =
+                                            self.pick_dim_grip_handle(viewport, response.rect, click_pos)
+                                        {
+                                            if self.is_entity_on_locked_layer(&handle.entity) {
+                                                self.command_log.push(
+                                                    "DIM: Entity is on a locked layer".to_string(),
+                                                );
+                                            } else {
+                                                self.dim_grip_drag = Some(handle);
+                                                self.dim_grip_is_dragging = false;
+                                                self.command_log.push(
+                                                    "DIM GRIP: Base fixed. Drag direction, type distance, or click target"
+                                                        .to_string(),
+                                                );
+                                            }
+                                        }
+                                    } else if self.from_phase == FromPhase::WaitingBase || self.from_phase == FromPhase::WaitingOffset {
                                         // FROM base/offset pick in idle mode — same snap as MOVE.
                                         let local = click_pos - response.rect.min;
                                         let raw_world = screen_to_world(local.x, local.y, viewport);
@@ -2836,8 +3562,7 @@ impl eframe::App for CadKitApp {
                                         } else {
                                             // WaitingOffset + click = use cursor position directly.
                                             let result = world;
-                                            self.exit_from();
-                                            self.deliver_point(result);
+                                            self.apply_from_result_point(result);
                                         }
                                     } else if self.extend_phase == ExtendPhase::SelectingBoundaries {
                                         // Toggle boundary edge.
@@ -2857,33 +3582,42 @@ impl eframe::App for CadKitApp {
                                         let rect = response.rect;
                                         match self.compute_extend(click_pos, viewport, rect) {
                                             Ok(result) => {
-                                                self.push_undo();
-                                                match result {
-                                                    ExtendResult::Line { id: eid, is_start, new_pt } => {
-                                                        if let Some(entity) = self.drawing.get_entity_mut(&eid) {
-                                                            if let EntityKind::Line { start, end } = &mut entity.kind {
-                                                                if is_start {
-                                                                    start.x = new_pt.x;
-                                                                    start.y = new_pt.y;
-                                                                } else {
-                                                                    end.x = new_pt.x;
-                                                                    end.y = new_pt.y;
+                                                let target_id = match &result {
+                                                    ExtendResult::Line { id, .. } | ExtendResult::Arc { id, .. } => *id,
+                                                };
+                                                if self.is_entity_on_locked_layer(&target_id) {
+                                                    self.command_log.push(
+                                                        "EXTEND: Target entity is on a locked layer".to_string(),
+                                                    );
+                                                } else {
+                                                    self.push_undo();
+                                                    match result {
+                                                        ExtendResult::Line { id: eid, is_start, new_pt } => {
+                                                            if let Some(entity) = self.drawing.get_entity_mut(&eid) {
+                                                                if let EntityKind::Line { start, end } = &mut entity.kind {
+                                                                    if is_start {
+                                                                        start.x = new_pt.x;
+                                                                        start.y = new_pt.y;
+                                                                    } else {
+                                                                        end.x = new_pt.x;
+                                                                        end.y = new_pt.y;
+                                                                    }
                                                                 }
                                                             }
+                                                            self.command_log.push("EXTEND: Line extended".to_string());
                                                         }
-                                                        self.command_log.push("EXTEND: Line extended".to_string());
-                                                    }
-                                                    ExtendResult::Arc { id: eid, is_start, new_angle } => {
-                                                        if let Some(entity) = self.drawing.get_entity_mut(&eid) {
-                                                            if let EntityKind::Arc { start_angle, end_angle, .. } = &mut entity.kind {
-                                                                if is_start {
-                                                                    *start_angle = new_angle;
-                                                                } else {
-                                                                    *end_angle = new_angle;
+                                                        ExtendResult::Arc { id: eid, is_start, new_angle } => {
+                                                            if let Some(entity) = self.drawing.get_entity_mut(&eid) {
+                                                                if let EntityKind::Arc { start_angle, end_angle, .. } = &mut entity.kind {
+                                                                    if is_start {
+                                                                        *start_angle = new_angle;
+                                                                    } else {
+                                                                        *end_angle = new_angle;
+                                                                    }
                                                                 }
                                                             }
+                                                            self.command_log.push("EXTEND: Arc extended".to_string());
                                                         }
-                                                        self.command_log.push("EXTEND: Arc extended".to_string());
                                                     }
                                                 }
                                             }
@@ -3039,7 +3773,11 @@ impl eframe::App for CadKitApp {
                                     } else if self.edit_text_phase == EditTextPhase::SelectingEntity {
                                         // EDITTEXT: find a text entity near the click.
                                         if let Some(id) = self.entity_at_screen_pos(viewport, response.rect, click_pos) {
-                                            if let Some(entity) = self.drawing.get_entity(&id) {
+                                            if self.is_entity_on_locked_layer(&id) {
+                                                self.command_log.push(
+                                                    "EDITTEXT: Entity is on a locked layer".to_string(),
+                                                );
+                                            } else if let Some(entity) = self.drawing.get_entity(&id) {
                                                 if let EntityKind::Text { content, height, rotation, .. } = &entity.kind {
                                                     self.text_edit_dialog = Some(TextEditDialog {
                                                         id,
@@ -3058,16 +3796,24 @@ impl eframe::App for CadKitApp {
                                         }
                                     } else if self.edit_dim_phase == EditDimPhase::SelectingEntity {
                                         if let Some(id) = self.entity_at_screen_pos(viewport, response.rect, click_pos) {
-                                            if let Some(entity) = self.drawing.get_entity(&id) {
-                                                if let EntityKind::DimAligned { text_override, .. } = &entity.kind {
-                                                    self.dim_edit_dialog = Some(DimEditDialog {
-                                                        id,
-                                                        override_str: text_override.clone().unwrap_or_else(|| "<>".to_string()),
-                                                        focus_requested: false,
-                                                    });
-                                                    self.edit_dim_phase = EditDimPhase::Idle;
-                                                } else {
-                                                    self.command_log.push("EDITDIM: That is not a dimension entity".to_string());
+                                            if self.is_entity_on_locked_layer(&id) {
+                                                self.command_log.push(
+                                                    "EDITDIM: Entity is on a locked layer".to_string(),
+                                                );
+                                            } else if let Some(entity) = self.drawing.get_entity(&id) {
+                                                match &entity.kind {
+                                                    EntityKind::DimAligned { text_override, .. }
+                                                    | EntityKind::DimLinear { text_override, .. } => {
+                                                        self.dim_edit_dialog = Some(DimEditDialog {
+                                                            id,
+                                                            override_str: text_override.clone().unwrap_or_else(|| "<>".to_string()),
+                                                            focus_requested: false,
+                                                        });
+                                                        self.edit_dim_phase = EditDimPhase::Idle;
+                                                    }
+                                                    _ => {
+                                                        self.command_log.push("EDITDIM: That is not a dimension entity".to_string());
+                                                    }
                                                 }
                                             }
                                         } else {
@@ -3078,9 +3824,15 @@ impl eframe::App for CadKitApp {
                                             OffsetPhase::SelectingEntity => {
                                                 match self.entity_at_screen_pos(viewport, response.rect, click_pos) {
                                                     Some(id) => {
-                                                        self.offset_selected_entity = Some(id);
-                                                        self.offset_phase = OffsetPhase::SelectingSide;
-                                                        self.command_log.push("OFFSET: Click side to offset toward".to_string());
+                                                        if self.is_entity_on_locked_layer(&id) {
+                                                            self.command_log.push(
+                                                                "OFFSET: Entity is on a locked layer".to_string(),
+                                                            );
+                                                        } else {
+                                                            self.offset_selected_entity = Some(id);
+                                                            self.offset_phase = OffsetPhase::SelectingSide;
+                                                            self.command_log.push("OFFSET: Click side to offset toward".to_string());
+                                                        }
                                                     }
                                                     None => {
                                                         self.command_log.push("OFFSET: Nothing found near click".to_string());
@@ -3121,11 +3873,30 @@ impl eframe::App for CadKitApp {
                                     && !matches!(self.move_phase, MovePhase::BasePoint | MovePhase::Destination)
                                     && !matches!(self.copy_phase, CopyPhase::BasePoint | CopyPhase::Destination)
                                     && !matches!(self.rotate_phase, RotatePhase::BasePoint | RotatePhase::Rotation)
-                                    && matches!(self.dim_phase, DimPhase::Idle);
+                                    && matches!(self.dim_phase, DimPhase::Idle)
+                                    && matches!(self.dim_linear_phase, DimLinearPhase::Idle);
                                 if allow {
-                                    if let Some(pos) = response.interact_pointer_pos() {
-                                        self.selection_drag_start = Some(pos);
-                                        self.selection_drag_current = Some(pos);
+                                    if let (Some(pos), Some(viewport)) =
+                                        (response.interact_pointer_pos(), self.viewport.as_ref())
+                                    {
+                                        if let Some(handle) =
+                                            self.pick_dim_grip_handle(viewport, response.rect, pos)
+                                        {
+                                            if self.is_entity_on_locked_layer(&handle.entity) {
+                                                self.command_log.push(
+                                                    "DIM: Entity is on a locked layer".to_string(),
+                                                );
+                                            } else {
+                                                self.push_undo();
+                                                self.dim_grip_drag = Some(handle);
+                                                self.dim_grip_is_dragging = true;
+                                            }
+                                            self.selection_drag_start = None;
+                                            self.selection_drag_current = None;
+                                        } else {
+                                            self.selection_drag_start = Some(pos);
+                                            self.selection_drag_current = Some(pos);
+                                        }
                                     }
                                 }
                             }
@@ -3133,7 +3904,11 @@ impl eframe::App for CadKitApp {
 
                         // Right-click cancels the current command or tool.
                         if response.clicked_by(egui::PointerButton::Secondary) {
-                            if self.from_phase != FromPhase::Idle {
+                            if self.dim_grip_drag.is_some() {
+                                self.dim_grip_drag = None;
+                                self.dim_grip_is_dragging = false;
+                                self.command_log.push("*Cancel*".to_string());
+                            } else if self.from_phase != FromPhase::Idle {
                                 self.exit_from();
                                 self.command_log.push("*Cancel*".to_string());
                             } else if !matches!(self.active_tool, ActiveTool::None) {
@@ -3173,13 +3948,36 @@ impl eframe::App for CadKitApp {
                         }
 
                         if response.dragged_by(egui::PointerButton::Primary) {
-                            if let Some(pos) = response.interact_pointer_pos() {
+                            if let Some(handle) = self.dim_grip_drag {
+                                if self.dim_grip_is_dragging {
+                                    if let (Some(pos), Some(viewport)) =
+                                        (response.interact_pointer_pos(), self.viewport.as_ref())
+                                    {
+                                        let (world, snap_kind) =
+                                            self.snapped_world_for_grip_drag(handle, viewport, response.rect, pos);
+                                        let world = self.constrained_dim_grip_world(handle, world);
+                                        self.hover_world_pos = Some(world);
+                                        self.hover_snap_kind = snap_kind;
+                                        self.snap_intersection_point = if snap_kind == Some(SnapKind::Intersection) {
+                                            Some(world)
+                                        } else {
+                                            None
+                                        };
+                                        self.apply_dim_grip_drag(handle, world);
+                                    }
+                                }
+                            } else if let Some(pos) = response.interact_pointer_pos() {
                                 self.selection_drag_current = Some(pos);
                             }
                         }
 
                         if response.drag_stopped_by(egui::PointerButton::Primary) {
-                            if let (Some(start), Some(end)) = (
+                            if self.dim_grip_drag.is_some() && self.dim_grip_is_dragging {
+                                self.dim_grip_drag = None;
+                                self.dim_grip_is_dragging = false;
+                                self.selection_drag_start = None;
+                                self.selection_drag_current = None;
+                            } else if let (Some(start), Some(end)) = (
                                 self.selection_drag_start.take(),
                                 self.selection_drag_current.take(),
                             ) {
@@ -3235,31 +4033,59 @@ impl eframe::App for CadKitApp {
                         if let (Some(pointer_pos), Some(viewport)) =
                             (ui.input(|i| i.pointer.hover_pos()), self.viewport.as_ref())
                         {
+                            if let Some(handle) =
+                                self.pick_dim_grip_handle(viewport, response.rect, pointer_pos)
+                            {
+                                self.hover_dim_grip = Some(handle);
+                                ui.output_mut(|o| {
+                                    o.cursor_icon = if self.dim_grip_is_dragging {
+                                        egui::CursorIcon::Grabbing
+                                    } else {
+                                        egui::CursorIcon::PointingHand
+                                    };
+                                });
+                            }
+
                             // Clear stale snap state each hover frame.
                             self.snap_intersection_point = None;
                             self.hover_snap_kind = None;
 
                             let local = pointer_pos - response.rect.min;
                             let raw_world = screen_to_world(local.x, local.y, viewport);
-                            let hover_pick = if self.snap_enabled {
-                                self.pick_entity_point(viewport, response.rect, pointer_pos)
+                            let (hover_pick, mut world) = if let Some(handle) = self.dim_grip_drag {
+                                let (w, kind) =
+                                    self.snapped_world_for_grip_drag(handle, viewport, response.rect, pointer_pos);
+                                let w = self.constrained_dim_grip_world(handle, w);
+                                self.hover_snap_kind = kind;
+                                if kind == Some(SnapKind::Intersection) {
+                                    self.snap_intersection_point = Some(w);
+                                }
+                                (None, w)
                             } else {
-                                None
+                                let hover_pick = if self.snap_enabled {
+                                    self.pick_entity_point(viewport, response.rect, pointer_pos)
+                                } else {
+                                    None
+                                };
+                                let world = hover_pick
+                                    .as_ref()
+                                    .map(|(s, _)| s.world)
+                                    .unwrap_or_else(|| {
+                                        if self.snap_enabled && self.grid_visible {
+                                            self.snap_to_grid(raw_world)
+                                        } else {
+                                            raw_world
+                                        }
+                                    });
+                                (hover_pick, world)
                             };
-                            let mut world = hover_pick
-                                .as_ref()
-                                .map(|(s, _)| s.world)
-                                .unwrap_or_else(|| {
-                                    if self.snap_enabled && self.grid_visible {
-                                        self.snap_to_grid(raw_world)
-                                    } else {
-                                        raw_world
-                                    }
-                                });
 
                             // Apply tool-specific snapping when no point was explicitly picked.
                             // Skip during FROM mode so the tool's distance/ortho don't corrupt the hover.
-                            if hover_pick.is_none() && matches!(self.from_phase, FromPhase::Idle) {
+                            if hover_pick.is_none()
+                                && self.dim_grip_drag.is_none()
+                                && matches!(self.from_phase, FromPhase::Idle)
+                            {
                                 match &self.active_tool {
                                     ActiveTool::Line { start: Some(s) } => {
                                         if self.ortho_enabled {
@@ -3355,7 +4181,7 @@ impl eframe::App for CadKitApp {
                             }
 
                             // Intersection snap (priority 2: below entity point, above perp/tangent/nearest).
-                            if hover_pick.is_none() && self.snap_enabled {
+                            if hover_pick.is_none() && self.dim_grip_drag.is_none() && self.snap_enabled {
                                 if let Some(snap_pt) = self.find_intersection_snap(viewport, response.rect, pointer_pos) {
                                     world = snap_pt;
                                     self.snap_intersection_point = Some(snap_pt);
@@ -3364,7 +4190,11 @@ impl eframe::App for CadKitApp {
                             }
 
                             // Perpendicular snap (priority 3: foot on entity from last placed point).
-                            if hover_pick.is_none() && self.snap_intersection_point.is_none() && self.snap_enabled {
+                            if hover_pick.is_none()
+                                && self.dim_grip_drag.is_none()
+                                && self.snap_intersection_point.is_none()
+                                && self.snap_enabled
+                            {
                                 if let Some(from_pt) = self.current_from_point() {
                                     if let Some(pt) = self.perpendicular_snap(viewport, response.rect, pointer_pos, from_pt) {
                                         world = pt;
@@ -3374,7 +4204,12 @@ impl eframe::App for CadKitApp {
                             }
 
                             // Tangent snap (priority 4: tangent point on circle/arc from last placed point).
-                            if hover_pick.is_none() && self.snap_intersection_point.is_none() && self.hover_snap_kind.is_none() && self.snap_enabled {
+                            if hover_pick.is_none()
+                                && self.dim_grip_drag.is_none()
+                                && self.snap_intersection_point.is_none()
+                                && self.hover_snap_kind.is_none()
+                                && self.snap_enabled
+                            {
                                 if let Some(from_pt) = self.current_from_point() {
                                     if let Some(pt) = self.tangent_snap(viewport, response.rect, pointer_pos, from_pt) {
                                         world = pt;
@@ -3384,7 +4219,12 @@ impl eframe::App for CadKitApp {
                             }
 
                             // Nearest snap (priority 5: closest point on any entity curve).
-                            if hover_pick.is_none() && self.snap_intersection_point.is_none() && self.hover_snap_kind.is_none() && self.snap_enabled {
+                            if hover_pick.is_none()
+                                && self.dim_grip_drag.is_none()
+                                && self.snap_intersection_point.is_none()
+                                && self.hover_snap_kind.is_none()
+                                && self.snap_enabled
+                            {
                                 if let Some(pt) = self.nearest_entity_snap(viewport, response.rect, pointer_pos) {
                                     world = pt;
                                     self.hover_snap_kind = Some(SnapKind::Nearest);
@@ -3392,6 +4232,7 @@ impl eframe::App for CadKitApp {
                             }
 
                             self.hover_world_pos = Some(world);
+                            self.last_hover_world_pos = Some(world);
 
                             // FROM rubber-band: magenta marker at base, dashed line to hover.
                             if let Some(base) = self.from_base {
@@ -3448,6 +4289,7 @@ impl eframe::App for CadKitApp {
                             // Grid-snap dot (suppress when any entity/intersection/nearest/perp/tangent snap active).
                             if self.snap_enabled
                                 && self.grid_visible
+                                && self.dim_grip_drag.is_none()
                                 && hover_pick.is_none()
                                 && self.snap_intersection_point.is_none()
                                 && self.hover_snap_kind.is_none()
@@ -3547,10 +4389,22 @@ impl eframe::App for CadKitApp {
                             (ui.input(|i| i.pointer.hover_pos()), self.viewport.as_ref())
                         {
                             if self.snap_enabled || matches!(self.active_tool, ActiveTool::None) {
-                                if let Some((candidate, kind)) =
-                                    self.pick_entity_point(viewport, response.rect, pointer_pos)
-                                {
-                                    Self::draw_snap_glyph(ui, response.rect, viewport, candidate.world, kind);
+                                if self.dim_grip_drag.is_none() {
+                                    if let Some((candidate, kind)) =
+                                        self.pick_entity_point(viewport, response.rect, pointer_pos)
+                                    {
+                                        Self::draw_snap_glyph(
+                                            ui,
+                                            response.rect,
+                                            viewport,
+                                            candidate.world,
+                                            kind,
+                                        );
+                                    } else if let Some(snap_kind) = self.hover_snap_kind {
+                                        if let Some(world) = self.hover_world_pos {
+                                            Self::draw_snap_glyph(ui, response.rect, viewport, world, snap_kind);
+                                        }
+                                    }
                                 } else if let Some(snap_kind) = self.hover_snap_kind {
                                     if let Some(world) = self.hover_world_pos {
                                         Self::draw_snap_glyph(ui, response.rect, viewport, world, snap_kind);
@@ -3559,7 +4413,7 @@ impl eframe::App for CadKitApp {
                             }
                         }
 
-                        // Handle left-clicks for active drawing tools.
+        // Handle left-clicks for active drawing tools.
                         if response.clicked_by(egui::PointerButton::Primary)
                             && !matches!(self.active_tool, ActiveTool::None)
                         {
@@ -3661,8 +4515,7 @@ impl eframe::App for CadKitApp {
                                 } else if self.from_phase == FromPhase::WaitingOffset {
                                     // Click = use snapped cursor as the result directly.
                                     let result = world;
-                                    self.exit_from();
-                                    self.deliver_point(result);
+                                    self.apply_from_result_point(result);
                                 } else {
                                 match &mut self.active_tool {
                                     ActiveTool::Line { start } => {
@@ -3770,6 +4623,11 @@ impl eframe::App for CadKitApp {
                         if response.clicked_by(egui::PointerButton::Secondary) {
                             if !matches!(self.trim_phase, TrimPhase::Idle) {
                                 self.exit_trim();
+                            } else if !matches!(self.dim_phase, DimPhase::Idle)
+                                || !matches!(self.dim_linear_phase, DimLinearPhase::Idle)
+                            {
+                                self.exit_dim();
+                                self.command_log.push("*Cancel*".to_string());
                             } else {
                                 match &self.active_tool {
                                     ActiveTool::Polyline { points } if points.len() >= 2 => {
@@ -3814,6 +4672,9 @@ impl eframe::App for CadKitApp {
             }
 
         });
+
+        // Persist app preferences (snap/ortho/grid/current file) when changed.
+        self.persist_preferences_if_changed();
     }
 }
 
@@ -3949,9 +4810,23 @@ impl CadKitApp {
         rect: egui::Rect,
         screen_pos: egui::Pos2,
     ) -> Option<(Selection, SnapKind)> {
+        self.pick_entity_point_excluding(viewport, rect, screen_pos, None)
+    }
+
+    /// Pick nearest object snap point, optionally excluding one entity id.
+    fn pick_entity_point_excluding(
+        &self,
+        viewport: &Viewport,
+        rect: egui::Rect,
+        screen_pos: egui::Pos2,
+        exclude_entity: Option<Guid>,
+    ) -> Option<(Selection, SnapKind)> {
         let mut best: Option<(f32, Selection, SnapKind)> = None;
 
         for entity in self.drawing.visible_entities() {
+            if Some(entity.id) == exclude_entity {
+                continue;
+            }
             match &entity.kind {
                 EntityKind::Line { start, end } => {
                     let s: Vec2 = (*start).into();

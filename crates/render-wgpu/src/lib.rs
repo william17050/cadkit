@@ -399,7 +399,7 @@ impl Viewport {
                         vertices.push(Vertex::new(b.x as f32, b.y as f32, c[0], c[1], c[2]));
                     }
                 }
-                EntityKind::DimAligned { start, end, offset, text_override, text_pos } => {
+                EntityKind::DimAligned { start, end, offset, text_override, text_pos, arrow_length, arrow_half_width } => {
                     let sx = start.x as f32;
                     let sy = start.y as f32;
                     let ex = end.x as f32;
@@ -439,12 +439,17 @@ impl Viewport {
                     vertices.push(Vertex::new(dl1[0], dl1[1], c[0], c[1], c[2]));
                     vertices.push(Vertex::new(dl2[0], dl2[1], c[0], c[1], c[2]));
 
-                    // Arrows (V-shape, 3 units long, 0.75 half-width)
-                    let arrow_len = 3.0f32;
-                    let arrow_hw = 0.75f32;
+                    // Arrows
+                    let arrow_len = *arrow_length as f32;
+                    let arrow_hw = *arrow_half_width as f32;
+                    let span = ((dl2[0] - dl1[0]).powi(2) + (dl2[1] - dl1[1]).powi(2)).sqrt();
+                    // If the extension lines are too close for inward arrows, place them outside
+                    // and mirror direction so arrowheads point toward the dimension line.
+                    let arrows_outside = span < arrow_len * 2.0;
 
-                    // Arrow at dl1 (pointing in +dir)
-                    let a1_base = [dl1[0] + dir[0] * arrow_len, dl1[1] + dir[1] * arrow_len];
+                    // Arrow at dl1
+                    let a1_s = if arrows_outside { -1.0f32 } else { 1.0f32 };
+                    let a1_base = [dl1[0] + dir[0] * arrow_len * a1_s, dl1[1] + dir[1] * arrow_len * a1_s];
                     let a1_w1 = [a1_base[0] + perp[0] * arrow_hw, a1_base[1] + perp[1] * arrow_hw];
                     let a1_w2 = [a1_base[0] - perp[0] * arrow_hw, a1_base[1] - perp[1] * arrow_hw];
                     vertices.push(Vertex::new(dl1[0], dl1[1], c[0], c[1], c[2]));
@@ -452,8 +457,9 @@ impl Viewport {
                     vertices.push(Vertex::new(dl1[0], dl1[1], c[0], c[1], c[2]));
                     vertices.push(Vertex::new(a1_w2[0], a1_w2[1], c[0], c[1], c[2]));
 
-                    // Arrow at dl2 (pointing in -dir)
-                    let a2_base = [dl2[0] - dir[0] * arrow_len, dl2[1] - dir[1] * arrow_len];
+                    // Arrow at dl2
+                    let a2_s = if arrows_outside { 1.0f32 } else { -1.0f32 };
+                    let a2_base = [dl2[0] + dir[0] * arrow_len * a2_s, dl2[1] + dir[1] * arrow_len * a2_s];
                     let a2_w1 = [a2_base[0] + perp[0] * arrow_hw, a2_base[1] + perp[1] * arrow_hw];
                     let a2_w2 = [a2_base[0] - perp[0] * arrow_hw, a2_base[1] - perp[1] * arrow_hw];
                     vertices.push(Vertex::new(dl2[0], dl2[1], c[0], c[1], c[2]));
@@ -465,7 +471,7 @@ impl Viewport {
                     // not by the wgpu vertex buffer.
                     let _ = (text_override, text_pos);
                 }
-                EntityKind::DimLinear { start, end, offset, text_override, text_pos, horizontal } => {
+                EntityKind::DimLinear { start, end, offset, text_override, text_pos, horizontal, arrow_length, arrow_half_width } => {
                     let sx = start.x as f32;
                     let sy = start.y as f32;
                     let ex = end.x as f32;
@@ -473,8 +479,8 @@ impl Viewport {
                     let off = *offset as f32;
                     let sign = if off >= 0.0 { 1.0f32 } else { -1.0f32 };
                     let gap = 1.0f32;
-                    let arrow_len = 3.0f32;
-                    let arrow_hw = 0.75f32;
+                    let arrow_len = *arrow_length as f32;
+                    let arrow_hw = *arrow_half_width as f32;
                     let ec = [c[0] * 0.75, c[1] * 0.75, c[2] * 0.75];
 
                     let (dl1, dl2, ext1_s, ext2_s, dir, perp) = if *horizontal {
@@ -511,9 +517,12 @@ impl Viewport {
                     };
                     vertices.push(Vertex::new(dl_a[0], dl_a[1], c[0], c[1], c[2]));
                     vertices.push(Vertex::new(dl_b[0], dl_b[1], c[0], c[1], c[2]));
+                    let span = ((dl_b[0] - dl_a[0]).powi(2) + (dl_b[1] - dl_a[1]).powi(2)).sqrt();
+                    let arrows_outside = span < arrow_len * 2.0;
 
-                    // Arrow at dl_a pointing in +dir
-                    let a1_base = [dl_a[0] + dir[0] * arrow_len, dl_a[1] + dir[1] * arrow_len];
+                    // Arrow at dl_a
+                    let a1_s = if arrows_outside { -1.0f32 } else { 1.0f32 };
+                    let a1_base = [dl_a[0] + dir[0] * arrow_len * a1_s, dl_a[1] + dir[1] * arrow_len * a1_s];
                     let a1_w1 = [a1_base[0] + perp[0] * arrow_hw, a1_base[1] + perp[1] * arrow_hw];
                     let a1_w2 = [a1_base[0] - perp[0] * arrow_hw, a1_base[1] - perp[1] * arrow_hw];
                     vertices.push(Vertex::new(dl_a[0], dl_a[1], c[0], c[1], c[2]));
@@ -521,8 +530,9 @@ impl Viewport {
                     vertices.push(Vertex::new(dl_a[0], dl_a[1], c[0], c[1], c[2]));
                     vertices.push(Vertex::new(a1_w2[0], a1_w2[1], c[0], c[1], c[2]));
 
-                    // Arrow at dl_b pointing in -dir
-                    let a2_base = [dl_b[0] - dir[0] * arrow_len, dl_b[1] - dir[1] * arrow_len];
+                    // Arrow at dl_b
+                    let a2_s = if arrows_outside { 1.0f32 } else { -1.0f32 };
+                    let a2_base = [dl_b[0] + dir[0] * arrow_len * a2_s, dl_b[1] + dir[1] * arrow_len * a2_s];
                     let a2_w1 = [a2_base[0] + perp[0] * arrow_hw, a2_base[1] + perp[1] * arrow_hw];
                     let a2_w2 = [a2_base[0] - perp[0] * arrow_hw, a2_base[1] - perp[1] * arrow_hw];
                     vertices.push(Vertex::new(dl_b[0], dl_b[1], c[0], c[1], c[2]));

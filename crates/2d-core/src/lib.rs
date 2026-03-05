@@ -29,6 +29,9 @@ fn default_layer_color() -> [u8; 3] {
     LAYER_COLORS[0]
 }
 
+fn default_dim_arrow_length() -> f64 { 3.0 }
+fn default_dim_arrow_half_width() -> f64 { 0.75 }
+
 // =============================================================================
 // Entities
 // =============================================================================
@@ -69,6 +72,10 @@ pub enum EntityKind {
         offset: f64,                    // signed perpendicular distance to dimension line
         text_override: Option<String>,  // None = auto-format measured distance
         text_pos: Vec3,                 // world-space centre of dimension text
+        #[serde(default = "default_dim_arrow_length")]
+        arrow_length: f64,
+        #[serde(default = "default_dim_arrow_half_width")]
+        arrow_half_width: f64,
     },
 
     /// Horizontal or vertical (linear) dimension
@@ -79,6 +86,10 @@ pub enum EntityKind {
         text_override: Option<String>,
         text_pos: Vec3,
         horizontal: bool,               // true = measures X distance; false = measures Y distance
+        #[serde(default = "default_dim_arrow_length")]
+        arrow_length: f64,
+        #[serde(default = "default_dim_arrow_half_width")]
+        arrow_half_width: f64,
     },
 
     /// Free-standing text label

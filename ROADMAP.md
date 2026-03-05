@@ -47,8 +47,11 @@
 - [x] Text direction normalized — readable regardless of pick order
 - [x] Move / copy / rotate support for dim entities
 - [x] Selection highlight and pick distance to dim line
-- [ ] **DimStyle dialog** — adjust text height, arrow size, extension line gap, color, precision
+- [x] **DimStyle dialog** — adjust text height, arrow size, color, precision
 - [x] **Dim text via egui native font** — egui overlay painter renders distance label
+- [x] Selected-dimension grip editing (start/end/offset/text)
+- [x] Arrow/text overflow improvements (outside arrows when short span, text moved outside with leader)
+- [x] FROM-in-dimension second point (`FR` distance entry) reliability polish
 - [ ] Angular dimension (`DIMANGULAR`)
 - [ ] Radial / diameter dimension (`DIMRADIUS` / `DIMDIAMETER`)
 - [ ] DXF DIMENSION entity export (currently skipped with warning)
@@ -74,7 +77,8 @@
 - [x] Layer color edit; set current layer
 - [x] Move entities between layers (combo box + Assign in Properties panel)
 - [x] Layer visibility toggle (eye icon; filters rendering via `visible_entities()`)
-- [ ] Layer locking / freeze (UI exists, enforcement not wired)
+- [x] Layer locking enforcement for edit commands and property edits
+- [ ] Layer freeze
 
 ### Milestone 2.5: Precision & UI Polish
 - [x] Relative coordinates (@x,y) and polar (@dist<angle)
@@ -82,8 +86,8 @@
 - [x] Ortho mode (F8) and snap toggle (F3)
 - [x] Status bar — live cursor world coordinates, active layer, snap/ortho state
 - [ ] Perpendicular / parallel tracking snaps
-- [ ] Preference persistence (last file, grid spacing, snap/ortho flags)
-- [ ] Recent files list in File menu
+- [x] Preference persistence (last file, grid spacing, snap/ortho/grid, dim style)
+- [x] Recent files list in File menu
 
 ---
 

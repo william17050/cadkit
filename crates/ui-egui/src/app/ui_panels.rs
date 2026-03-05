@@ -19,7 +19,9 @@ impl CadKitApp {
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
+                    self.prune_recent_files();
                     if ui.button("New").clicked() {
+                        self.exit_dim();
                         self.drawing = cadkit_2d_core::Drawing::new("New Drawing".to_string());
                         self.current_file = None;
                         self.selected_entities.clear();
@@ -28,9 +30,47 @@ impl CadKitApp {
                         ui.close_menu();
                     }
                     if ui.button("Open...").clicked() {
+                        self.exit_dim();
                         ui.close_menu();
                         self.open(ctx);
                     }
+                    ui.menu_button("Recent Files", |ui| {
+                        if self.recent_files.is_empty() {
+                            ui.label(egui::RichText::new("No recent files").italics());
+                        } else {
+                            let items: Vec<String> = self.recent_files.clone();
+                            let mut remove_missing = false;
+                            for path in items {
+                                let label = std::path::Path::new(&path)
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().to_string())
+                                    .unwrap_or_else(|| path.clone());
+                                if std::path::Path::new(&path).exists() {
+                                    if ui.button(label).on_hover_text(path.clone()).clicked() {
+                                        ui.close_menu();
+                                        self.open_path(ctx, &path);
+                                    }
+                                } else {
+                                    ui.add_enabled(
+                                        false,
+                                        egui::Button::new(format!("{label} (missing)")),
+                                    )
+                                    .on_hover_text(path.clone());
+                                }
+                            }
+                            ui.separator();
+                            if ui.button("Remove Missing").clicked() {
+                                remove_missing = true;
+                            }
+                            if ui.button("Clear Recent").clicked() {
+                                self.clear_recent_files();
+                                ui.close_menu();
+                            }
+                            if remove_missing {
+                                self.recent_files.retain(|p| std::path::Path::new(p).exists());
+                            }
+                        }
+                    });
                     ui.separator();
                     if ui.button("Save       Ctrl+S").clicked() {
                         ui.close_menu();
@@ -57,16 +97,19 @@ impl CadKitApp {
 
                 ui.menu_button("Draw", |ui| {
                     if ui.button("Line").clicked() {
+                        self.exit_dim();
                         self.active_tool = ActiveTool::Line { start: None };
                         self.distance_input.clear();
                         ui.close_menu();
                     }
                     if ui.button("Circle").clicked() {
+                        self.exit_dim();
                         self.active_tool = ActiveTool::Circle { center: None };
                         self.distance_input.clear();
                         ui.close_menu();
                     }
                     if ui.button("Arc").clicked() {
+                        self.exit_dim();
                         self.active_tool = ActiveTool::Arc { start: None, mid: None };
                         self.distance_input.clear();
                         ui.close_menu();
@@ -89,6 +132,7 @@ impl CadKitApp {
             ui.separator();
 
             if ui.button("📏 Line").clicked() {
+                self.exit_dim();
                 match self.active_tool {
                     ActiveTool::Line { .. } => self.cancel_active_tool(),
                     _ => {
@@ -97,6 +141,7 @@ impl CadKitApp {
                 }
             }
             if ui.button("⭕ Circle").clicked() {
+                self.exit_dim();
                 match self.active_tool {
                     ActiveTool::Circle { .. } => self.cancel_active_tool(),
                     _ => {
@@ -106,6 +151,7 @@ impl CadKitApp {
                 }
             }
             if ui.button("🧵 Polyline").clicked() {
+                self.exit_dim();
                 match self.active_tool {
                     ActiveTool::Polyline { .. } => self.cancel_active_tool(),
                     _ => {
@@ -115,6 +161,7 @@ impl CadKitApp {
                 }
             }
             if ui.button("◜ Arc").clicked() {
+                self.exit_dim();
                 match self.active_tool {
                     ActiveTool::Arc { .. } => self.cancel_active_tool(),
                     _ => {
@@ -124,6 +171,7 @@ impl CadKitApp {
                 }
             }
             if ui.button("T Text").clicked() {
+                self.exit_dim();
                 self.cancel_active_tool();
                 self.exit_trim();
                 self.exit_offset();
@@ -135,6 +183,7 @@ impl CadKitApp {
                 self.command_log.push("TEXT  Specify insertion point:".to_string());
             }
             if ui.button("✏ Edit Text").clicked() {
+                self.exit_dim();
                 self.cancel_active_tool();
                 self.exit_trim();
                 self.exit_offset();
@@ -153,6 +202,7 @@ impl CadKitApp {
             ui.separator();
 
             if ui.button("📐 Dim Aligned").clicked() {
+                self.exit_dim();
                 self.cancel_active_tool();
                 self.exit_trim();
                 self.exit_offset();
@@ -164,6 +214,7 @@ impl CadKitApp {
                 self.command_log.push("DIMALIGNED: Specify first extension line origin".to_string());
             }
             if ui.button("↔ Dim Linear").clicked() {
+                self.exit_dim();
                 self.cancel_active_tool();
                 self.exit_trim();
                 self.exit_offset();
@@ -175,6 +226,7 @@ impl CadKitApp {
                 self.command_log.push("DIMLINEAR: Specify first extension line origin".to_string());
             }
             if ui.button("✏ Edit Dim").clicked() {
+                self.exit_dim();
                 self.cancel_active_tool();
                 self.exit_trim();
                 self.exit_offset();
@@ -188,18 +240,24 @@ impl CadKitApp {
                 self.dim_edit_dialog = None;
                 self.command_log.push("EDITDIM: Click a dimension entity to edit".to_string());
             }
+            if ui.button("⚙ DimStyle").clicked() {
+                self.open_dim_style_dialog();
+                self.command_log.push("DIMSTYLE: Edit dimension style".to_string());
+            }
 
             ui.add_space(20.0);
             ui.heading("Modify");
             ui.separator();
 
             if ui.button("✂ Trim").clicked() {
+                self.exit_dim();
                 self.cancel_active_tool();
                 self.trim_phase = TrimPhase::SelectingEdges;
                 self.trim_cutting_edges.clear();
                 self.command_log.push("TRIM: Select cutting edges, press Enter to continue".to_string());
             }
             if ui.button("↔ Extend").clicked() {
+                self.exit_dim();
                 self.cancel_active_tool();
                 self.exit_trim();
                 self.exit_offset();
@@ -209,6 +267,7 @@ impl CadKitApp {
                 self.command_log.push("EXTEND: Select boundary edges, press Enter to continue".to_string());
             }
             if ui.button("⊙ Offset").clicked() {
+                self.exit_dim();
                 self.cancel_active_tool();
                 self.exit_trim();
                 self.offset_phase = OffsetPhase::EnteringDistance;
@@ -217,6 +276,7 @@ impl CadKitApp {
                 self.command_log.push("OFFSET: Enter distance".to_string());
             }
             if ui.button("➡️ Move").clicked() {
+                self.exit_dim();
                 self.cancel_active_tool();
                 self.exit_trim();
                 self.exit_offset();
@@ -226,6 +286,7 @@ impl CadKitApp {
                 self.command_log.push("MOVE: Select entities to move, press Enter to continue".to_string());
             }
             if ui.button("📋 Copy").clicked() {
+                self.exit_dim();
                 self.cancel_active_tool();
                 self.exit_trim();
                 self.exit_offset();
@@ -237,6 +298,7 @@ impl CadKitApp {
                 self.command_log.push("COPY: Select entities to copy, press Enter to continue".to_string());
             }
             if ui.button("🔄 Rotate").clicked() {
+                self.exit_dim();
                 self.cancel_active_tool();
                 self.exit_trim();
                 self.exit_offset();
@@ -249,7 +311,8 @@ impl CadKitApp {
                 self.command_log.push("ROTATE: Select entities, press Enter to continue".to_string());
             }
             if ui.button("🗑️ Delete").clicked() {
-                let ids: Vec<Guid> = self.selected_entities.iter().copied().collect();
+                let requested: Vec<Guid> = self.selected_entities.iter().copied().collect();
+                let ids = self.filter_editable_entity_ids(&requested, "DELETE");
                 if !ids.is_empty() {
                     self.push_undo();
                     for id in &ids {
@@ -610,9 +673,33 @@ impl CadKitApp {
                 if let Some(l) = self.drawing.get_layer_mut(id) {
                     l.locked = !l.locked;
                 }
+                if self.current_layer == id && self.is_layer_locked(id) {
+                    if let Some(fallback) = layer_ids
+                        .iter()
+                        .copied()
+                        .find(|lid| !self.is_layer_locked(*lid))
+                    {
+                        self.current_layer = fallback;
+                        self.command_log.push(format!(
+                            "LAYER: Current layer was locked; switched current to {}",
+                            fallback
+                        ));
+                    } else {
+                        if let Some(l) = self.drawing.get_layer_mut(id) {
+                            l.locked = false;
+                        }
+                        self.command_log
+                            .push("LAYER: At least one unlocked layer is required".to_string());
+                    }
+                }
             }
             if let Some(id) = set_current {
-                self.current_layer = id;
+                if self.is_layer_locked(id) {
+                    self.command_log
+                        .push("LAYER: Cannot set a locked layer as current".to_string());
+                } else {
+                    self.current_layer = id;
+                }
             }
             if let Some(id) = open_color_picker {
                 self.layer_color_picking = Some(id);
@@ -651,15 +738,24 @@ impl CadKitApp {
             }
 
             if let Some(lid) = assign_entity_layer {
-                for id in &self.selected_entities {
-                    if let Some(e) = self.drawing.get_entity_mut(id) {
-                        e.layer = lid;
+                if self.is_layer_locked(lid) {
+                    self.command_log
+                        .push("PROPERTIES: Cannot assign entities to a locked layer".to_string());
+                } else {
+                    let requested: Vec<Guid> = self.selected_entities.iter().copied().collect();
+                    let ids = self.filter_editable_entity_ids(&requested, "PROPERTIES");
+                    for id in &ids {
+                        if let Some(e) = self.drawing.get_entity_mut(id) {
+                            e.layer = lid;
+                        }
                     }
                 }
             }
 
             if set_entity_bylayer {
-                for id in &self.selected_entities {
+                let requested: Vec<Guid> = self.selected_entities.iter().copied().collect();
+                let ids = self.filter_editable_entity_ids(&requested, "PROPERTIES");
+                for id in &ids {
                     if let Some(e) = self.drawing.get_entity_mut(id) {
                         e.color = None;
                     }
@@ -764,6 +860,7 @@ impl CadKitApp {
                             && self.layer_color_picking.is_none()
                             && self.text_edit_dialog.is_none()
                             && self.dim_edit_dialog.is_none()
+                            && self.dim_style_dialog.is_none()
                         {
                             ui.memory_mut(|m| m.request_focus(edit.id));
                         }
@@ -779,13 +876,62 @@ impl CadKitApp {
                     if let Some(cmd) = committed_cmd {
                         if cmd.is_empty() {
                             // Empty Enter advances active multi-step commands (trim/extend/move/copy/rotate/dim).
+                            if let Some(handle) = self.dim_grip_drag {
+                                if !self.dim_grip_is_dragging {
+                                    if let Some(world) = self.hover_world_pos {
+                                        self.push_undo();
+                                        self.apply_dim_grip_drag(handle, world);
+                                        self.dim_grip_drag = None;
+                                        self.dim_grip_is_dragging = false;
+                                    } else {
+                                        self.command_log.push(
+                                            "DIM GRIP: move cursor or type distance".to_string(),
+                                        );
+                                    }
+                                }
+                            } else if self.from_phase == FromPhase::WaitingBase {
+                                if let Some(world) = self.hover_world_pos {
+                                    self.from_base = Some(world);
+                                    self.from_phase = FromPhase::WaitingOffset;
+                                    self.command_log.push(format!(
+                                        "  Base: {:.4}, {:.4}",
+                                        world.x, world.y
+                                    ));
+                                    self.command_log.push(
+                                        "FROM  Offset (@dx,dy  or  @dist<angle):".to_string(),
+                                    );
+                                } else {
+                                    self.command_log
+                                        .push("  *FROM: move cursor to pick base*".to_string());
+                                }
+                            } else if self.from_phase == FromPhase::WaitingOffset {
+                                if let (Some(base), Some(hover)) = (
+                                    self.from_base,
+                                    self.hover_world_pos.or(self.last_hover_world_pos),
+                                ) {
+                                    let mut target = hover;
+                                    if self.ortho_enabled {
+                                        target = Self::snap_angle(base, hover, self.ortho_increment_deg);
+                                    }
+                                    self.apply_from_result_point(target);
+                                } else {
+                                    self.command_log.push(
+                                        "  *FROM: move cursor or type offset/distance*".to_string(),
+                                    );
+                                }
+                            } else
                             if self.move_phase == MovePhase::SelectingEntities {
                                 if self.selected_entities.is_empty() {
                                     self.command_log.push("MOVE: No entities selected".to_string());
                                 } else {
-                                    self.move_entities = self.selected_entities.iter().copied().collect();
-                                    self.move_phase = MovePhase::BasePoint;
-                                    self.command_log.push("MOVE: Pick base point".to_string());
+                                    let requested: Vec<Guid> = self.selected_entities.iter().copied().collect();
+                                    self.move_entities = self.filter_editable_entity_ids(&requested, "MOVE");
+                                    if self.move_entities.is_empty() {
+                                        self.command_log.push("MOVE: No editable entities selected".to_string());
+                                    } else {
+                                        self.move_phase = MovePhase::BasePoint;
+                                        self.command_log.push("MOVE: Pick base point".to_string());
+                                    }
                                 }
                             } else if self.move_phase == MovePhase::BasePoint {
                                 if let Some(world) = self.hover_world_pos {
@@ -803,9 +949,14 @@ impl CadKitApp {
                                 if self.selected_entities.is_empty() {
                                     self.command_log.push("COPY: No entities selected".to_string());
                                 } else {
-                                    self.copy_entities = self.selected_entities.iter().copied().collect();
-                                    self.copy_phase = CopyPhase::BasePoint;
-                                    self.command_log.push("COPY: Pick base point".to_string());
+                                    let requested: Vec<Guid> = self.selected_entities.iter().copied().collect();
+                                    self.copy_entities = self.filter_editable_entity_ids(&requested, "COPY");
+                                    if self.copy_entities.is_empty() {
+                                        self.command_log.push("COPY: No editable entities selected".to_string());
+                                    } else {
+                                        self.copy_phase = CopyPhase::BasePoint;
+                                        self.command_log.push("COPY: Pick base point".to_string());
+                                    }
                                 }
                             } else if self.copy_phase == CopyPhase::BasePoint {
                                 if let Some(world) = self.hover_world_pos {
@@ -824,9 +975,14 @@ impl CadKitApp {
                                 if self.selected_entities.is_empty() {
                                     self.command_log.push("ROTATE: No entities selected".to_string());
                                 } else {
-                                    self.rotate_entities = self.selected_entities.iter().copied().collect();
-                                    self.rotate_phase = RotatePhase::BasePoint;
-                                    self.command_log.push("ROTATE: Pick base point".to_string());
+                                    let requested: Vec<Guid> = self.selected_entities.iter().copied().collect();
+                                    self.rotate_entities = self.filter_editable_entity_ids(&requested, "ROTATE");
+                                    if self.rotate_entities.is_empty() {
+                                        self.command_log.push("ROTATE: No editable entities selected".to_string());
+                                    } else {
+                                        self.rotate_phase = RotatePhase::BasePoint;
+                                        self.command_log.push("ROTATE: Pick base point".to_string());
+                                    }
                                 }
                             } else if self.rotate_phase == RotatePhase::BasePoint {
                                 if let Some(world) = self.hover_world_pos {
@@ -842,15 +998,27 @@ impl CadKitApp {
                                     self.exit_rotate();
                                 }
                             } else if !matches!(self.dim_phase, DimPhase::Idle) {
-                                if let Some(world) = self.hover_world_pos {
-                                    if matches!(self.dim_phase, DimPhase::FirstPoint) {
-                                        self.dim_phase = DimPhase::SecondPoint { first: world };
-                                        self.command_log.push(format!("DIMALIGNED: First point ({:.4}, {:.4})", world.x, world.y));
-                                    } else if let DimPhase::SecondPoint { first } = self.dim_phase {
+                                if matches!(self.dim_phase, DimPhase::FirstPoint) {
+                                    self.exit_dim();
+                                    self.command_log.push("DIMALIGNED done.".to_string());
+                                } else if let Some(world) = self.hover_world_pos {
+                                    if let DimPhase::SecondPoint { first } = self.dim_phase {
                                         self.dim_phase = DimPhase::Placing { first, second: world };
                                         self.command_log.push(format!("DIMALIGNED: Second point ({:.4}, {:.4})", world.x, world.y));
                                     } else if let DimPhase::Placing { first, second } = self.dim_phase {
                                         self.place_dim_aligned(first, second, world);
+                                    }
+                                }
+                            } else if !matches!(self.dim_linear_phase, DimLinearPhase::Idle) {
+                                if matches!(self.dim_linear_phase, DimLinearPhase::FirstPoint) {
+                                    self.exit_dim();
+                                    self.command_log.push("DIMLINEAR done.".to_string());
+                                } else if let Some(world) = self.hover_world_pos {
+                                    if let DimLinearPhase::SecondPoint { first } = self.dim_linear_phase {
+                                        self.dim_linear_phase = DimLinearPhase::Placing { first, second: world };
+                                        self.command_log.push(format!("DIMLINEAR: Second point ({:.4}, {:.4})", world.x, world.y));
+                                    } else if let DimLinearPhase::Placing { first, second } = self.dim_linear_phase {
+                                        self.place_dim_linear(first, second, world);
                                     }
                                 }
                             } else if self.text_phase == TextPhase::PlacingPosition {
@@ -902,7 +1070,9 @@ impl CadKitApp {
 
                             let mut handled = false;
 
-                            if self.execute_command_alias(&cmd) {
+                            if self.apply_typed_dim_grip_input(&cmd) {
+                                handled = true;
+                            } else if self.execute_command_alias(&cmd) {
                                 handled = true;
                             } else if self.from_phase == FromPhase::WaitingBase {
                                 if let Some(base) = Self::resolve_typed_point(&cmd, None) {
@@ -920,10 +1090,12 @@ impl CadKitApp {
                                 handled = true;
                             } else if self.from_phase == FromPhase::WaitingOffset {
                                 if let Some(result) = Self::resolve_typed_point(&cmd, self.from_base) {
-                                    self.exit_from();
-                                    self.deliver_point(result);
-                                } else if let (Ok(dist), Some(base), Some(hover)) =
-                                    (cmd.trim().parse::<f64>(), self.from_base, self.hover_world_pos)
+                                    self.apply_from_result_point(result);
+                                } else if let (Ok(dist), Some(base), Some(hover)) = (
+                                    cmd.trim().parse::<f64>(),
+                                    self.from_base,
+                                    self.hover_world_pos.or(self.last_hover_world_pos),
+                                )
                                 {
                                     if dist > f64::EPSILON {
                                         let mut target = hover;
@@ -939,8 +1111,7 @@ impl CadKitApp {
                                                 base.x + dx / len * dist,
                                                 base.y + dy / len * dist,
                                             );
-                                            self.exit_from();
-                                            self.deliver_point(result);
+                                            self.apply_from_result_point(result);
                                         } else {
                                             self.command_log
                                                 .push("  *FROM: need cursor direction*".to_string());
@@ -984,19 +1155,23 @@ impl CadKitApp {
                                 if !cmd.is_empty() {
                                     use cadkit_2d_core::{Entity, EntityKind};
                                     use cadkit_types::Vec3;
-                                    self.push_undo();
-                                    let mut e = Entity::new(
-                                        EntityKind::Text {
-                                            position: Vec3::xy(position.x, position.y),
-                                            content: cmd.clone(),
-                                            height,
-                                            rotation,
-                                        },
-                                        self.current_layer,
-                                    );
-                                    e.layer = self.current_layer;
-                                    self.drawing.add_entity(e);
-                                    self.command_log.push(format!("TEXT: placed \"{}\"", cmd));
+                                    if self.is_layer_locked(self.current_layer) {
+                                        self.command_log.push("TEXT: Current layer is locked".to_string());
+                                    } else {
+                                        self.push_undo();
+                                        let mut e = Entity::new(
+                                            EntityKind::Text {
+                                                position: Vec3::xy(position.x, position.y),
+                                                content: cmd.clone(),
+                                                height,
+                                                rotation,
+                                            },
+                                            self.current_layer,
+                                        );
+                                        e.layer = self.current_layer;
+                                        self.drawing.add_entity(e);
+                                        self.command_log.push(format!("TEXT: placed \"{}\"", cmd));
+                                    }
                                 }
                                 self.exit_text();
                                 handled = true;

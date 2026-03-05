@@ -196,6 +196,94 @@ impl CadKitApp {
         }
     }
 
+    pub(crate) fn draw_dimension_grips(
+        &self,
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        viewport: &Viewport,
+    ) {
+        if self.selected_entities.is_empty() {
+            return;
+        }
+        let painter = ui.painter_at(rect);
+        let live_hover = ui
+            .input(|i| i.pointer.hover_pos())
+            .and_then(|pos| {
+                if rect.contains(pos) {
+                    self.pick_dim_grip_handle(viewport, rect, pos)
+                } else {
+                    None
+                }
+            })
+            .or(self.hover_dim_grip);
+        let mut hover_tip: Option<(egui::Pos2, &'static str)> = None;
+        for id in &self.selected_entities {
+            let Some(entity) = self.drawing.get_entity(id) else {
+                continue;
+            };
+            let Some(layer) = self.drawing.get_layer(entity.layer) else {
+                continue;
+            };
+            if !layer.visible {
+                continue;
+            }
+            let Some(points) = Self::dim_grip_display_points(&entity.kind, viewport, rect) else {
+                continue;
+            };
+            for (kind, center) in points {
+                let (fill, label) = match kind {
+                    super::state::DimGripKind::Start => (egui::Color32::from_rgb(90, 240, 110), "Start"),
+                    super::state::DimGripKind::End => (egui::Color32::from_rgb(255, 130, 130), "End"),
+                    super::state::DimGripKind::Offset => (egui::Color32::from_rgb(255, 170, 40), "Offset"),
+                    super::state::DimGripKind::Text => (egui::Color32::from_rgb(80, 220, 255), "Text"),
+                };
+                let active = self
+                    .dim_grip_drag
+                    .map(|h| h.entity == entity.id && h.kind == kind)
+                    .unwrap_or(false);
+                let hovered = live_hover
+                    .map(|h| h.entity == entity.id && h.kind == kind)
+                    .unwrap_or(false);
+                if hovered {
+                    hover_tip = Some((center, label));
+                }
+                let size = if active {
+                    15.0
+                } else if hovered {
+                    13.5
+                } else {
+                    12.0
+                };
+                let stroke_color = if active {
+                    egui::Color32::WHITE
+                } else if hovered {
+                    egui::Color32::from_rgb(255, 245, 120)
+                } else {
+                    egui::Color32::from_rgb(10, 10, 10)
+                };
+                let rect = egui::Rect::from_center_size(center, egui::vec2(size, size));
+                painter.rect_filled(rect, 1.0, fill);
+                painter.rect_stroke(rect, 1.0, egui::Stroke::new(1.5, stroke_color));
+            }
+        }
+        if let Some((center, label)) = hover_tip {
+            let font = egui::FontId::proportional(12.0);
+            let text_color = egui::Color32::from_rgb(245, 245, 245);
+            let bg = egui::Color32::from_rgba_premultiplied(20, 20, 20, 220);
+            let pad = egui::vec2(6.0, 4.0);
+            let galley = painter.layout_no_wrap(label.to_owned(), font.clone(), text_color);
+            let box_min = center + egui::vec2(10.0, -24.0);
+            let box_rect = egui::Rect::from_min_size(box_min, galley.size() + pad * 2.0);
+            painter.rect_filled(box_rect, 3.0, bg);
+            painter.rect_stroke(
+                box_rect,
+                3.0,
+                egui::Stroke::new(1.0, egui::Color32::from_gray(120)),
+            );
+            painter.galley(box_rect.min + pad, galley, text_color);
+        }
+    }
+
     pub(crate) fn draw_tick_marker(
         ui: &egui::Ui,
         rect: egui::Rect,
@@ -435,11 +523,25 @@ impl CadKitApp {
         rect: egui::Rect,
         screen_pos: egui::Pos2,
     ) -> Option<Vec2> {
+        self.find_intersection_snap_excluding(viewport, rect, screen_pos, None)
+    }
+
+    pub(crate) fn find_intersection_snap_excluding(
+        &self,
+        viewport: &Viewport,
+        rect: egui::Rect,
+        screen_pos: egui::Pos2,
+        exclude_entity: Option<cadkit_types::Guid>,
+    ) -> Option<Vec2> {
         if matches!(self.active_tool, ActiveTool::None) {
-            return None;
+            // Keep available for grip-drag object snaps while idle.
         }
 
-        let entities: Vec<_> = self.drawing.visible_entities().collect();
+        let entities: Vec<_> = self
+            .drawing
+            .visible_entities()
+            .filter(|e| Some(e.id) != exclude_entity)
+            .collect();
         if entities.len() < 2 {
             return None;
         }
