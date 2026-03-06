@@ -32,7 +32,7 @@ Cargo: `~/.cargo/bin/cargo` (not on PATH)
 
 ## Current Entity Kinds
 ```
-Line, Circle, Arc, Polyline, Text, DimAligned, DimLinear
+Line, Circle, Arc, Polyline, Text, DimAligned, DimLinear, DimAngular, DimRadial
 ```
 
 ## Gotchas
@@ -44,14 +44,11 @@ Line, Circle, Arc, Polyline, Text, DimAligned, DimLinear
 - `execute_command_alias` calls `exit_dim()` for any unrecognised input — guard with `|| self.from_phase != FromPhase::Idle` to preserve dim context during FROM offset entry
 
 ## Next Tasks (priority order)
-1. **Scale command** (`SC`) — like Move but applies uniform or XY scale factor
-2. **Mirror command** (`MI`) — pick axis line, reflect selected entities
-3. **DXF dimension export** — currently skipped with warning; use `dxf_rs` AlignedDimension / RotatedDimension
-4. **DXF TEXT / MTEXT export** — Text entity not yet exported to DXF
-5. **Angular dimension** (`DIMANGULAR`)
-6. **Radial / diameter dimension** (`DIMRADIUS` / `DIMDIAMETER`)
-7. **Fillet command** — radius + two lines/arcs
-8. **Layer freeze**
+1. **DXF dimension export** — currently skipped with warning; use `dxf_rs` AlignedDimension / RotatedDimension
+2. **DXF TEXT / MTEXT export** — Text entity not yet exported to DXF
+3. **Layer freeze**
+4. **Array command** — rectangular / polar (associative rectangular editing shipped; persistence still TODO)
+5. **Polyline interior-join improvements** (PEDIT/JOIN currently endpoint-driven)
 
 ## Adding a New Command — Checklist
 1. Add Phase enum variant(s) to `state.rs`
@@ -64,10 +61,33 @@ Line, Circle, Arc, Polyline, Text, DimAligned, DimLinear
 8. Update HELP window table in `app.rs`
 
 ## Roadmap Summary
-Phase 2 (in progress): Scale/Mirror, DXF dims/text export, Angular/Radial dims, Fillet/Chamfer, Layer freeze
+Phase 2 (in progress): DXF dims/text export, Layer freeze, Array
 Phase 3: DXF completeness, SVG/PDF
 Phase 4: Python API + AI/MCP command line
 Phase 5: Hatch, Blocks
 Phase 6: 3D push/pull
 Phase 7: CNC/CAM G-code
 Phase 8: Cabinet designer (target market)
+
+## Recently Completed
+- RECTANGLE command (`REC` / `RECTANGLE`) with diagonal-corners mode and dimensions mode (`w,h` + direction), with live rubber-band preview
+- ELLIPSE command (`EL` / `ELLIPSE`) with center → radius → height workflow, rubber-band preview, ortho support
+- POLYGON command (`POL` / `POLYGON`) with center/radius rubber-band and ortho-aware radius pick
+- CHAMFER command with d or d1,d2 input and 0-distance support for sharp corners
+- FILLET command shipping with line/polyline segment picks
+- FILLET polyline rebuild behavior
+  - same open polyline corner fillet rebuilt as one open polyline
+  - same closed polyline corner fillet rebuilt as one closed polyline with sampled arc
+  - mixed open polyline + line endpoint fillet can produce joined polyline output
+- `J` / `JOIN` selection-based join flow for touching open polyline + segments
+- `PE` / `PEDIT` edit flow: select base open polyline, then join touching line/arc at ends
+- ARRAY command (`AR` / `ARRAY`) with rectangular + polar modes
+- Rectangular ARRAY grip editing
+  - all grips visible (`dx`, `dy`, `cols`, `rows`) with live entity ghost preview
+  - click-to-activate, click-to-set/release grip workflow
+  - typed exact values on active grips (spacing/count), then auto-release
+  - count grips allow 1 row/column
+- Associative rectangular arrays in-session
+  - selecting any member selects the full array group
+  - running `ARRAY` on a member re-enters array edit with stored spacing/count/base/direction
+  - `E` during array grip edit explodes associative linkage and exits edit

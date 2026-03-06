@@ -1,10 +1,11 @@
 use super::state::{
-    ActiveTool, CopyPhase, DimLinearPhase, DimPhase, EditDimPhase, EditTextPhase, ExtendPhase,
-    FromPhase, MovePhase, OffsetPhase, RotatePhase, TextPhase, TrimPhase,
+    ActiveTool, CopyPhase, DimAngularPhase, DimLinearPhase, DimPhase, DimRadialPhase, EditDimPhase, EditTextPhase,
+    ArrayMode, ArrayPhase, ChamferPhase, EllipsePhase, ExtendPhase, FilletPhase, FromPhase, MirrorPhase, MovePhase,
+    OffsetPhase, PeditPhase, PolygonPhase, RectanglePhase, RotatePhase, ScalePhase, TextPhase, TrimPhase,
 };
 use super::CadKitApp;
 use cadkit_2d_core::EntityKind;
-use cadkit_types::Guid;
+use cadkit_types::{Guid, Vec2};
 use eframe::egui;
 
 impl CadKitApp {
@@ -114,6 +115,30 @@ impl CadKitApp {
                         self.distance_input.clear();
                         ui.close_menu();
                     }
+                    if ui.button("Rectangle").clicked() {
+                        self.exit_dim();
+                        self.cancel_active_tool();
+                        self.rectangle_phase = RectanglePhase::FirstCorner;
+                        self.command_log
+                            .push("RECTANGLE: Specify first corner".to_string());
+                        ui.close_menu();
+                    }
+                    if ui.button("Ellipse").clicked() {
+                        self.exit_dim();
+                        self.cancel_active_tool();
+                        self.ellipse_phase = EllipsePhase::Center;
+                        self.command_log
+                            .push("ELLIPSE: Specify center point".to_string());
+                        ui.close_menu();
+                    }
+                    if ui.button("Polygon").clicked() {
+                        self.exit_dim();
+                        self.cancel_active_tool();
+                        self.polygon_phase = PolygonPhase::EnteringSides;
+                        self.command_log
+                            .push(format!("POLYGON: Enter number of sides <{}>", self.polygon_sides));
+                        ui.close_menu();
+                    }
                 });
 
                 ui.menu_button("Help", |ui| {
@@ -170,6 +195,27 @@ impl CadKitApp {
                     }
                 }
             }
+            if ui.button("▭ Rectangle").clicked() {
+                self.exit_dim();
+                self.cancel_active_tool();
+                self.rectangle_phase = RectanglePhase::FirstCorner;
+                self.command_log
+                    .push("RECTANGLE: Specify first corner".to_string());
+            }
+            if ui.button("⬭ Ellipse").clicked() {
+                self.exit_dim();
+                self.cancel_active_tool();
+                self.ellipse_phase = EllipsePhase::Center;
+                self.command_log
+                    .push("ELLIPSE: Specify center point".to_string());
+            }
+            if ui.button("⬡ Polygon").clicked() {
+                self.exit_dim();
+                self.cancel_active_tool();
+                self.polygon_phase = PolygonPhase::EnteringSides;
+                self.command_log
+                    .push(format!("POLYGON: Enter number of sides <{}>", self.polygon_sides));
+            }
             if ui.button("T Text").clicked() {
                 self.exit_dim();
                 self.cancel_active_tool();
@@ -224,6 +270,42 @@ impl CadKitApp {
                 self.exit_rotate();
                 self.dim_linear_phase = DimLinearPhase::FirstPoint;
                 self.command_log.push("DIMLINEAR: Specify first extension line origin".to_string());
+            }
+            if ui.button("∠ Dim Angular").clicked() {
+                self.exit_dim();
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.dim_angular_phase = DimAngularPhase::FirstEntity;
+                self.command_log.push("DIMANGULAR: Click the first line or polyline segment".to_string());
+            }
+            if ui.button("R Dim Radius").clicked() {
+                self.exit_dim();
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.dim_radial_phase = DimRadialPhase::SelectingEntity { is_diameter: false };
+                self.command_log.push("DIMRADIUS: Click a circle or arc".to_string());
+            }
+            if ui.button("Ø Dim Diameter").clicked() {
+                self.exit_dim();
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.dim_radial_phase = DimRadialPhase::SelectingEntity { is_diameter: true };
+                self.command_log.push("DIMDIAMETER: Click a circle or arc".to_string());
             }
             if ui.button("✏ Edit Dim").clicked() {
                 self.exit_dim();
@@ -280,6 +362,7 @@ impl CadKitApp {
                 self.cancel_active_tool();
                 self.exit_trim();
                 self.exit_offset();
+                self.exit_scale();
                 self.move_phase = MovePhase::SelectingEntities;
                 self.move_base_point = None;
                 self.move_entities.clear();
@@ -292,10 +375,34 @@ impl CadKitApp {
                 self.exit_offset();
                 self.exit_move();
                 self.exit_extend();
+                self.exit_scale();
                 self.copy_phase = CopyPhase::SelectingEntities;
                 self.copy_base_point = None;
                 self.copy_entities.clear();
                 self.command_log.push("COPY: Select entities to copy, press Enter to continue".to_string());
+            }
+            if ui.button("▦ Array").clicked() {
+                self.exit_dim();
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.exit_scale();
+                self.exit_mirror();
+                self.exit_fillet();
+                self.exit_chamfer();
+                self.exit_polygon();
+                self.exit_ellipse();
+                self.exit_rectangle();
+                self.exit_pedit();
+                self.array_mode = ArrayMode::Rectangular;
+                self.array_entities.clear();
+                self.array_edit_assoc = None;
+                self.array_phase = ArrayPhase::SelectingEntities;
+                self.command_log.push("ARRAY: Select entities, press Enter to continue".to_string());
             }
             if ui.button("🔄 Rotate").clicked() {
                 self.exit_dim();
@@ -305,10 +412,74 @@ impl CadKitApp {
                 self.exit_move();
                 self.exit_extend();
                 self.exit_copy();
+                self.exit_scale();
                 self.rotate_phase = RotatePhase::SelectingEntities;
                 self.rotate_base_point = None;
                 self.rotate_entities.clear();
                 self.command_log.push("ROTATE: Select entities, press Enter to continue".to_string());
+            }
+            if ui.button("📏 Scale").clicked() {
+                self.exit_dim();
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.scale_phase = ScalePhase::SelectingEntities;
+                self.scale_base_point = None;
+                self.scale_ref_point = None;
+                self.scale_entities.clear();
+                self.command_log.push("SCALE: Select entities, press Enter to continue".to_string());
+            }
+            if ui.button("🪞 Mirror").clicked() {
+                self.exit_dim();
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.exit_scale();
+                self.mirror_phase = MirrorPhase::SelectingEntities;
+                self.mirror_axis_p1 = None;
+                self.mirror_entities.clear();
+                self.command_log.push("MIRROR: Select entities, press Enter to continue".to_string());
+            }
+            if ui.button("◜ Fillet").clicked() {
+                self.exit_dim();
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.exit_scale();
+                self.exit_mirror();
+                self.fillet_phase = FilletPhase::EnteringRadius;
+                self.command_log.push(format!("FILLET: Enter radius <{:.4}>", self.fillet_radius));
+            }
+            if ui.button("⟂ Chamfer").clicked() {
+                self.exit_dim();
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.exit_scale();
+                self.exit_mirror();
+                self.exit_fillet();
+                self.chamfer_phase = ChamferPhase::EnteringDistance;
+                self.command_log
+                    .push(format!(
+                        "CHAMFER: Enter distances <{:.4},{:.4}>",
+                        self.chamfer_distance1, self.chamfer_distance2
+                    ));
             }
             if ui.button("🗑️ Delete").clicked() {
                 let requested: Vec<Guid> = self.selected_entities.iter().copied().collect();
@@ -504,6 +675,8 @@ impl CadKitApp {
                                     EntityKind::Polyline { .. } => "Polyline",
                                     EntityKind::DimAligned { .. } => "DimAligned",
                                     EntityKind::DimLinear { horizontal, .. } => if *horizontal { "DimLinear (H)" } else { "DimLinear (V)" },
+                                    EntityKind::DimAngular { .. } => "DimAngular",
+                                    EntityKind::DimRadial { is_diameter, .. } => if *is_diameter { "DimDiameter" } else { "DimRadius" },
                                     EntityKind::Text { .. } => "Text",
                                 };
                                 ui.label(egui::RichText::new(type_name).strong());
@@ -572,6 +745,32 @@ impl CadKitApp {
                                                 ui.label("End Y:"); ui.label(format!("{:.4}", end.y)); ui.end_row();
                                                 ui.label("Measured:"); ui.label(format!("{:.4}", dist)); ui.end_row();
                                                 ui.label("Offset:"); ui.label(format!("{:.4}", offset)); ui.end_row();
+                                                if let Some(t) = text_override {
+                                                    ui.label("Text:"); ui.label(t.as_str()); ui.end_row();
+                                                }
+                                            }
+                                            EntityKind::DimAngular { vertex, line1_pt, line2_pt, radius, text_override, .. } => {
+                                                use std::f64::consts::TAU;
+                                                let a1 = (line1_pt.y - vertex.y).atan2(line1_pt.x - vertex.x);
+                                                let mut a2 = (line2_pt.y - vertex.y).atan2(line2_pt.x - vertex.x);
+                                                if a2 <= a1 { a2 += TAU; }
+                                                let angle_deg = (a2 - a1).to_degrees();
+                                                ui.label("Vertex X:"); ui.label(format!("{:.4}", vertex.x)); ui.end_row();
+                                                ui.label("Vertex Y:"); ui.label(format!("{:.4}", vertex.y)); ui.end_row();
+                                                ui.label("Angle:"); ui.label(format!("{:.2}°", angle_deg)); ui.end_row();
+                                                ui.label("Arc Radius:"); ui.label(format!("{:.4}", radius)); ui.end_row();
+                                                if let Some(t) = text_override {
+                                                    ui.label("Text:"); ui.label(t.as_str()); ui.end_row();
+                                                }
+                                            }
+                                            EntityKind::DimRadial { center, radius, leader_pt, is_diameter, text_override, .. } => {
+                                                let val = if *is_diameter { radius * 2.0 } else { *radius };
+                                                ui.label("Type:"); ui.label(if *is_diameter { "Diameter" } else { "Radius" }); ui.end_row();
+                                                ui.label("Center X:"); ui.label(format!("{:.4}", center.x)); ui.end_row();
+                                                ui.label("Center Y:"); ui.label(format!("{:.4}", center.y)); ui.end_row();
+                                                ui.label("Leader X:"); ui.label(format!("{:.4}", leader_pt.x)); ui.end_row();
+                                                ui.label("Leader Y:"); ui.label(format!("{:.4}", leader_pt.y)); ui.end_row();
+                                                ui.label("Measured:"); ui.label(format!("{:.4}", val)); ui.end_row();
                                                 if let Some(t) = text_override {
                                                     ui.label("Text:"); ui.label(t.as_str()); ui.end_row();
                                                 }
@@ -971,6 +1170,90 @@ impl CadKitApp {
                                     self.exit_copy();
                                     self.command_log.push("COPY done.".to_string());
                                 }
+                            } else if self.array_phase == ArrayPhase::SelectingEntities {
+                                if self.selected_entities.is_empty() {
+                                    self.command_log.push("ARRAY: No entities selected".to_string());
+                                } else {
+                                    let requested: Vec<Guid> =
+                                        self.selected_entities.iter().copied().collect();
+                                    if self.try_start_array_edit_from_selection(&requested) {
+                                    } else {
+                                        self.array_entities =
+                                            self.filter_editable_entity_ids(&requested, "ARRAY");
+                                        if self.array_entities.is_empty() {
+                                            self.command_log
+                                                .push("ARRAY: No editable entities selected".to_string());
+                                        } else {
+                                            self.array_phase = ArrayPhase::ChoosingType;
+                                            self.command_log.push(
+                                                "ARRAY: Choose type [Rectangular/Polar] <Rectangular>"
+                                                    .to_string(),
+                                            );
+                                        }
+                                    }
+                                }
+                            } else if self.array_phase == ArrayPhase::ChoosingType {
+                                self.array_mode = ArrayMode::Rectangular;
+                                self.array_phase = ArrayPhase::RectBasePoint;
+                                self.command_log.push("ARRAY: Specify base point".to_string());
+                            } else if self.array_phase == ArrayPhase::RectEnteringCount
+                                || self.array_phase == ArrayPhase::RectEnteringSpacing
+                            {
+                                self.array_phase = ArrayPhase::RectBasePoint;
+                                self.command_log.push("ARRAY: Specify base point".to_string());
+                            } else if self.array_phase == ArrayPhase::RectBasePoint {
+                                if let Some(world) = self.hover_world_pos {
+                                    self.array_center = Some(world);
+                                    self.array_rect_dir_point =
+                                        Some(Vec2::new(world.x + self.array_rect_dx.abs().max(1.0), world.y));
+                                    self.array_phase = ArrayPhase::RectGripIdle;
+                                    self.command_log.push(
+                                        "ARRAY: Grips visible. Click any grip to activate/edit. Press Enter to apply"
+                                            .to_string(),
+                                    );
+                                }
+                            } else if matches!(
+                                self.array_phase,
+                                ArrayPhase::RectGripIdle
+                                    | ArrayPhase::RectXSpacingGrip
+                                    | ArrayPhase::RectXCountGrip
+                                    | ArrayPhase::RectYSpacingGrip
+                                    | ArrayPhase::RectYCountGrip
+                            ) {
+                                if let Some(world) = self.hover_world_pos {
+                                    let _ = self.update_array_rect_from_world(world);
+                                }
+                                if let (Some(base), Some(dirp)) = (self.array_center, self.array_rect_dir_point) {
+                                    if self.apply_array_rectangular(base, dirp) {
+                                        self.exit_array();
+                                    }
+                                } else {
+                                    self.command_log.push(
+                                        "ARRAY: Set base point and direction first".to_string(),
+                                    );
+                                }
+                            } else if self.array_phase == ArrayPhase::PolarEnteringCount {
+                                self.array_phase = ArrayPhase::PolarEnteringAngle;
+                                self.command_log.push(format!(
+                                    "ARRAY: Enter fill angle degrees <{:.4}>",
+                                    self.array_polar_angle_deg
+                                ));
+                            } else if self.array_phase == ArrayPhase::PolarEnteringAngle {
+                                self.array_phase = ArrayPhase::PolarCenter;
+                                self.command_log.push("ARRAY: Specify center point".to_string());
+                            } else if self.array_phase == ArrayPhase::PolarCenter {
+                                if let Some(world) = self.hover_world_pos {
+                                    self.array_center = Some(world);
+                                    self.array_phase = ArrayPhase::PolarBasePoint;
+                                    self.command_log
+                                        .push("ARRAY: Specify base/reference point".to_string());
+                                }
+                            } else if self.array_phase == ArrayPhase::PolarBasePoint {
+                                if let (Some(world), Some(center)) = (self.hover_world_pos, self.array_center) {
+                                    if self.apply_array_polar(center, world) {
+                                        self.exit_array();
+                                    }
+                                }
                             } else if self.rotate_phase == RotatePhase::SelectingEntities {
                                 if self.selected_entities.is_empty() {
                                     self.command_log.push("ROTATE: No entities selected".to_string());
@@ -997,6 +1280,199 @@ impl CadKitApp {
                                 } else {
                                     self.exit_rotate();
                                 }
+                            } else if self.scale_phase == ScalePhase::SelectingEntities {
+                                if self.selected_entities.is_empty() {
+                                    self.command_log.push("SCALE: No entities selected".to_string());
+                                } else {
+                                    let requested: Vec<Guid> = self.selected_entities.iter().copied().collect();
+                                    self.scale_entities = self.filter_editable_entity_ids(&requested, "SCALE");
+                                    if self.scale_entities.is_empty() {
+                                        self.command_log.push("SCALE: No editable entities selected".to_string());
+                                    } else {
+                                        self.scale_phase = ScalePhase::BasePoint;
+                                        self.command_log.push("SCALE: Pick base point".to_string());
+                                    }
+                                }
+                            } else if self.scale_phase == ScalePhase::BasePoint {
+                                if let Some(world) = self.hover_world_pos {
+                                    self.scale_base_point = Some(world);
+                                    self.scale_phase = ScalePhase::ReferencePoint;
+                                    self.command_log.push("SCALE: Pick reference point".to_string());
+                                }
+                            } else if self.scale_phase == ScalePhase::ReferencePoint {
+                                if let (Some(world), Some(base)) = (self.hover_world_pos, self.scale_base_point) {
+                                    if base.distance_to(&world) > 1e-9 {
+                                        self.scale_ref_point = Some(world);
+                                        self.scale_phase = ScalePhase::Factor;
+                                        self.command_log.push("SCALE: Specify factor or pick point".to_string());
+                                    } else {
+                                        self.command_log.push("SCALE: Reference point too close to base".to_string());
+                                    }
+                                }
+                            } else if self.scale_phase == ScalePhase::Factor {
+                                if let Some(world) = self.hover_world_pos {
+                                    self.apply_scale_from_point(world);
+                                }
+                            } else if self.mirror_phase == MirrorPhase::SelectingEntities {
+                                if self.selected_entities.is_empty() {
+                                    self.command_log.push("MIRROR: No entities selected".to_string());
+                                } else {
+                                    let requested: Vec<Guid> = self.selected_entities.iter().copied().collect();
+                                    self.mirror_entities = self.filter_editable_entity_ids(&requested, "MIRROR");
+                                    if self.mirror_entities.is_empty() {
+                                        self.command_log.push("MIRROR: No editable entities selected".to_string());
+                                    } else {
+                                        self.mirror_phase = MirrorPhase::FirstAxisPoint;
+                                        self.command_log.push("MIRROR: Pick first axis point".to_string());
+                                    }
+                                }
+                            } else if self.mirror_phase == MirrorPhase::FirstAxisPoint {
+                                if let Some(world) = self.hover_world_pos {
+                                    self.mirror_axis_p1 = Some(world);
+                                    self.mirror_phase = MirrorPhase::SecondAxisPoint;
+                                    self.command_log.push("MIRROR: Pick second axis point".to_string());
+                                }
+                            } else if self.mirror_phase == MirrorPhase::SecondAxisPoint {
+                                if let (Some(world), Some(p1)) = (self.hover_world_pos, self.mirror_axis_p1) {
+                                    let axis_p2 = if self.ortho_enabled {
+                                        Self::snap_angle(p1, world, self.ortho_increment_deg)
+                                    } else {
+                                        world
+                                    };
+                                    self.apply_mirror(p1, axis_p2);
+                                } else {
+                                    self.exit_mirror();
+                                }
+                            } else if self.fillet_phase == FilletPhase::EnteringRadius {
+                                self.fillet_phase = FilletPhase::FirstEntity;
+                                self.command_log.push(format!(
+                                    "FILLET: Radius {:.4}. Select first line or polyline segment",
+                                    self.fillet_radius
+                                ));
+                            } else if self.fillet_phase == FilletPhase::FirstEntity {
+                                self.exit_fillet();
+                                self.command_log.push("FILLET cancelled.".to_string());
+                            } else if matches!(self.fillet_phase, FilletPhase::SecondEntity { .. }) {
+                                self.fillet_phase = FilletPhase::FirstEntity;
+                                self.command_log
+                                    .push("FILLET: Select first line or polyline segment".to_string());
+                            } else if self.chamfer_phase == ChamferPhase::EnteringDistance {
+                                self.chamfer_phase = ChamferPhase::FirstEntity;
+                                self.command_log.push(format!(
+                                    "CHAMFER: Distances {:.4},{:.4}. Select first line or polyline segment",
+                                    self.chamfer_distance1, self.chamfer_distance2
+                                ));
+                            } else if self.chamfer_phase == ChamferPhase::FirstEntity {
+                                self.exit_chamfer();
+                                self.command_log.push("CHAMFER cancelled.".to_string());
+                            } else if matches!(self.chamfer_phase, ChamferPhase::SecondEntity { .. }) {
+                                self.chamfer_phase = ChamferPhase::FirstEntity;
+                                self.command_log
+                                    .push("CHAMFER: Select first line or polyline segment".to_string());
+                            } else if self.polygon_phase == PolygonPhase::EnteringSides {
+                                self.polygon_phase = PolygonPhase::Center;
+                                self.command_log.push(format!(
+                                    "POLYGON: {} sides. Specify center point",
+                                    self.polygon_sides
+                                ));
+                            } else if self.polygon_phase == PolygonPhase::Center {
+                                if let Some(world) = self.hover_world_pos {
+                                    self.polygon_phase = PolygonPhase::Radius { center: world };
+                                    self.command_log.push("POLYGON: Specify radius point".to_string());
+                                } else {
+                                    self.exit_polygon();
+                                    self.command_log.push("POLYGON cancelled.".to_string());
+                                }
+                            } else if matches!(self.polygon_phase, PolygonPhase::Radius { .. }) {
+                                if let (PolygonPhase::Radius { center }, Some(world)) =
+                                    (self.polygon_phase.clone(), self.hover_world_pos)
+                                {
+                                    if self.apply_polygon(center, world) {
+                                        self.polygon_phase = PolygonPhase::Center;
+                                    }
+                                } else {
+                                    self.polygon_phase = PolygonPhase::Center;
+                                    self.command_log.push("POLYGON: Specify center point".to_string());
+                                }
+                            } else if self.ellipse_phase == EllipsePhase::Center {
+                                if let Some(world) = self.hover_world_pos {
+                                    self.ellipse_phase = EllipsePhase::RadiusX { center: world };
+                                    self.command_log.push("ELLIPSE: Specify radius from center".to_string());
+                                } else {
+                                    self.exit_ellipse();
+                                    self.command_log.push("ELLIPSE cancelled.".to_string());
+                                }
+                            } else if let EllipsePhase::RadiusX { center } = self.ellipse_phase {
+                                if let Some(world) = self.hover_world_pos {
+                                    let p = if self.ortho_enabled {
+                                        Self::snap_angle(center, world, self.ortho_increment_deg)
+                                    } else {
+                                        world
+                                    };
+                                    let rx = center.distance_to(&p);
+                                    if rx > 1e-9 {
+                                        self.ellipse_phase = EllipsePhase::RadiusY { center, rx };
+                                        self.command_log.push("ELLIPSE: Specify height from center".to_string());
+                                    } else {
+                                        self.command_log.push("ELLIPSE: Radius too small".to_string());
+                                    }
+                                } else {
+                                    self.exit_ellipse();
+                                    self.command_log.push("ELLIPSE cancelled.".to_string());
+                                }
+                            } else if let EllipsePhase::RadiusY { center, rx } = self.ellipse_phase {
+                                if let Some(world) = self.hover_world_pos {
+                                    let p = if self.ortho_enabled {
+                                        Self::snap_angle(center, world, self.ortho_increment_deg)
+                                    } else {
+                                        world
+                                    };
+                                    let ry = center.distance_to(&p);
+                                    if self.apply_ellipse(center, rx, ry) {
+                                        self.ellipse_phase = EllipsePhase::Center;
+                                    }
+                                } else {
+                                    self.ellipse_phase = EllipsePhase::Center;
+                                    self.command_log.push("ELLIPSE: Specify center point".to_string());
+                                }
+                            } else if self.rectangle_phase == RectanglePhase::FirstCorner {
+                                if let Some(world) = self.hover_world_pos {
+                                    self.rectangle_phase = RectanglePhase::SecondCorner { first: world };
+                                    self.command_log
+                                        .push("RECTANGLE: Specify opposite corner or [D=Dimensions]".to_string());
+                                } else {
+                                    self.exit_rectangle();
+                                    self.command_log.push("RECTANGLE cancelled.".to_string());
+                                }
+                            } else if let RectanglePhase::SecondCorner { first } = self.rectangle_phase {
+                                if let Some(world) = self.hover_world_pos {
+                                    if self.apply_rectangle_diagonal(first, world) {
+                                        self.rectangle_phase = RectanglePhase::FirstCorner;
+                                    }
+                                } else {
+                                    self.rectangle_phase = RectanglePhase::FirstCorner;
+                                    self.command_log.push("RECTANGLE: Specify first corner".to_string());
+                                }
+                            } else if let RectanglePhase::EnteringDimensions { first } = self.rectangle_phase {
+                                let w = self.rectangle_width.max(1e-9);
+                                let h = self.rectangle_height.max(1e-9);
+                                self.rectangle_phase = RectanglePhase::Direction { first, width: w, height: h };
+                                self.command_log.push("RECTANGLE: Specify direction point".to_string());
+                            } else if let RectanglePhase::Direction { first, width, height } = self.rectangle_phase {
+                                if let Some(world) = self.hover_world_pos {
+                                    if self.apply_rectangle_dimensions(first, width, height, world) {
+                                        self.rectangle_phase = RectanglePhase::FirstCorner;
+                                    }
+                                } else {
+                                    self.rectangle_phase = RectanglePhase::FirstCorner;
+                                    self.command_log.push("RECTANGLE: Specify first corner".to_string());
+                                }
+                            } else if self.pedit_phase == PeditPhase::SelectingPolyline {
+                                self.exit_pedit();
+                                self.command_log.push("PEDIT cancelled.".to_string());
+                            } else if matches!(self.pedit_phase, PeditPhase::Joining { .. }) {
+                                self.exit_pedit();
+                                self.command_log.push("PEDIT done.".to_string());
                             } else if !matches!(self.dim_phase, DimPhase::Idle) {
                                 if matches!(self.dim_phase, DimPhase::FirstPoint) {
                                     self.exit_dim();
@@ -1020,6 +1496,17 @@ impl CadKitApp {
                                     } else if let DimLinearPhase::Placing { first, second } = self.dim_linear_phase {
                                         self.place_dim_linear(first, second, world);
                                     }
+                                }
+                            } else if !matches!(self.dim_angular_phase, DimAngularPhase::Idle) {
+                                // FirstEntity / SecondEntity: Enter cancels (entity-pick, no hover point).
+                                // Placing: Enter confirms hover world position as arc radius click.
+                                if let DimAngularPhase::Placing { vertex, line1_pt, line2_pt } = self.dim_angular_phase {
+                                    if let Some(world) = self.hover_world_pos {
+                                        self.place_dim_angular(vertex, line1_pt, line2_pt, world);
+                                    }
+                                } else {
+                                    self.exit_dim();
+                                    self.command_log.push("DIMANGULAR cancelled.".to_string());
                                 }
                             } else if self.text_phase == TextPhase::PlacingPosition {
                                 // Empty Enter = confirm hover point as position.
@@ -1122,6 +1609,476 @@ impl CadKitApp {
                                         .push("  *FROM: enter @dx,dy or @dist<angle*".to_string());
                                 }
                                 handled = true;
+                            } else if self.fillet_phase == FilletPhase::EnteringRadius {
+                                if let Ok(r) = cmd.trim().parse::<f64>() {
+                                    if r > f64::EPSILON {
+                                        self.fillet_radius = r;
+                                        self.fillet_phase = FilletPhase::FirstEntity;
+                                        self.command_log.push(format!(
+                                            "FILLET: Radius {:.4}. Select first line or polyline segment",
+                                            self.fillet_radius
+                                        ));
+                                    } else {
+                                        self.command_log.push("  *FILLET: radius must be > 0*".to_string());
+                                    }
+                                } else {
+                                    self.command_log.push("  *FILLET: enter numeric radius*".to_string());
+                                }
+                                handled = true;
+                            } else if self.chamfer_phase == ChamferPhase::EnteringDistance {
+                                let raw = cmd.trim();
+                                let parsed = if let Some((a, b)) = raw.split_once(',') {
+                                    let d1 = a.trim().parse::<f64>().ok();
+                                    let d2 = b.trim().parse::<f64>().ok();
+                                    match (d1, d2) {
+                                        (Some(x), Some(y)) => Some((x, y)),
+                                        _ => None,
+                                    }
+                                } else {
+                                    raw.parse::<f64>().ok().map(|d| (d, d))
+                                };
+                                if let Some((d1, d2)) = parsed {
+                                    if d1 >= 0.0 && d2 >= 0.0 {
+                                        self.chamfer_distance1 = d1;
+                                        self.chamfer_distance2 = d2;
+                                        self.chamfer_phase = ChamferPhase::FirstEntity;
+                                        self.command_log.push(format!(
+                                            "CHAMFER: Distances {:.4},{:.4}. Select first line or polyline segment",
+                                            self.chamfer_distance1, self.chamfer_distance2
+                                        ));
+                                    } else {
+                                        self.command_log
+                                            .push("  *CHAMFER: distances must be >= 0*".to_string());
+                                    }
+                                } else {
+                                    self.command_log.push(
+                                        "  *CHAMFER: enter d or d1,d2 (example: 2 or 2,5)*".to_string(),
+                                    );
+                                }
+                                handled = true;
+                            } else if self.polygon_phase == PolygonPhase::EnteringSides {
+                                if let Ok(n) = cmd.trim().parse::<usize>() {
+                                    if n >= 3 {
+                                        self.polygon_sides = n;
+                                        self.polygon_phase = PolygonPhase::Center;
+                                        self.command_log.push(format!(
+                                            "POLYGON: {} sides. Specify center point",
+                                            self.polygon_sides
+                                        ));
+                                    } else {
+                                        self.command_log
+                                            .push("  *POLYGON: sides must be >= 3*".to_string());
+                                    }
+                                } else {
+                                    self.command_log
+                                        .push("  *POLYGON: enter integer side count*".to_string());
+                                }
+                                handled = true;
+                            } else if self.array_phase == ArrayPhase::ChoosingType {
+                                let raw = cmd.trim().to_ascii_lowercase();
+                                if raw.is_empty() || raw.starts_with('r') {
+                                    self.array_mode = ArrayMode::Rectangular;
+                                    self.array_phase = ArrayPhase::RectBasePoint;
+                                    self.command_log.push("ARRAY: Specify base point".to_string());
+                                } else if raw.starts_with('p') {
+                                    self.array_mode = ArrayMode::Polar;
+                                    self.array_phase = ArrayPhase::PolarEnteringCount;
+                                    self.command_log.push(format!(
+                                        "ARRAY: Enter item count <{}>",
+                                        self.array_polar_count
+                                    ));
+                                } else {
+                                    self.command_log.push("  *ARRAY: type R or P*".to_string());
+                                }
+                                handled = true;
+                            } else if self.array_phase == ArrayPhase::RectEnteringCount {
+                                let raw = cmd.trim();
+                                let parsed = if let Some((a, b)) = raw.split_once(',') {
+                                    let c = a.trim().parse::<usize>().ok();
+                                    let r = b.trim().parse::<usize>().ok();
+                                    match (c, r) {
+                                        (Some(c), Some(r)) => Some((c, r)),
+                                        _ => None,
+                                    }
+                                } else {
+                                    raw.parse::<usize>().ok().map(|c| (c, self.array_rect_rows))
+                                };
+                                if let Some((c, r)) = parsed {
+                                    if c >= 1 && r >= 1 && !(c == 1 && r == 1) {
+                                        self.array_rect_columns = c;
+                                        self.array_rect_rows = r;
+                                        self.array_phase = ArrayPhase::RectEnteringSpacing;
+                                        self.command_log.push(format!(
+                                            "ARRAY: Enter spacing dx,dy <{:.4},{:.4}>",
+                                            self.array_rect_dx, self.array_rect_dy
+                                        ));
+                                    } else {
+                                        self.command_log.push(
+                                            "  *ARRAY: columns/rows must be >=1, not both 1*".to_string(),
+                                        );
+                                    }
+                                } else {
+                                    self.command_log.push(
+                                        "  *ARRAY: enter columns,rows (example: 4,3)*".to_string(),
+                                    );
+                                }
+                                handled = true;
+                            } else if self.array_phase == ArrayPhase::RectEnteringSpacing {
+                                let raw = cmd.trim();
+                                let parsed = if let Some((a, b)) = raw.split_once(',') {
+                                    let dx = a.trim().parse::<f64>().ok();
+                                    let dy = b.trim().parse::<f64>().ok();
+                                    match (dx, dy) {
+                                        (Some(dx), Some(dy)) => Some((dx, dy)),
+                                        _ => None,
+                                    }
+                                } else {
+                                    raw.parse::<f64>().ok().map(|d| (d, d))
+                                };
+                                if let Some((dx, dy)) = parsed {
+                                    if dx.abs() > 1e-9 || dy.abs() > 1e-9 {
+                                        self.array_rect_dx = dx;
+                                        self.array_rect_dy = dy;
+                                        self.array_phase = ArrayPhase::RectBasePoint;
+                                        self.command_log.push("ARRAY: Specify base point".to_string());
+                                    } else {
+                                        self.command_log.push("  *ARRAY: spacing too small*".to_string());
+                                    }
+                                } else {
+                                    self.command_log.push(
+                                        "  *ARRAY: enter dx,dy (example: 10,8)*".to_string(),
+                                    );
+                                }
+                                handled = true;
+                            } else if self.array_phase == ArrayPhase::RectBasePoint {
+                                if let Some(world) = Self::resolve_typed_point(&cmd, None) {
+                                    self.array_center = Some(world);
+                                    self.array_rect_dir_point =
+                                        Some(Vec2::new(world.x + self.array_rect_dx.abs().max(1.0), world.y));
+                                    self.array_phase = ArrayPhase::RectGripIdle;
+                                    self.command_log.push(
+                                        "ARRAY: Grips visible. Click any grip to activate/edit. Press Enter to apply"
+                                            .to_string(),
+                                    );
+                                } else {
+                                    self.command_log.push("  *ARRAY: enter x,y for base point*".to_string());
+                                }
+                                handled = true;
+                            } else if matches!(
+                                self.array_phase,
+                                ArrayPhase::RectGripIdle
+                                    | ArrayPhase::RectXSpacingGrip
+                                    | ArrayPhase::RectXCountGrip
+                                    | ArrayPhase::RectYSpacingGrip
+                                    | ArrayPhase::RectYCountGrip
+                            ) && cmd.trim().eq_ignore_ascii_case("e") {
+                                if let Some(aid) = self.array_edit_assoc {
+                                    if self.explode_assoc_rect_array(aid) {
+                                        self.command_log
+                                            .push("ARRAY: Exploded associative array".to_string());
+                                        self.exit_array();
+                                    } else {
+                                        self.command_log
+                                            .push("ARRAY: Nothing to explode".to_string());
+                                    }
+                                } else {
+                                    self.command_log
+                                        .push("ARRAY: Current selection is not an associative array".to_string());
+                                }
+                                handled = true;
+                            } else if self.array_phase == ArrayPhase::RectGripIdle {
+                                self.command_log
+                                    .push("  *ARRAY: activate a grip first (click grip, then type)*".to_string());
+                                handled = true;
+                            } else if self.array_phase == ArrayPhase::RectXSpacingGrip {
+                                let mut applied = false;
+                                if let (Some(world), Some(base)) =
+                                    (Self::resolve_typed_point(&cmd, None), self.array_center)
+                                {
+                                    let dir = if self.ortho_enabled {
+                                        Self::snap_angle(base, world, self.ortho_increment_deg)
+                                    } else {
+                                        world
+                                    };
+                                    let d = base.distance_to(&dir);
+                                    if d > 1e-9 {
+                                        self.array_rect_dx = d;
+                                        self.array_rect_dir_point = Some(dir);
+                                        applied = true;
+                                    } else {
+                                        self.command_log
+                                            .push("  *ARRAY: spacing must be > 0*".to_string());
+                                    }
+                                } else if let Ok(d) = cmd.trim().parse::<f64>() {
+                                    if d > 1e-9 {
+                                        self.array_rect_dx = d;
+                                        if let Some(base) = self.array_center {
+                                            self.array_rect_dir_point = Some(Vec2::new(base.x + d, base.y));
+                                        }
+                                        applied = true;
+                                    } else {
+                                        self.command_log
+                                            .push("  *ARRAY: spacing must be > 0*".to_string());
+                                    }
+                                } else {
+                                    self.command_log
+                                        .push("  *ARRAY: enter spacing distance or x,y direction*".to_string());
+                                }
+                                if applied {
+                                    self.array_phase = ArrayPhase::RectGripIdle;
+                                    self.command_log.push(
+                                        "ARRAY: X spacing set. Grip released (click another grip or Enter)".to_string(),
+                                    );
+                                }
+                                handled = true;
+                            } else if self.array_phase == ArrayPhase::RectXCountGrip {
+                                let raw = cmd.trim();
+                                let mut applied = false;
+                                let dist_qty = raw.split_once(',').and_then(|(a, b)| {
+                                    Some((a.trim().parse::<f64>().ok()?, b.trim().parse::<usize>().ok()?))
+                                });
+                                if let Some((d, q)) = dist_qty {
+                                    if d > 1e-9 && q >= 1 {
+                                        self.array_rect_dx = d;
+                                        self.array_rect_columns = q.max(1);
+                                        applied = true;
+                                    } else {
+                                        self.command_log.push(
+                                            "  *ARRAY: use positive dist and quantity >= 1*".to_string(),
+                                        );
+                                    }
+                                } else if let Ok(q) = raw.parse::<usize>() {
+                                    if q >= 1 {
+                                        self.array_rect_columns = q;
+                                        applied = true;
+                                    } else {
+                                        self.command_log
+                                            .push("  *ARRAY: quantity must be >= 1*".to_string());
+                                    }
+                                } else if let (Some(world), Some(base), Some(dirp)) =
+                                    (Self::resolve_typed_point(raw, None), self.array_center, self.array_rect_dir_point)
+                                {
+                                    let vx = dirp.x - base.x;
+                                    let vy = dirp.y - base.y;
+                                    let len = (vx * vx + vy * vy).sqrt();
+                                    if len > 1e-9 && self.array_rect_dx.abs() > 1e-9 {
+                                        let ux = vx / len;
+                                        let uy = vy / len;
+                                        let proj = ((world.x - base.x) * ux + (world.y - base.y) * uy).abs();
+                                        self.array_rect_columns =
+                                            (proj / self.array_rect_dx.abs()).floor() as usize + 1;
+                                        applied = true;
+                                    }
+                                } else {
+                                    self.command_log.push(
+                                        "  *ARRAY: enter quantity or dist,qty (example: 12,6)*".to_string(),
+                                    );
+                                }
+                                if applied {
+                                    self.array_phase = ArrayPhase::RectGripIdle;
+                                    self.command_log.push(
+                                        "ARRAY: X count set. Grip released (click another grip or Enter)".to_string(),
+                                    );
+                                }
+                                handled = true;
+                            } else if self.array_phase == ArrayPhase::RectYSpacingGrip {
+                                let mut applied = false;
+                                if let Ok(d) = cmd.trim().parse::<f64>() {
+                                    if d > 1e-9 {
+                                        self.array_rect_dy = d * self.array_rect_y_sign;
+                                        applied = true;
+                                    } else {
+                                        self.command_log
+                                            .push("  *ARRAY: spacing must be > 0*".to_string());
+                                    }
+                                } else if let (Some(world), Some(base), Some(dirp)) =
+                                    (Self::resolve_typed_point(&cmd, None), self.array_center, self.array_rect_dir_point)
+                                {
+                                    let vx = dirp.x - base.x;
+                                    let vy = dirp.y - base.y;
+                                    let len = (vx * vx + vy * vy).sqrt();
+                                    if len > 1e-9 {
+                                        let ux = vx / len;
+                                        let uy = vy / len;
+                                        let px = -uy;
+                                        let py = ux;
+                                        let proj = (world.x - base.x) * px + (world.y - base.y) * py;
+                                        let d = proj.abs();
+                                        if d > 1e-9 {
+                                            self.array_rect_y_sign = if proj >= 0.0 { 1.0 } else { -1.0 };
+                                            self.array_rect_dy = d * self.array_rect_y_sign;
+                                            applied = true;
+                                        }
+                                    }
+                                } else {
+                                    self.command_log.push(
+                                        "  *ARRAY: enter spacing distance or x,y vertical grip*".to_string(),
+                                    );
+                                }
+                                if applied {
+                                    self.array_phase = ArrayPhase::RectGripIdle;
+                                    self.command_log.push(
+                                        "ARRAY: Y spacing set. Grip released (click another grip or Enter)".to_string(),
+                                    );
+                                }
+                                handled = true;
+                            } else if self.array_phase == ArrayPhase::RectYCountGrip {
+                                let raw = cmd.trim();
+                                let mut applied = false;
+                                let dist_qty = raw.split_once(',').and_then(|(a, b)| {
+                                    Some((a.trim().parse::<f64>().ok()?, b.trim().parse::<usize>().ok()?))
+                                });
+                                if let Some((d, q)) = dist_qty {
+                                    if d > 1e-9 && q >= 1 {
+                                        self.array_rect_dy = d * self.array_rect_y_sign;
+                                        self.array_rect_rows = q.max(1);
+                                        applied = true;
+                                    } else {
+                                        self.command_log.push(
+                                            "  *ARRAY: use positive dist and quantity >= 1*".to_string(),
+                                        );
+                                    }
+                                } else if let Ok(q) = raw.parse::<usize>() {
+                                    if q >= 1 {
+                                        self.array_rect_rows = q;
+                                        applied = true;
+                                    } else {
+                                        self.command_log
+                                            .push("  *ARRAY: quantity must be >= 1*".to_string());
+                                    }
+                                } else if let (Some(world), Some(base), Some(dirp)) =
+                                    (Self::resolve_typed_point(raw, None), self.array_center, self.array_rect_dir_point)
+                                {
+                                    let vx = dirp.x - base.x;
+                                    let vy = dirp.y - base.y;
+                                    let len = (vx * vx + vy * vy).sqrt();
+                                    if len > 1e-9 && self.array_rect_dy.abs() > 1e-9 {
+                                        let ux = vx / len;
+                                        let uy = vy / len;
+                                        let px = -uy;
+                                        let py = ux;
+                                        let proj = ((world.x - base.x) * px + (world.y - base.y) * py).abs();
+                                        self.array_rect_rows =
+                                            (proj / self.array_rect_dy.abs()).floor() as usize + 1;
+                                        applied = true;
+                                    }
+                                } else {
+                                    self.command_log.push(
+                                        "  *ARRAY: enter quantity or dist,qty (example: 8,4)*".to_string(),
+                                    );
+                                }
+                                if applied {
+                                    self.array_phase = ArrayPhase::RectGripIdle;
+                                    self.command_log.push(
+                                        "ARRAY: Y count set. Grip released (click another grip or Enter)".to_string(),
+                                    );
+                                }
+                                handled = true;
+                            } else if self.array_phase == ArrayPhase::PolarEnteringCount {
+                                if let Ok(n) = cmd.trim().parse::<usize>() {
+                                    if n >= 2 {
+                                        self.array_polar_count = n;
+                                        self.array_phase = ArrayPhase::PolarEnteringAngle;
+                                        self.command_log.push(format!(
+                                            "ARRAY: Enter fill angle degrees <{:.4}>",
+                                            self.array_polar_angle_deg
+                                        ));
+                                    } else {
+                                        self.command_log.push("  *ARRAY: count must be >= 2*".to_string());
+                                    }
+                                } else {
+                                    self.command_log.push("  *ARRAY: enter integer count*".to_string());
+                                }
+                                handled = true;
+                            } else if self.array_phase == ArrayPhase::PolarEnteringAngle {
+                                if let Ok(a) = cmd.trim().parse::<f64>() {
+                                    if a.abs() > 1e-9 {
+                                        self.array_polar_angle_deg = a;
+                                        self.array_phase = ArrayPhase::PolarCenter;
+                                        self.command_log.push("ARRAY: Specify center point".to_string());
+                                    } else {
+                                        self.command_log.push("  *ARRAY: angle must be non-zero*".to_string());
+                                    }
+                                } else {
+                                    self.command_log.push("  *ARRAY: enter angle in degrees*".to_string());
+                                }
+                                handled = true;
+                            } else if self.array_phase == ArrayPhase::PolarCenter {
+                                if let Some(world) = Self::resolve_typed_point(&cmd, None) {
+                                    self.array_center = Some(world);
+                                    self.array_phase = ArrayPhase::PolarBasePoint;
+                                    self.command_log.push("ARRAY: Specify base/reference point".to_string());
+                                } else {
+                                    self.command_log.push("  *ARRAY: enter x,y for center*".to_string());
+                                }
+                                handled = true;
+                            } else if self.array_phase == ArrayPhase::PolarBasePoint {
+                                if let (Some(world), Some(center)) =
+                                    (Self::resolve_typed_point(&cmd, None), self.array_center)
+                                {
+                                    if self.apply_array_polar(center, world) {
+                                        self.exit_array();
+                                    }
+                                } else {
+                                    self.command_log
+                                        .push("  *ARRAY: enter x,y for base/reference point*".to_string());
+                                }
+                                handled = true;
+                            } else if self.rectangle_phase == RectanglePhase::FirstCorner {
+                                if let Some(world) = Self::resolve_typed_point(&cmd, None) {
+                                    self.rectangle_phase = RectanglePhase::SecondCorner { first: world };
+                                    self.command_log
+                                        .push("RECTANGLE: Specify opposite corner or [D=Dimensions]".to_string());
+                                } else {
+                                    self.command_log.push("  *RECTANGLE: enter x,y for first corner*".to_string());
+                                }
+                                handled = true;
+                            } else if let RectanglePhase::SecondCorner { first } = self.rectangle_phase {
+                                let raw = cmd.trim().to_ascii_lowercase();
+                                if matches!(raw.as_str(), "d" | "dim" | "dims" | "dimensions") {
+                                    self.rectangle_phase = RectanglePhase::EnteringDimensions { first };
+                                    self.command_log.push(format!(
+                                        "RECTANGLE: Enter dimensions w,h <{:.4},{:.4}>",
+                                        self.rectangle_width, self.rectangle_height
+                                    ));
+                                } else if let Some(world) = Self::resolve_typed_point(&cmd, None) {
+                                    if self.apply_rectangle_diagonal(first, world) {
+                                        self.rectangle_phase = RectanglePhase::FirstCorner;
+                                    }
+                                } else {
+                                    self.command_log.push(
+                                        "  *RECTANGLE: enter x,y or D for dimensions mode*".to_string(),
+                                    );
+                                }
+                                handled = true;
+                            } else if let RectanglePhase::EnteringDimensions { first } = self.rectangle_phase {
+                                let raw = cmd.trim();
+                                let parsed = raw
+                                    .split_once(',')
+                                    .and_then(|(a, b)| Some((a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?)));
+                                if let Some((w, h)) = parsed {
+                                    if w > 0.0 && h > 0.0 {
+                                        self.rectangle_width = w;
+                                        self.rectangle_height = h;
+                                        self.rectangle_phase = RectanglePhase::Direction { first, width: w, height: h };
+                                        self.command_log.push("RECTANGLE: Specify direction point".to_string());
+                                    } else {
+                                        self.command_log.push("  *RECTANGLE: width,height must be > 0*".to_string());
+                                    }
+                                } else {
+                                    self.command_log
+                                        .push("  *RECTANGLE: enter width,height (example: 10,5)*".to_string());
+                                }
+                                handled = true;
+                            } else if let RectanglePhase::Direction { first, width, height } = self.rectangle_phase {
+                                if let Some(world) = Self::resolve_typed_point(&cmd, None) {
+                                    if self.apply_rectangle_dimensions(first, width, height, world) {
+                                        self.rectangle_phase = RectanglePhase::FirstCorner;
+                                    }
+                                } else {
+                                    self.command_log.push("  *RECTANGLE: enter x,y for direction point*".to_string());
+                                }
+                                handled = true;
                             } else if !matches!(self.dim_phase, DimPhase::Idle) {
                                 if let Some(world) = Self::resolve_typed_point(&cmd, None) {
                                     if matches!(self.dim_phase, DimPhase::FirstPoint) {
@@ -1174,6 +2131,31 @@ impl CadKitApp {
                                     }
                                 }
                                 self.exit_text();
+                                handled = true;
+                            } else if self.scale_phase == ScalePhase::Factor {
+                                if let Ok(factor) = cmd.trim().parse::<f64>() {
+                                    self.apply_scale_factor(factor);
+                                } else {
+                                    self.command_log.push("  *SCALE: enter numeric factor (e.g. 2.0)*".to_string());
+                                }
+                                handled = true;
+                            } else if self.mirror_phase == MirrorPhase::FirstAxisPoint {
+                                if let Some(world) = Self::resolve_typed_point(&cmd, None) {
+                                    self.mirror_axis_p1 = Some(world);
+                                    self.mirror_phase = MirrorPhase::SecondAxisPoint;
+                                    self.command_log.push("MIRROR: Pick second axis point".to_string());
+                                } else {
+                                    self.command_log.push("  *MIRROR: enter x,y for first axis point*".to_string());
+                                }
+                                handled = true;
+                            } else if self.mirror_phase == MirrorPhase::SecondAxisPoint {
+                                if let Some(world) = Self::resolve_typed_point(&cmd, None) {
+                                    if let Some(p1) = self.mirror_axis_p1 {
+                                        self.apply_mirror(p1, world);
+                                    }
+                                } else {
+                                    self.command_log.push("  *MIRROR: enter x,y for second axis point*".to_string());
+                                }
                                 handled = true;
                             } else if self.apply_typed_point_input(&cmd) {
                                 handled = true;

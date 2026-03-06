@@ -71,12 +71,27 @@ impl CadKitApp {
         }
 
         let painter = ui.painter_at(rect);
-        let stroke = egui::Stroke::new(2.5, egui::Color32::from_rgb(0, 200, 255));
+        let normal_stroke = egui::Stroke::new(2.5, egui::Color32::from_rgb(0, 200, 255));
+        let array_group_stroke = egui::Stroke::new(2.7, egui::Color32::from_rgb(255, 180, 60));
 
         for entity in self.drawing.visible_entities() {
             if !self.selected_entities.contains(&entity.id) {
                 continue;
             }
+            let stroke = if let Some(aid) = self.assoc_member_to_array.get(&entity.id).copied() {
+                if let Some(arr) = self.assoc_rect_arrays.get(&aid) {
+                    let group_selected = arr.members.iter().all(|m| self.selected_entities.contains(m));
+                    if group_selected {
+                        array_group_stroke
+                    } else {
+                        normal_stroke
+                    }
+                } else {
+                    normal_stroke
+                }
+            } else {
+                normal_stroke
+            };
 
             match &entity.kind {
                 EntityKind::Line { start, end } => {
@@ -181,6 +196,52 @@ impl CadKitApp {
                     painter.line_segment([rect.min + egui::vec2(dl1x, dl1y), rect.min + egui::vec2(dl2x, dl2y)], stroke);
                     painter.line_segment([rect.min + egui::vec2(p1x, p1y), rect.min + egui::vec2(dl1x, dl1y)], stroke);
                     painter.line_segment([rect.min + egui::vec2(p2x, p2y), rect.min + egui::vec2(dl2x, dl2y)], stroke);
+                }
+                EntityKind::DimAngular { vertex, line1_pt, line2_pt, radius, .. } => {
+                    use std::f32::consts::TAU;
+                    let vx = vertex.x as f32; let vy = vertex.y as f32;
+                    let a1 = ((line1_pt.y - vertex.y) as f32).atan2((line1_pt.x - vertex.x) as f32);
+                    let mut a2 = ((line2_pt.y - vertex.y) as f32).atan2((line2_pt.x - vertex.x) as f32);
+                    if a2 <= a1 { a2 += TAU; }
+                    let rad = *radius as f32;
+                    if rad < 1e-6 { continue; }
+                    let sweep = a2 - a1;
+                    let steps = ((sweep * rad).abs().max(6.0) as usize).clamp(12, 48);
+                    let arc_pts: Vec<egui::Pos2> = (0..=steps).map(|i| {
+                        let t = i as f32 / steps as f32;
+                        let a = a1 + sweep * t;
+                        let (sx, sy) = world_to_screen(vx + rad * a.cos(), vy + rad * a.sin(), viewport);
+                        rect.min + egui::vec2(sx, sy)
+                    }).collect();
+                    for pair in arc_pts.windows(2) {
+                        painter.line_segment([pair[0], pair[1]], stroke);
+                    }
+                }
+                EntityKind::DimRadial { center, radius, leader_pt, is_diameter, .. } => {
+                    let dx = leader_pt.x - center.x;
+                    let dy = leader_pt.y - center.y;
+                    let len = (dx * dx + dy * dy).sqrt();
+                    if len < 1e-9 {
+                        continue;
+                    }
+                    let ux = dx / len;
+                    let uy = dy / len;
+                    let tip_outer = Vec2::new(center.x + ux * radius, center.y + uy * radius);
+                    let tip_inner = Vec2::new(center.x - ux * radius, center.y - uy * radius);
+
+                    let (x1, y1) = world_to_screen(tip_outer.x as f32, tip_outer.y as f32, viewport);
+                    let (x2, y2) = world_to_screen(leader_pt.x as f32, leader_pt.y as f32, viewport);
+                    painter.line_segment(
+                        [rect.min + egui::vec2(x1, y1), rect.min + egui::vec2(x2, y2)],
+                        stroke,
+                    );
+                    if *is_diameter {
+                        let (ix, iy) = world_to_screen(tip_inner.x as f32, tip_inner.y as f32, viewport);
+                        painter.line_segment(
+                            [rect.min + egui::vec2(ix, iy), rect.min + egui::vec2(x1, y1)],
+                            stroke,
+                        );
+                    }
                 }
                 EntityKind::Text { position, .. } => {
                     // Draw a small selection box around the insertion point.
@@ -509,6 +570,62 @@ impl CadKitApp {
                     rect.min + egui::vec2(dl2x, dl2y),
                 )
             }
+            EntityKind::DimAngular { vertex, line1_pt, line2_pt, radius, .. } => {
+                use std::f32::consts::TAU;
+                let vx = vertex.x as f32; let vy = vertex.y as f32;
+                let a1 = ((line1_pt.y - vertex.y) as f32).atan2((line1_pt.x - vertex.x) as f32);
+                let mut a2 = ((line2_pt.y - vertex.y) as f32).atan2((line2_pt.x - vertex.x) as f32);
+                if a2 <= a1 { a2 += TAU; }
+                let rad = *radius as f32;
+                if rad < 1e-6 { return f32::INFINITY; }
+                let sweep = a2 - a1;
+                let steps = ((sweep * rad).abs().max(6.0) as usize).clamp(12, 48);
+                let mut min_d = f32::INFINITY;
+                for i in 0..steps {
+                    let t1 = i as f32 / steps as f32;
+                    let t2 = (i + 1) as f32 / steps as f32;
+                    let pa = a1 + sweep * t1;
+                    let pb = a1 + sweep * t2;
+                    let (x1, y1) = world_to_screen(vx + rad * pa.cos(), vy + rad * pa.sin(), viewport);
+                    let (x2, y2) = world_to_screen(vx + rad * pb.cos(), vy + rad * pb.sin(), viewport);
+                    min_d = min_d.min(point_to_segment_dist(
+                        screen_pos,
+                        rect.min + egui::vec2(x1, y1),
+                        rect.min + egui::vec2(x2, y2),
+                    ));
+                }
+                min_d
+            }
+            EntityKind::DimRadial { center, radius, leader_pt, is_diameter, .. } => {
+                let dx = leader_pt.x - center.x;
+                let dy = leader_pt.y - center.y;
+                let len = (dx * dx + dy * dy).sqrt();
+                if len < 1e-9 {
+                    return f32::INFINITY;
+                }
+                let ux = dx / len;
+                let uy = dy / len;
+                let tip_outer = Vec2::new(center.x + ux * radius, center.y + uy * radius);
+                let tip_inner = Vec2::new(center.x - ux * radius, center.y - uy * radius);
+                let (ox, oy) = world_to_screen(tip_outer.x as f32, tip_outer.y as f32, viewport);
+                let (lx, ly) = world_to_screen(leader_pt.x as f32, leader_pt.y as f32, viewport);
+                let outer_d = point_to_segment_dist(
+                    screen_pos,
+                    rect.min + egui::vec2(ox, oy),
+                    rect.min + egui::vec2(lx, ly),
+                );
+                if *is_diameter {
+                    let (ix, iy) = world_to_screen(tip_inner.x as f32, tip_inner.y as f32, viewport);
+                    let inner_d = point_to_segment_dist(
+                        screen_pos,
+                        rect.min + egui::vec2(ix, iy),
+                        rect.min + egui::vec2(ox, oy),
+                    );
+                    outer_d.min(inner_d)
+                } else {
+                    outer_d
+                }
+            }
             EntityKind::Text { position, .. } => {
                 let (sx, sy) = world_to_screen(position.x as f32, position.y as f32, viewport);
                 screen_pos.distance(rect.min + egui::vec2(sx, sy))
@@ -612,7 +729,7 @@ impl CadKitApp {
             EntityKind::Polyline { vertices, closed } => Some(GeomPrim::Polyline(
                 GeomPolyline::new(vertices.clone(), *closed),
             )),
-            EntityKind::DimAligned { .. } | EntityKind::DimLinear { .. } | EntityKind::Text { .. } => None,
+            EntityKind::DimAligned { .. } | EntityKind::DimLinear { .. } | EntityKind::DimAngular { .. } | EntityKind::DimRadial { .. } | EntityKind::Text { .. } => None,
         }
     }
 

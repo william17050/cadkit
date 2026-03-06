@@ -229,6 +229,16 @@ impl Drawing {
                     log::warn!("DXF export: DimLinear not yet exported");
                     None
                 }
+                EntityKind::DimAngular { .. } => {
+                    // TODO: export as DXF DIMENSION entity (AngularDimension)
+                    log::warn!("DXF export: DimAngular not yet exported");
+                    None
+                }
+                EntityKind::DimRadial { .. } => {
+                    // TODO: export as DXF DIMENSION entity (RadialDimension / DiameterDimension)
+                    log::warn!("DXF export: DimRadial not yet exported");
+                    None
+                }
             };
 
             if let Some(e) = opt {

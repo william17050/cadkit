@@ -542,6 +542,141 @@ impl Viewport {
 
                     let _ = (text_override, text_pos);
                 }
+                EntityKind::DimAngular {
+                    vertex, line1_pt, line2_pt, radius,
+                    text_override, text_pos,
+                    arrow_length, arrow_half_width,
+                } => {
+                    use std::f32::consts::TAU;
+                    let vx = vertex.x as f32;
+                    let vy = vertex.y as f32;
+                    let a1 = ((line1_pt.y - vertex.y) as f32).atan2((line1_pt.x - vertex.x) as f32);
+                    let mut a2 = ((line2_pt.y - vertex.y) as f32).atan2((line2_pt.x - vertex.x) as f32);
+                    if a2 <= a1 { a2 += TAU; }
+                    let rad = *radius as f32;
+                    if rad < 1e-6 { continue; }
+
+                    let ec = [c[0] * 0.75, c[1] * 0.75, c[2] * 0.75];
+                    let gap = 1.0f32;
+                    let ext_extra = 2.0f32;
+
+                    // Extension lines: from gap inside arc to slightly past arc
+                    let r_inner = (rad - gap).max(0.0);
+                    let r_outer = rad + ext_extra;
+                    let cos1 = a1.cos(); let sin1 = a1.sin();
+                    let cos2 = a2.cos(); let sin2 = a2.sin();
+                    vertices.push(Vertex::new(vx + cos1 * r_inner, vy + sin1 * r_inner, ec[0], ec[1], ec[2]));
+                    vertices.push(Vertex::new(vx + cos1 * r_outer, vy + sin1 * r_outer, ec[0], ec[1], ec[2]));
+                    vertices.push(Vertex::new(vx + cos2 * r_inner, vy + sin2 * r_inner, ec[0], ec[1], ec[2]));
+                    vertices.push(Vertex::new(vx + cos2 * r_outer, vy + sin2 * r_outer, ec[0], ec[1], ec[2]));
+
+                    // Arc segments
+                    let sweep = a2 - a1;
+                    let steps = ((sweep * rad).abs().max(6.0) as usize).clamp(12, 96);
+                    let arc_pts: Vec<[f32; 2]> = (0..=steps).map(|i| {
+                        let t = i as f32 / steps as f32;
+                        let a = a1 + sweep * t;
+                        [vx + rad * a.cos(), vy + rad * a.sin()]
+                    }).collect();
+                    for pair in arc_pts.windows(2) {
+                        vertices.push(Vertex::new(pair[0][0], pair[0][1], c[0], c[1], c[2]));
+                        vertices.push(Vertex::new(pair[1][0], pair[1][1], c[0], c[1], c[2]));
+                    }
+
+                    // Arrowheads at arc endpoints (open V shape)
+                    let arrow_len = *arrow_length as f32;
+                    let arrow_hw = *arrow_half_width as f32;
+
+                    // Arrow at a1: tangent direction CCW = [-sin(a1), cos(a1)], radial perp = [cos1, sin1]
+                    let t1 = [-sin1, cos1];
+                    let a1_tip = [vx + cos1 * rad, vy + sin1 * rad];
+                    let a1_base = [a1_tip[0] + t1[0] * arrow_len, a1_tip[1] + t1[1] * arrow_len];
+                    let a1_w1 = [a1_base[0] + cos1 * arrow_hw, a1_base[1] + sin1 * arrow_hw];
+                    let a1_w2 = [a1_base[0] - cos1 * arrow_hw, a1_base[1] - sin1 * arrow_hw];
+                    vertices.push(Vertex::new(a1_tip[0], a1_tip[1], c[0], c[1], c[2]));
+                    vertices.push(Vertex::new(a1_w1[0], a1_w1[1], c[0], c[1], c[2]));
+                    vertices.push(Vertex::new(a1_tip[0], a1_tip[1], c[0], c[1], c[2]));
+                    vertices.push(Vertex::new(a1_w2[0], a1_w2[1], c[0], c[1], c[2]));
+
+                    // Arrow at a2: CW tangent = [sin(a2), -cos(a2)], radial perp = [cos2, sin2]
+                    let t2 = [sin2, -cos2];
+                    let a2_tip = [vx + cos2 * rad, vy + sin2 * rad];
+                    let a2_base = [a2_tip[0] + t2[0] * arrow_len, a2_tip[1] + t2[1] * arrow_len];
+                    let a2_w1 = [a2_base[0] + cos2 * arrow_hw, a2_base[1] + sin2 * arrow_hw];
+                    let a2_w2 = [a2_base[0] - cos2 * arrow_hw, a2_base[1] - sin2 * arrow_hw];
+                    vertices.push(Vertex::new(a2_tip[0], a2_tip[1], c[0], c[1], c[2]));
+                    vertices.push(Vertex::new(a2_w1[0], a2_w1[1], c[0], c[1], c[2]));
+                    vertices.push(Vertex::new(a2_tip[0], a2_tip[1], c[0], c[1], c[2]));
+                    vertices.push(Vertex::new(a2_w2[0], a2_w2[1], c[0], c[1], c[2]));
+
+                    let _ = (text_override, text_pos);
+                }
+                EntityKind::DimRadial {
+                    center,
+                    radius,
+                    leader_pt,
+                    is_diameter,
+                    text_override,
+                    text_pos,
+                    arrow_length,
+                    arrow_half_width,
+                } => {
+                    let cx = center.x as f32;
+                    let cy = center.y as f32;
+                    let lx = leader_pt.x as f32;
+                    let ly = leader_pt.y as f32;
+                    let r = *radius as f32;
+                    if r < 1e-6 {
+                        continue;
+                    }
+
+                    let dx = lx - cx;
+                    let dy = ly - cy;
+                    let len = (dx * dx + dy * dy).sqrt();
+                    if len < 1e-6 {
+                        continue;
+                    }
+                    let dir = [dx / len, dy / len];
+
+                    // Arrowhead tips on the measured circle.
+                    let tip_outer = [cx + dir[0] * r, cy + dir[1] * r];
+                    let tip_inner = [cx - dir[0] * r, cy - dir[1] * r];
+
+                    if *is_diameter {
+                        // Diameter: full line through center with two arrows.
+                        vertices.push(Vertex::new(tip_inner[0], tip_inner[1], c[0], c[1], c[2]));
+                        vertices.push(Vertex::new(lx, ly, c[0], c[1], c[2]));
+                    } else {
+                        // Radius: center-to-leader line with one arrow at the circle edge.
+                        vertices.push(Vertex::new(cx, cy, c[0], c[1], c[2]));
+                        vertices.push(Vertex::new(lx, ly, c[0], c[1], c[2]));
+                    }
+
+                    let arrow_len = *arrow_length as f32;
+                    let arrow_hw = *arrow_half_width as f32;
+
+                    // Outer arrow points toward center (-dir).
+                    let a1_base = [tip_outer[0] + dir[0] * arrow_len, tip_outer[1] + dir[1] * arrow_len];
+                    let a1_w1 = [a1_base[0] - dir[1] * arrow_hw, a1_base[1] + dir[0] * arrow_hw];
+                    let a1_w2 = [a1_base[0] + dir[1] * arrow_hw, a1_base[1] - dir[0] * arrow_hw];
+                    vertices.push(Vertex::new(tip_outer[0], tip_outer[1], c[0], c[1], c[2]));
+                    vertices.push(Vertex::new(a1_w1[0], a1_w1[1], c[0], c[1], c[2]));
+                    vertices.push(Vertex::new(tip_outer[0], tip_outer[1], c[0], c[1], c[2]));
+                    vertices.push(Vertex::new(a1_w2[0], a1_w2[1], c[0], c[1], c[2]));
+
+                    if *is_diameter {
+                        // Inner arrow also points toward center (+dir).
+                        let a2_base = [tip_inner[0] - dir[0] * arrow_len, tip_inner[1] - dir[1] * arrow_len];
+                        let a2_w1 = [a2_base[0] - dir[1] * arrow_hw, a2_base[1] + dir[0] * arrow_hw];
+                        let a2_w2 = [a2_base[0] + dir[1] * arrow_hw, a2_base[1] - dir[0] * arrow_hw];
+                        vertices.push(Vertex::new(tip_inner[0], tip_inner[1], c[0], c[1], c[2]));
+                        vertices.push(Vertex::new(a2_w1[0], a2_w1[1], c[0], c[1], c[2]));
+                        vertices.push(Vertex::new(tip_inner[0], tip_inner[1], c[0], c[1], c[2]));
+                        vertices.push(Vertex::new(a2_w2[0], a2_w2[1], c[0], c[1], c[2]));
+                    }
+
+                    let _ = (text_override, text_pos);
+                }
                 EntityKind::Text { .. } => {
                     // Text entities are rendered by the egui overlay (painter.text),
                     // not by the wgpu vertex buffer.  Nothing to emit here.

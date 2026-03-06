@@ -92,6 +92,37 @@ pub enum EntityKind {
         arrow_half_width: f64,
     },
 
+    /// Angular dimension between two rays from a common vertex.
+    /// The arc spans CCW from angle(line1_pt) to angle(line2_pt) relative to the vertex.
+    DimAngular {
+        vertex:   Vec3,                 // angle apex
+        line1_pt: Vec3,                 // point on first ray from vertex
+        line2_pt: Vec3,                 // point on second ray from vertex
+        radius:   f64,                  // dimension arc radius (set during Placing)
+        text_override: Option<String>,
+        text_pos: Vec3,                 // world-space centre of dimension text
+        #[serde(default = "default_dim_arrow_length")]
+        arrow_length: f64,
+        #[serde(default = "default_dim_arrow_half_width")]
+        arrow_half_width: f64,
+    },
+
+    /// Radius or diameter dimension on a circle or arc.
+    /// `is_diameter = false` → "R…" label with one arrowhead;
+    /// `is_diameter = true`  → "Ø…" label with chord line + two arrowheads.
+    DimRadial {
+        center: Vec3,                   // circle/arc centre
+        radius: f64,                    // actual radius
+        leader_pt: Vec3,                // user's click point (leader endpoint + text anchor)
+        is_diameter: bool,
+        text_override: Option<String>,
+        text_pos: Vec3,
+        #[serde(default = "default_dim_arrow_length")]
+        arrow_length: f64,
+        #[serde(default = "default_dim_arrow_half_width")]
+        arrow_half_width: f64,
+    },
+
     /// Free-standing text label
     Text {
         position: Vec3,   // insertion point (baseline-left), z=0
@@ -119,6 +150,12 @@ impl EntityKind {
                 start.z.abs() < f64::EPSILON
                     && end.z.abs() < f64::EPSILON
                     && text_pos.z.abs() < f64::EPSILON
+            }
+            EntityKind::DimAngular { vertex, text_pos, .. } => {
+                vertex.z.abs() < f64::EPSILON && text_pos.z.abs() < f64::EPSILON
+            }
+            EntityKind::DimRadial { center, text_pos, .. } => {
+                center.z.abs() < f64::EPSILON && text_pos.z.abs() < f64::EPSILON
             }
             EntityKind::Text { position, .. } => position.z.abs() < f64::EPSILON,
         }

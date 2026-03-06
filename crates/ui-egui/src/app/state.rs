@@ -67,6 +67,108 @@ pub enum RotatePhase {
     Rotation,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum ScalePhase {
+    Idle,
+    SelectingEntities,
+    BasePoint,
+    ReferencePoint,
+    Factor,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum MirrorPhase {
+    Idle,
+    SelectingEntities,
+    FirstAxisPoint,
+    SecondAxisPoint,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FilletPick {
+    pub entity: Guid,
+    pub click: Vec2,
+    pub seg_start: Vec2,
+    pub seg_end: Vec2,
+    /// For polyline picks, indices of segment endpoints in the polyline vertex list.
+    /// `None` means the picked entity is a Line.
+    pub seg_start_index: Option<usize>,
+    pub seg_end_index: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FilletPhase {
+    Idle,
+    EnteringRadius,
+    FirstEntity,
+    SecondEntity { first: FilletPick },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChamferPhase {
+    Idle,
+    EnteringDistance,
+    FirstEntity,
+    SecondEntity { first: FilletPick },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PolygonPhase {
+    Idle,
+    EnteringSides,
+    Center,
+    Radius { center: Vec2 },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum EllipsePhase {
+    Idle,
+    Center,
+    RadiusX { center: Vec2 },
+    RadiusY { center: Vec2, rx: f64 },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RectanglePhase {
+    Idle,
+    FirstCorner,
+    SecondCorner { first: Vec2 },
+    EnteringDimensions { first: Vec2 },
+    Direction { first: Vec2, width: f64, height: f64 },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ArrayMode {
+    Rectangular,
+    Polar,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ArrayPhase {
+    Idle,
+    SelectingEntities,
+    ChoosingType,
+    RectEnteringCount,
+    RectEnteringSpacing,
+    RectBasePoint,
+    RectGripIdle,
+    RectXSpacingGrip,
+    RectXCountGrip,
+    RectYSpacingGrip,
+    RectYCountGrip,
+    PolarEnteringCount,
+    PolarEnteringAngle,
+    PolarCenter,
+    PolarBasePoint,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PeditPhase {
+    Idle,
+    SelectingPolyline,
+    Joining { base: Guid },
+}
+
 /// FROM tracking: lets the user pick a base snap point then type an offset from it.
 /// Triggered by typing "from" or "fr" while any point-pick is expected.
 #[derive(Debug, Clone, PartialEq)]
@@ -181,6 +283,39 @@ pub enum DimLinearPhase {
     FirstPoint,
     SecondPoint { first: Vec2 },
     Placing { first: Vec2, second: Vec2 },
+}
+
+/// DimRadial (radius/diameter) placement workflow phases.
+/// Workflow: click a circle or arc → drag leader out → click to place.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DimRadialPhase {
+    Idle,
+    /// Waiting for the user to click a circle or arc entity.
+    SelectingEntity { is_diameter: bool },
+    /// Entity picked; drag the leader endpoint, click to place.
+    Placing { center: Vec2, radius: f64, is_diameter: bool },
+}
+
+impl Default for DimRadialPhase {
+    fn default() -> Self { DimRadialPhase::Idle }
+}
+
+/// DimAngular placement workflow phases.
+/// Workflow: click first line/segment → click second line/segment →
+///           auto-compute vertex from line intersection → drag arc radius → click to place.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DimAngularPhase {
+    Idle,
+    /// Waiting for the user to click the first line or polyline segment.
+    FirstEntity,
+    /// First segment selected; waiting for the second.
+    SecondEntity {
+        first_click: Vec2,  // world pos where user clicked (ray direction indicator)
+        first_start: Vec2,  // segment start in world space
+        first_end:   Vec2,  // segment end in world space
+    },
+    /// Both segments selected; vertex computed. Drag to set arc radius, click to place.
+    Placing { vertex: Vec2, line1_pt: Vec2, line2_pt: Vec2 },
 }
 
 /// Result of a read-only trim computation; mutations are applied by the caller.

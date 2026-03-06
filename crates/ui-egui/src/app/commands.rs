@@ -1,6 +1,7 @@
 use super::state::{
-    ActiveTool, CopyPhase, DimLinearPhase, DimPhase, EditDimPhase, EditTextPhase, ExtendPhase,
-    FromPhase, MovePhase, OffsetPhase, RotatePhase, TextPhase, TrimPhase,
+    ActiveTool, CopyPhase, DimAngularPhase, DimLinearPhase, DimPhase, DimRadialPhase, EditDimPhase, EditTextPhase,
+    ArrayMode, ArrayPhase, ChamferPhase, EllipsePhase, ExtendPhase, FilletPhase, FromPhase, MirrorPhase, MovePhase,
+    OffsetPhase, PeditPhase, PolygonPhase, RectanglePhase, RotatePhase, ScalePhase, TextPhase, TrimPhase,
 };
 use super::{create_arc_from_three_points, CadKitApp};
 use cadkit_2d_core::{create_circle, create_line};
@@ -15,10 +16,69 @@ impl CadKitApp {
         }
         let keeps_dim_context = matches!(
             cmd.as_str(),
-            "dal" | "dimaligned" | "dim" | "dli" | "dimlinear" | "from" | "fr"
+            "dal" | "dimaligned" | "dim"
+                | "dli" | "dimlinear"
+                | "dang" | "dimangular"
+                | "dra" | "dimradius"
+                | "ddi" | "dimdiameter"
+                | "from" | "fr"
         ) || self.from_phase != FromPhase::Idle;
         if !keeps_dim_context {
             self.exit_dim();
+        }
+        let keeps_scale_context =
+            matches!(cmd.as_str(), "sc" | "scale" | "from" | "fr")
+                || self.scale_phase != ScalePhase::Idle;
+        if !keeps_scale_context {
+            self.exit_scale();
+        }
+        let keeps_mirror_context =
+            matches!(cmd.as_str(), "mi" | "mirror" | "from" | "fr")
+                || self.mirror_phase != MirrorPhase::Idle;
+        if !keeps_mirror_context {
+            self.exit_mirror();
+        }
+        let keeps_fillet_context =
+            matches!(cmd.as_str(), "fi" | "fillet" | "from" | "fr")
+                || self.fillet_phase != FilletPhase::Idle;
+        if !keeps_fillet_context {
+            self.exit_fillet();
+        }
+        let keeps_chamfer_context =
+            matches!(cmd.as_str(), "cha" | "chamfer" | "from" | "fr")
+                || self.chamfer_phase != ChamferPhase::Idle;
+        if !keeps_chamfer_context {
+            self.exit_chamfer();
+        }
+        let keeps_polygon_context =
+            matches!(cmd.as_str(), "pol" | "polygon" | "from" | "fr")
+                || self.polygon_phase != PolygonPhase::Idle;
+        if !keeps_polygon_context {
+            self.exit_polygon();
+        }
+        let keeps_ellipse_context =
+            matches!(cmd.as_str(), "el" | "ellipse" | "elipse" | "from" | "fr")
+                || self.ellipse_phase != EllipsePhase::Idle;
+        if !keeps_ellipse_context {
+            self.exit_ellipse();
+        }
+        let keeps_rectangle_context =
+            matches!(cmd.as_str(), "rec" | "rect" | "rectangle" | "from" | "fr")
+                || self.rectangle_phase != RectanglePhase::Idle;
+        if !keeps_rectangle_context {
+            self.exit_rectangle();
+        }
+        let keeps_array_context =
+            matches!(cmd.as_str(), "ar" | "array" | "from" | "fr")
+                || self.array_phase != ArrayPhase::Idle;
+        if !keeps_array_context {
+            self.exit_array();
+        }
+        let keeps_pedit_context =
+            matches!(cmd.as_str(), "pe" | "pedit" | "from" | "fr")
+                || self.pedit_phase != PeditPhase::Idle;
+        if !keeps_pedit_context {
+            self.exit_pedit();
         }
 
         match cmd.as_str() {
@@ -67,6 +127,91 @@ impl CadKitApp {
                 log::info!("Command: ARC");
                 true
             }
+            "el" | "ellipse" | "elipse" => {
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.exit_scale();
+                self.exit_mirror();
+                self.exit_fillet();
+                self.exit_chamfer();
+                self.exit_polygon();
+                self.exit_pedit();
+                self.ellipse_phase = EllipsePhase::Center;
+                self.command_log
+                    .push("ELLIPSE: Specify center point".to_string());
+                log::info!("Command: ELLIPSE");
+                true
+            }
+            "pol" | "polygon" => {
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.exit_scale();
+                self.exit_mirror();
+                self.exit_fillet();
+                self.exit_chamfer();
+                self.exit_pedit();
+                self.polygon_phase = PolygonPhase::EnteringSides;
+                self.command_log
+                    .push(format!("POLYGON: Enter number of sides <{}>", self.polygon_sides));
+                log::info!("Command: POLYGON");
+                true
+            }
+            "rec" | "rect" | "rectangle" => {
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.exit_scale();
+                self.exit_mirror();
+                self.exit_fillet();
+                self.exit_chamfer();
+                self.exit_polygon();
+                self.exit_ellipse();
+                self.exit_pedit();
+                self.rectangle_phase = RectanglePhase::FirstCorner;
+                self.command_log
+                    .push("RECTANGLE: Specify first corner".to_string());
+                log::info!("Command: RECTANGLE");
+                true
+            }
+            "ar" | "array" => {
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.exit_scale();
+                self.exit_mirror();
+                self.exit_fillet();
+                self.exit_chamfer();
+                self.exit_polygon();
+                self.exit_ellipse();
+                self.exit_rectangle();
+                self.exit_pedit();
+                self.array_mode = ArrayMode::Rectangular;
+                self.array_entities.clear();
+                self.array_edit_assoc = None;
+                self.array_phase = ArrayPhase::SelectingEntities;
+                self.command_log
+                    .push("ARRAY: Select entities, press Enter to continue".to_string());
+                log::info!("Command: ARRAY");
+                true
+            }
             "tr" | "trim" => {
                 self.cancel_active_tool();
                 self.trim_phase = TrimPhase::SelectingEdges;
@@ -108,6 +253,8 @@ impl CadKitApp {
                 self.exit_move();
                 self.exit_extend();
                 self.exit_copy();
+                self.exit_scale();
+                self.exit_mirror();
                 self.rotate_phase = RotatePhase::SelectingEntities;
                 self.rotate_base_point = None;
                 self.rotate_entities.clear();
@@ -116,12 +263,116 @@ impl CadKitApp {
                 log::info!("Command: ROTATE");
                 true
             }
+            "sc" | "scale" => {
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.exit_mirror();
+                self.scale_phase = ScalePhase::SelectingEntities;
+                self.scale_base_point = None;
+                self.scale_ref_point = None;
+                self.scale_entities.clear();
+                self.command_log
+                    .push("SCALE: Select entities, press Enter to continue".to_string());
+                log::info!("Command: SCALE");
+                true
+            }
+            "mi" | "mirror" => {
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.exit_scale();
+                self.mirror_phase = MirrorPhase::SelectingEntities;
+                self.mirror_axis_p1 = None;
+                self.mirror_entities.clear();
+                self.command_log
+                    .push("MIRROR: Select entities, press Enter to continue".to_string());
+                log::info!("Command: MIRROR");
+                true
+            }
+            "fi" | "fillet" => {
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.exit_scale();
+                self.exit_mirror();
+                self.fillet_phase = FilletPhase::EnteringRadius;
+                self.command_log
+                    .push(format!("FILLET: Enter radius <{:.4}>", self.fillet_radius));
+                log::info!("Command: FILLET");
+                true
+            }
+            "cha" | "chamfer" => {
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.exit_scale();
+                self.exit_mirror();
+                self.exit_fillet();
+                self.chamfer_phase = ChamferPhase::EnteringDistance;
+                self.command_log
+                    .push(format!(
+                        "CHAMFER: Enter distances <{:.4},{:.4}>",
+                        self.chamfer_distance1, self.chamfer_distance2
+                    ));
+                log::info!("Command: CHAMFER");
+                true
+            }
+            "pe" | "pedit" => {
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.exit_scale();
+                self.exit_mirror();
+                self.exit_fillet();
+                self.pedit_phase = PeditPhase::SelectingPolyline;
+                self.command_log
+                    .push("PEDIT: Select an open polyline".to_string());
+                log::info!("Command: PEDIT");
+                true
+            }
+            "j" | "join" => {
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.exit_scale();
+                self.exit_mirror();
+                let _ = self.join_selected_into_polyline();
+                log::info!("Command: JOIN");
+                true
+            }
             "co" | "copy" => {
                 self.cancel_active_tool();
                 self.exit_trim();
                 self.exit_offset();
                 self.exit_move();
                 self.exit_extend();
+                self.exit_scale();
+                self.exit_mirror();
                 self.copy_phase = CopyPhase::SelectingEntities;
                 self.copy_base_point = None;
                 self.copy_entities.clear();
@@ -270,6 +521,51 @@ impl CadKitApp {
                 self.command_log
                     .push("DIMLINEAR: Specify first extension line origin".to_string());
                 log::info!("Command: DIMLINEAR");
+                true
+            }
+            "dang" | "dimangular" => {
+                self.exit_dim();
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.dim_angular_phase = DimAngularPhase::FirstEntity;
+                self.command_log
+                    .push("DIMANGULAR: Click the first line or polyline segment".to_string());
+                log::info!("Command: DIMANGULAR");
+                true
+            }
+            "dra" | "dimradius" => {
+                self.exit_dim();
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.dim_radial_phase = DimRadialPhase::SelectingEntity { is_diameter: false };
+                self.command_log
+                    .push("DIMRADIUS: Click a circle or arc".to_string());
+                log::info!("Command: DIMRADIUS");
+                true
+            }
+            "ddi" | "dimdiameter" => {
+                self.exit_dim();
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.dim_radial_phase = DimRadialPhase::SelectingEntity { is_diameter: true };
+                self.command_log
+                    .push("DIMDIAMETER: Click a circle or arc".to_string());
+                log::info!("Command: DIMDIAMETER");
                 true
             }
             "dimstyle" | "dst" => {

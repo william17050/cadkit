@@ -52,8 +52,8 @@
 - [x] Selected-dimension grip editing (start/end/offset/text)
 - [x] Arrow/text overflow improvements (outside arrows when short span, text moved outside with leader)
 - [x] FROM-in-dimension second point (`FR` distance entry) reliability polish
-- [ ] Angular dimension (`DIMANGULAR`)
-- [ ] Radial / diameter dimension (`DIMRADIUS` / `DIMDIAMETER`)
+- [x] Angular dimension (`DIMANGULAR`)
+- [x] Radial / diameter dimension (`DIMRADIUS` / `DIMDIAMETER`)
 - [ ] DXF DIMENSION entity export (currently skipped with warning)
 - [ ] DXF DIMENSION entity import
 
@@ -66,11 +66,26 @@
 - [ ] Font name stored in drawing (currently height only)
 
 ### Milestone 2.3: Advanced Editing
-- [ ] Scale command
-- [ ] Mirror command
-- [ ] Fillet command (radius + two lines/arcs)
-- [ ] Chamfer command (distance × distance)
-- [ ] Array command (rectangular / polar)
+- [x] Scale command
+- [x] Mirror command
+- [x] Fillet command (radius + two picks: line/polyline segment support)
+- [x] Fillet rebuild behavior for polyline workflows
+  - [x] Same open polyline corner fillet rebuilds one continuous polyline
+  - [x] Same closed polyline corner fillet rebuilds closed polyline with sampled arc
+  - [x] Mixed polyline + line endpoint fillet can rebuild joined polyline result
+- [x] PEDIT command (`PE`/`PEDIT`) — select open polyline, then join touching line/arc at ends
+- [x] JOIN alias (`J`/`JOIN`) for selected touching open polyline + segments
+- [x] Chamfer command (single or dual distance, including 0 for sharp corner)
+- [x] Polygon command (`POL`/`POLYGON`) with side count + center/radius rubber-band (ortho-aware)
+- [x] Ellipse command (`EL`/`ELLIPSE`) with center/radius/height rubber-band (ortho-aware)
+- [x] Rectangle command (`REC`/`RECTANGLE`) with diagonal or dimensions (`w,h`) workflows + rubber-band
+- [x] Array command (rectangular / polar)
+  - [x] Rectangular grip workflow with live ghost preview and on-screen grip handles (`dx`, `dy`, `cols`, `rows`)
+  - [x] Typed value entry while grip is active (exact spacing/count), with grip auto-release
+  - [x] Count grip supports minimum of 1 row/column
+  - [x] Associative rectangular arrays (re-editable later by selecting array members and running `ARRAY`)
+  - [x] Group-style array selection behavior (member pick selects full array group)
+  - [x] `E` alias in array grip edit mode explodes associative linkage and exits
 
 ### Milestone 2.4: Layers & Organization
 - [x] Create / delete / rename layers
