@@ -2,6 +2,8 @@ use super::{AppPrefs, CadKitApp};
 use cadkit_2d_core::Drawing;
 use cadkit_2d_core::DxfImportResult;
 use cadkit_2d_core::EntityKind;
+#[cfg(feature = "python-scripting")]
+use cadkit_scripting_python::PythonEngine;
 use eframe::egui;
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -214,6 +216,64 @@ impl CadKitApp {
             match self.drawing.save_to_dxf(&path_str) {
                 Ok(n) => self.command_log.push(format!("DXF: Exported {} entities to {}", n, path_str)),
                 Err(e) => self.command_log.push(format!("DXF: Export failed - {}", e)),
+            }
+        }
+    }
+
+    /// Run a Python script file against the current drawing.
+    pub(crate) fn run_python_script_file(&mut self) {
+        let path = rfd::FileDialog::new()
+            .set_title("Run Python Script")
+            .add_filter("Python Script", &["py"])
+            .pick_file();
+        let Some(path) = path else { return };
+        let path_str = path.to_string_lossy().to_string();
+        let script = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                self.command_log
+                    .push(format!("PYRUN: Read failed - {} ({})", e, path_str));
+                return;
+            }
+        };
+        self.run_python_script_source(&script, &path_str);
+    }
+
+    /// Run Python source code against the current drawing.
+    pub(crate) fn run_python_script_source(&mut self, script: &str, label: &str) {
+        #[cfg(not(feature = "python-scripting"))]
+        let _ = (script, label);
+
+        #[cfg(not(feature = "python-scripting"))]
+        {
+            self.command_log.push(
+                "PYRUN: Python scripting is not enabled in this build (rebuild with --features python-scripting)"
+                    .to_string(),
+            );
+            return;
+        }
+
+        #[cfg(feature = "python-scripting")]
+        {
+            self.push_undo();
+            let before = self.drawing.entity_count();
+            match PythonEngine::run_script_in_place(&mut self.drawing, script) {
+                Ok(()) => {
+                    self.selected_entities.clear();
+                    self.selection = None;
+                    let after = self.drawing.entity_count();
+                    self.command_log.push(format!(
+                        "PYRUN: Executed {} (entities: {} -> {})",
+                        label, before, after
+                    ));
+                }
+                Err(e) => {
+                    let _ = self.undo_stack.pop();
+                    self.command_log.push(format!(
+                        "PYRUN: Script failed - {} ({})",
+                        e, label
+                    ));
+                }
             }
         }
     }

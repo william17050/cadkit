@@ -98,6 +98,18 @@ impl CadKitApp {
                         ui.close_menu();
                         self.import_dxf(ctx);
                     }
+                    if ui.button("Run Python Script...").clicked() {
+                        ui.close_menu();
+                        self.run_python_script_file();
+                    }
+                    if ui.button("Python Console...").clicked() {
+                        ui.close_menu();
+                        self.python_console_open = true;
+                    }
+                    if ui.button("AI Command...").clicked() {
+                        ui.close_menu();
+                        self.ai_command_open = true;
+                    }
                     ui.separator();
                     if ui.button("Exit").clicked() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1116,14 +1128,15 @@ impl CadKitApp {
                                 .id(egui::Id::new("cmd_input")),
                         );
 
-                        // Keep focus glued to the command line, unless the user
-                        // is editing a layer name, has a colour picker open, or the
-                        // Edit Text dialog is showing.
+                        // Keep focus glued to the command line unless the user is
+                        // interacting with another text-heavy dialog/window.
                         if self.layer_editing_id.is_none()
                             && self.layer_color_picking.is_none()
                             && self.text_edit_dialog.is_none()
                             && self.dim_edit_dialog.is_none()
                             && self.dim_style_dialog.is_none()
+                            && !self.python_console_open
+                            && !self.ai_command_open
                         {
                             ui.memory_mut(|m| m.request_focus(edit.id));
                         }

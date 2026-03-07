@@ -92,6 +92,19 @@ cargo build --release
 
 # Run
 cargo run -p cadkit
+
+# Run (Python scripting enabled)
+./run.sh --py
+
+# Sample script to test PYRUN
+# (Inside CadKit command line: PYRUN -> pick scripts/test_pyrun.py)
+# In-app Python console: type PYCON
+# Python console autocomplete: Ctrl+Space (or Complete button)
+# Natural-language to Python preview: type AICMD
+# MCP status check: type MCP
+# AICMD backend can use LM Studio local API (default URL: http://127.0.0.1:1234/v1/chat/completions)
+# AICMD profile: Strict CAD Code (recommended) or General
+# Insert API reference/examples into AICMD prompt: AIHELP
 ```
 
 ## Testing

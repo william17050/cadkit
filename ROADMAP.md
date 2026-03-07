@@ -125,25 +125,25 @@
 ## Phase 4: Python & AI (Q4 2026)
 
 ### Milestone 4.1: Python Bridge
-- [ ] PyO3 integration working
-- [ ] `cad.line()`, `cad.circle()`, `cad.arc()` API
-- [ ] `cad.get_entity()` / `cad.select()` queries
-- [ ] `cad.dim_linear()` API
-- [ ] Python console in UI
-- [ ] Run .py scripts from file
+- [x] PyO3 integration working (new `cadkit-scripting-python` crate in workspace)
+- [x] `cad.line()`, `cad.circle()`, `cad.arc()` API (embedded `cad` object in Python engine)
+- [x] `cad.get_entity()` / `cad.select()` queries
+- [x] `cad.dim_linear()` API
+- [x] Python console in UI (`PYCON` alias + File menu window)
+- [x] Run .py scripts from file (`PYRUN`/`PY` alias + File menu picker; `./run.sh --py` launcher)
 
 ### Milestone 4.2: AI Command Line
-- [ ] Detect Claude Desktop via MCP
-- [ ] Parse natural language commands
-- [ ] Generate Python code from intent
-- [ ] Execute generated code with preview
-- [ ] Fallback to local small model (Phi-3)
+- [x] Detect Claude Desktop via MCP (local config/process detection + status in `AICMD`)
+- [x] Parse natural language commands (initial local parser: line/circle/arc/dimlinear)
+- [x] Generate Python code from intent (preview in `AICMD` window)
+- [x] Execute generated code with preview (explicit "Execute Preview" action)
+- [x] Fallback to local model backend (LM Studio OpenAI-compatible endpoint, with local parser fallback)
 
 ### Milestone 4.3: AI Code Completion
 - [ ] Phi-3 model integration
-- [ ] Autocomplete in Python console
-- [ ] API documentation lookup
-- [ ] Example code suggestions
+- [x] Autocomplete in Python console (`Ctrl+Space` + `Complete` + API hint inserts)
+- [x] API documentation lookup (in-app `AIHELP` CadKit Python cheat-sheet for `AICMD`)
+- [x] Example code suggestions (API examples injected via `AIHELP` into generation context)
 
 ---
 

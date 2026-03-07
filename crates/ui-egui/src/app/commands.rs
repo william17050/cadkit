@@ -3,9 +3,11 @@ use super::state::{
     ArrayMode, ArrayPhase, ChamferPhase, EllipsePhase, ExtendPhase, FilletPhase, FromPhase, MirrorPhase, MovePhase,
     OffsetPhase, PeditPhase, PolygonPhase, RectanglePhase, RotatePhase, ScalePhase, TextPhase, TrimPhase,
 };
-use super::{create_arc_from_three_points, CadKitApp};
+use super::{create_arc_from_three_points, AiBackendMode, AiModelProfile, CadKitApp};
 use cadkit_2d_core::{create_circle, create_line};
 use cadkit_types::Vec2;
+use serde_json::json;
+use std::path::PathBuf;
 
 impl CadKitApp {
     /// Execute a command-line alias similar to classic CAD workflows.
@@ -526,6 +528,29 @@ impl CadKitApp {
                 self.pending_dxf_import = true;
                 true
             }
+            "pyrun" | "py" => {
+                self.run_python_script_file();
+                true
+            }
+            "pycon" | "python" | "pythonconsole" => {
+                self.python_console_open = true;
+                true
+            }
+            "aicmd" | "ai" => {
+                self.ai_command_open = true;
+                true
+            }
+            "aihelp" => {
+                self.insert_ai_help_into_prompt();
+                self.ai_command_open = true;
+                self.command_log
+                    .push("AIHELP: Inserted CadKit API cheat-sheet into AICMD prompt".to_string());
+                true
+            }
+            "mcp" | "mcpstatus" => {
+                self.refresh_mcp_detection();
+                true
+            }
             "u" | "undo" => {
                 self.undo();
                 true
@@ -898,6 +923,53 @@ impl CadKitApp {
 }
 
 impl CadKitApp {
+    pub(crate) fn python_console_completions() -> &'static [&'static str] {
+        &[
+            "cad.line(x1, y1, x2, y2)",
+            "cad.circle(cx, cy, radius)",
+            "cad.arc(cx, cy, radius, start_deg, end_deg)",
+            "cad.dim_linear(x1, y1, x2, y2, offset, True, None)",
+            "cad.set_layer(layer_id)",
+            "cad.select()",
+            "cad.get_entity(entity_id)",
+            "cad.entity_count()",
+        ]
+    }
+
+    pub(crate) fn apply_python_console_completion(&mut self) -> bool {
+        let text = self.python_console_input.as_str();
+        let token_start = text
+            .char_indices()
+            .rev()
+            .find(|(_, ch)| !(ch.is_ascii_alphanumeric() || *ch == '_' || *ch == '.'))
+            .map(|(i, ch)| i + ch.len_utf8())
+            .unwrap_or(0);
+        let token = &text[token_start..];
+        let token_lower = token.to_ascii_lowercase();
+        let mut chosen: Option<&str> = None;
+        for cand in Self::python_console_completions() {
+            let c = cand.to_ascii_lowercase();
+            if c.starts_with(&token_lower) {
+                chosen = Some(cand);
+                break;
+            }
+            if let Some(stripped) = c.strip_prefix("cad.") {
+                if stripped.starts_with(&token_lower) {
+                    chosen = Some(cand);
+                    break;
+                }
+            }
+        }
+        let Some(cand) = chosen else { return false };
+        self.python_console_input.truncate(token_start);
+        self.python_console_input.push_str(cand);
+        if !self.python_console_input.ends_with('\n') {
+            self.python_console_input.push('\n');
+        }
+        self.command_log.push(format!("PYCON: Completed '{}'", cand));
+        true
+    }
+
     fn parse_xy(text: &str) -> Option<Vec2> {
         let (x, y) = text.split_once(',')?;
         let x = x.trim().parse::<f64>().ok()?;
@@ -928,5 +1000,372 @@ impl CadKitApp {
         }
 
         Self::parse_xy(t)
+    }
+
+    fn extract_numbers(text: &str) -> Vec<f64> {
+        let mut cleaned = String::with_capacity(text.len());
+        for ch in text.chars() {
+            if ch.is_ascii_digit() || matches!(ch, '.' | '-' | '+') {
+                cleaned.push(ch);
+            } else {
+                cleaned.push(' ');
+            }
+        }
+        cleaned
+            .split_whitespace()
+            .filter_map(|t| t.parse::<f64>().ok())
+            .collect()
+    }
+
+    fn try_generate_directional_line(prompt: &str) -> Option<String> {
+        let t = prompt.trim().to_ascii_lowercase();
+        if !t.contains("line") || !t.contains("from") {
+            return None;
+        }
+        let has_dir = t.contains("left") || t.contains("right") || t.contains("up") || t.contains("down");
+        if !has_dir {
+            return None;
+        }
+        let nums = Self::extract_numbers(&t);
+        if nums.len() < 3 {
+            return None;
+        }
+        let x = nums[0];
+        let y = nums[1];
+        let dist = nums[2].abs();
+        let (x2, y2) = if t.contains("left") {
+            (x - dist, y)
+        } else if t.contains("right") {
+            (x + dist, y)
+        } else if t.contains("down") {
+            (x, y - dist)
+        } else {
+            // "up"
+            (x, y + dist)
+        };
+        Some(format!("cad.line({}, {}, {}, {})\n", x, y, x2, y2))
+    }
+
+    fn try_generate_circle(prompt: &str) -> Option<String> {
+        let t = prompt.trim().to_ascii_lowercase();
+        if !t.contains("circle") {
+            return None;
+        }
+        let nums = Self::extract_numbers(&t);
+        if nums.len() < 3 {
+            return None;
+        }
+        let cx = nums[0];
+        let cy = nums[1];
+        let mut radius = nums[2].abs();
+        if t.contains("diameter") || t.contains("dia") || t.contains('⌀') {
+            radius *= 0.5;
+        }
+        if radius <= f64::EPSILON {
+            return None;
+        }
+        Some(format!("cad.circle({}, {}, {})\n", cx, cy, radius))
+    }
+
+    pub(crate) fn generate_python_from_nl_prompt(&self, prompt: &str) -> Result<String, String> {
+        let t = prompt.trim().to_ascii_lowercase();
+        if t.is_empty() {
+            return Err("Enter a prompt first".to_string());
+        }
+        if let Some(code) = Self::try_generate_directional_line(&t) {
+            return Ok(code);
+        }
+        if let Some(code) = Self::try_generate_circle(&t) {
+            return Ok(code);
+        }
+        let nums = Self::extract_numbers(&t);
+
+        if t.starts_with("line") {
+            if nums.len() < 4 {
+                return Err("LINE needs 4 numbers: x1 y1 x2 y2".to_string());
+            }
+            return Ok(format!(
+                "cad.line({}, {}, {}, {})\n",
+                nums[0], nums[1], nums[2], nums[3]
+            ));
+        }
+
+        if t.starts_with("circle") {
+            if nums.len() < 3 {
+                return Err("CIRCLE needs 3 numbers: cx cy radius".to_string());
+            }
+            return Ok(format!(
+                "cad.circle({}, {}, {})\n",
+                nums[0], nums[1], nums[2].abs()
+            ));
+        }
+
+        if t.starts_with("arc") {
+            if nums.len() < 5 {
+                return Err("ARC needs 5 numbers: cx cy radius start_deg end_deg".to_string());
+            }
+            return Ok(format!(
+                "cad.arc({}, {}, {}, {}, {})\n",
+                nums[0], nums[1], nums[2].abs(), nums[3], nums[4]
+            ));
+        }
+
+        if t.starts_with("dim") || t.contains("dimlinear") || t.contains("dimension") {
+            if nums.len() < 5 {
+                return Err("DIMLINEAR needs 5 numbers: x1 y1 x2 y2 offset".to_string());
+            }
+            let horizontal = !t.contains("vertical");
+            return Ok(format!(
+                "cad.dim_linear({}, {}, {}, {}, {}, {}, None)\n",
+                nums[0], nums[1], nums[2], nums[3], nums[4], horizontal
+            ));
+        }
+
+        Err("Supported intents: line, circle, arc, dimlinear".to_string())
+    }
+
+    fn extract_python_code(text: &str) -> String {
+        let s = text.trim();
+        if let Some(start) = s.find("```") {
+            let rest = &s[start + 3..];
+            let rest = if let Some(r) = rest.strip_prefix("python") { r } else { rest };
+            let rest = rest.strip_prefix('\n').unwrap_or(rest);
+            if let Some(end) = rest.find("```") {
+                return rest[..end].trim().to_string();
+            }
+        }
+        s.to_string()
+    }
+
+    fn generate_python_with_lm_studio(&self, prompt: &str) -> Result<String, String> {
+        let endpoint = self.ai_lmstudio_endpoint.trim();
+        if endpoint.is_empty() {
+            return Err("LM Studio endpoint is empty".to_string());
+        }
+        let model = if self.ai_lmstudio_model.trim().is_empty() {
+            "local-model"
+        } else {
+            self.ai_lmstudio_model.trim()
+        };
+        let system_prompt = match self.ai_model_profile {
+            AiModelProfile::StrictCadCode => {
+                "Convert CAD user intent into Python code using CadKit API only. Output only python code. Use only cad.line, cad.circle, cad.arc, cad.dim_linear. No prose. No markdown. No explanations."
+            }
+            AiModelProfile::General => {
+                "Convert CAD user intent into helpful CadKit Python code. Prefer cad.line, cad.circle, cad.arc, cad.dim_linear. Output python code."
+            }
+        };
+        let payload = json!({
+            "model": model,
+            "temperature": 0.1,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": system_prompt
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ]
+        });
+        let body = ureq::post(endpoint)
+            .set("Content-Type", "application/json")
+            .send_string(&payload.to_string())
+            .map_err(|e| format!("LM Studio request failed: {}", e))?
+            .into_string()
+            .map_err(|e| format!("LM Studio response read failed: {}", e))?;
+        let v: serde_json::Value =
+            serde_json::from_str(&body).map_err(|e| format!("LM Studio JSON parse failed: {}", e))?;
+        let raw = v
+            .get("choices")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("message"))
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_str())
+            .ok_or_else(|| "LM Studio response missing choices[0].message.content".to_string())?;
+        let code = Self::extract_python_code(raw);
+        if code.trim().is_empty() {
+            return Err("LM Studio returned empty code".to_string());
+        }
+        Ok(format!("{}\n", code.trim_end()))
+    }
+
+    pub(crate) fn generate_ai_python_preview(&mut self, prompt: &str) -> Result<String, String> {
+        if let Some(code) = Self::try_generate_directional_line(prompt) {
+            self.command_log
+                .push("AICMD: Used deterministic directional-line parser".to_string());
+            return Ok(code);
+        }
+        if let Some(code) = Self::try_generate_circle(prompt) {
+            self.command_log
+                .push("AICMD: Used deterministic circle parser".to_string());
+            return Ok(code);
+        }
+        match self.ai_backend_mode {
+            AiBackendMode::LocalParser => self.generate_python_from_nl_prompt(prompt),
+            AiBackendMode::LmStudio => self.generate_python_with_lm_studio(prompt),
+            AiBackendMode::Mcp => Err(
+                "MCP generation backend is not wired yet. Use LM Studio or Local Parser.".to_string(),
+            ),
+            AiBackendMode::Auto => {
+                if self.ai_mcp_detected {
+                    self.command_log.push(
+                        "AICMD: MCP detected; using LM Studio/local fallback until MCP generation is wired"
+                            .to_string(),
+                    );
+                }
+                match self.generate_python_with_lm_studio(prompt) {
+                    Ok(code) => Ok(code),
+                    Err(lm_err) => {
+                        self.command_log.push(format!(
+                            "AICMD: LM Studio unavailable ({}), falling back to local parser",
+                            lm_err
+                        ));
+                        self.generate_python_from_nl_prompt(prompt)
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) fn ai_help_snippet() -> &'static str {
+        "CadKit Python API quick reference:\n\
+         - cad.line(x1, y1, x2, y2)\n\
+         - cad.line((x1, y1), (x2, y2))\n\
+         - cad.circle(cx, cy, radius)\n\
+         - cad.circle((cx, cy), radius)\n\
+         - cad.arc(cx, cy, radius, start_deg, end_deg)\n\
+         - cad.arc((cx, cy), radius, start_deg, end_deg)\n\
+         - cad.dim_linear(x1, y1, x2, y2, offset, horizontal=True, text_override=None)\n\
+         - cad.set_layer(layer_id)\n\
+         - cad.select(kind=None, layer=None)\n\
+         - cad.get_entity(entity_id)\n\
+         - cad.entity_count()\n\
+         Rules:\n\
+         - Output only executable Python lines.\n\
+         - Do not use imports, file IO, eval/exec, or unknown cad.* functions.\n\
+         - Prefer one command per line.\n\
+         "
+    }
+
+    pub(crate) fn insert_ai_help_into_prompt(&mut self) {
+        if !self.ai_command_prompt.trim().is_empty() {
+            self.ai_command_prompt.push_str("\n\n");
+        }
+        self.ai_command_prompt.push_str(Self::ai_help_snippet());
+    }
+
+    pub(crate) fn validate_ai_preview_code(&self, src: &str) -> Result<(), String> {
+        let allowed = [
+            "line",
+            "circle",
+            "arc",
+            "dim_linear",
+            "set_layer",
+            "select",
+            "get_entity",
+            "entity_count",
+        ];
+        for (idx, raw) in src.lines().enumerate() {
+            let line_no = idx + 1;
+            let t = raw.trim();
+            if t.is_empty() || t.starts_with('#') {
+                continue;
+            }
+            if t.starts_with("import ")
+                || t.starts_with("from ")
+                || t.contains("__")
+                || t.contains(';')
+                || t.contains("exec(")
+                || t.contains("eval(")
+                || t.contains("open(")
+            {
+                return Err(format!("Line {} contains disallowed Python construct", line_no));
+            }
+            if !t.starts_with("cad.") {
+                return Err(format!(
+                    "Line {} must start with cad.<command>(...)",
+                    line_no
+                ));
+            }
+            let Some(rest) = t.strip_prefix("cad.") else {
+                return Err(format!("Line {} invalid cad call", line_no));
+            };
+            let Some((name, _)) = rest.split_once('(') else {
+                return Err(format!("Line {} invalid function call syntax", line_no));
+            };
+            if !allowed.iter().any(|a| a == &name) {
+                return Err(format!(
+                    "Line {} uses unsupported cad command '{}'",
+                    line_no, name
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn refresh_mcp_detection(&mut self) {
+        let mut candidate_paths: Vec<PathBuf> = Vec::new();
+        if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
+            candidate_paths.push(PathBuf::from(xdg).join("Claude").join("claude_desktop_config.json"));
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            let home = PathBuf::from(home);
+            candidate_paths.push(home.join(".config").join("Claude").join("claude_desktop_config.json"));
+            candidate_paths.push(home.join(".claude").join("claude_desktop_config.json"));
+        }
+        // Preserve insertion order while removing duplicates.
+        let mut unique: Vec<PathBuf> = Vec::new();
+        for p in candidate_paths {
+            if !unique.iter().any(|x| x == &p) {
+                unique.push(p);
+            }
+        }
+
+        let mut config_found = None::<PathBuf>;
+        let mut mcp_configured = false;
+        for p in unique {
+            if !p.exists() {
+                continue;
+            }
+            config_found = Some(p.clone());
+            if let Ok(txt) = std::fs::read_to_string(&p) {
+                let lower = txt.to_ascii_lowercase();
+                if lower.contains("mcpservers") || lower.contains("\"mcp\"") {
+                    mcp_configured = true;
+                    break;
+                }
+            }
+        }
+
+        let claude_running = std::process::Command::new("ps")
+            .args(["-A", "-o", "comm="])
+            .output()
+            .ok()
+            .and_then(|out| String::from_utf8(out.stdout).ok())
+            .map(|s| {
+                s.lines()
+                    .any(|line| line.to_ascii_lowercase().contains("claude"))
+            })
+            .unwrap_or(false);
+
+        let status = if mcp_configured && claude_running {
+            "Claude MCP detected (configured + app running)".to_string()
+        } else if mcp_configured {
+            "Claude MCP configured (app not running)".to_string()
+        } else if config_found.is_some() {
+            "Claude config found, MCP not configured".to_string()
+        } else {
+            "Claude MCP not detected".to_string()
+        };
+        self.ai_mcp_detected = mcp_configured;
+        self.ai_mcp_status = if let Some(path) = config_found {
+            format!("{} [{}]", status, path.display())
+        } else {
+            status
+        };
+        self.command_log
+            .push(format!("MCP: {}", self.ai_mcp_status));
     }
 }

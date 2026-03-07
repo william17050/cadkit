@@ -151,6 +151,40 @@ impl Default for AppPrefs {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AiBackendMode {
+    Auto,
+    LmStudio,
+    LocalParser,
+    Mcp,
+}
+
+impl AiBackendMode {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto",
+            Self::LmStudio => "LM Studio",
+            Self::LocalParser => "Local Parser",
+            Self::Mcp => "MCP",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AiModelProfile {
+    StrictCadCode,
+    General,
+}
+
+impl AiModelProfile {
+    fn label(self) -> &'static str {
+        match self {
+            Self::StrictCadCode => "Strict CAD Code",
+            Self::General => "General",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct AssocArraySource {
     kind: EntityKind,
@@ -289,6 +323,17 @@ pub struct CadKitApp {
     undo_stack: Vec<Drawing>,
     redo_stack: Vec<Drawing>,
     help_open: bool,
+    python_console_open: bool,
+    python_console_input: String,
+    ai_command_open: bool,
+    ai_command_prompt: String,
+    ai_command_preview: String,
+    ai_mcp_detected: bool,
+    ai_mcp_status: String,
+    ai_backend_mode: AiBackendMode,
+    ai_model_profile: AiModelProfile,
+    ai_lmstudio_endpoint: String,
+    ai_lmstudio_model: String,
     bgcolor_picker_open: bool,
     last_saved_prefs: Option<AppPrefs>,
     autosave_last_at: Instant,
@@ -414,6 +459,17 @@ impl Default for CadKitApp {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             help_open: false,
+            python_console_open: false,
+            python_console_input: "cad.line(0, 0, 24, 0)\n".to_string(),
+            ai_command_open: false,
+            ai_command_prompt: String::new(),
+            ai_command_preview: String::new(),
+            ai_mcp_detected: false,
+            ai_mcp_status: "Not checked".to_string(),
+            ai_backend_mode: AiBackendMode::Auto,
+            ai_model_profile: AiModelProfile::StrictCadCode,
+            ai_lmstudio_endpoint: "http://127.0.0.1:1234/v1/chat/completions".to_string(),
+            ai_lmstudio_model: "local-model".to_string(),
             bgcolor_picker_open: false,
             last_saved_prefs: None,
             autosave_last_at: Instant::now(),
@@ -1316,6 +1372,7 @@ impl CadKitApp {
                 "Recovery: Found an auto-save snapshot from a previous session".to_string(),
             );
         }
+        app.refresh_mcp_detection();
 
         app
     }
@@ -6846,6 +6903,10 @@ impl eframe::App for CadKitApp {
                                 ("SVGOUT", "",  "Export visible geometry to SVG paths"),
                                 ("PDFOUT", "",  "Export visible geometry to vector PDF"),
                                 ("DXFIN",  "",  "Import a DXF file"),
+                                ("PYRUN / PY", "", "Run a Python script file on the drawing"),
+                                ("PYCON", "", "Open the in-app Python console"),
+                                ("AICMD / AI", "", "Natural-language command to Python preview"),
+                                ("AIHELP", "", "Insert CadKit Python API cheat-sheet into AICMD prompt"),
                             ] {
                                 ui.label(egui::RichText::new(alias).strong());
                                 ui.label(full);
@@ -6888,6 +6949,208 @@ impl eframe::App for CadKitApp {
                         });
                     });
                 });
+        }
+
+        if self.python_console_open {
+            let mut open = self.python_console_open;
+            let mut run_clicked = false;
+            let mut clear_clicked = false;
+            let mut complete_clicked = false;
+            egui::Window::new("Python Console")
+                .open(&mut open)
+                .resizable(true)
+                .default_width(520.0)
+                .default_height(320.0)
+                .show(ctx, |ui| {
+                    ui.label("Execute Python against the current drawing (cad object is pre-bound).");
+                    let edit = ui.add(
+                        egui::TextEdit::multiline(&mut self.python_console_input)
+                            .desired_rows(14)
+                            .code_editor()
+                            .lock_focus(true),
+                    );
+                    let complete_pressed = edit.has_focus()
+                        && ui.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Space));
+                    if complete_pressed {
+                        complete_clicked = true;
+                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("Run").clicked() {
+                            run_clicked = true;
+                        }
+                        if ui.button("Complete (Ctrl+Space)").clicked() {
+                            complete_clicked = true;
+                        }
+                        if ui.button("Clear").clicked() {
+                            clear_clicked = true;
+                        }
+                    });
+                    ui.separator();
+                    ui.label("API Hints:");
+                    ui.horizontal_wrapped(|ui| {
+                        for s in Self::python_console_completions() {
+                            if ui.small_button(*s).clicked() {
+                                self.python_console_input.push_str(s);
+                                self.python_console_input.push('\n');
+                            }
+                        }
+                    });
+                });
+            self.python_console_open = open;
+            if complete_clicked && !self.apply_python_console_completion() {
+                self.command_log
+                    .push("PYCON: No completion for current token".to_string());
+            }
+            if run_clicked {
+                let source = self.python_console_input.clone();
+                self.run_python_script_source(&source, "<console>");
+            }
+            if clear_clicked {
+                self.python_console_input.clear();
+            }
+        }
+
+        if self.ai_command_open {
+            let mut open = self.ai_command_open;
+            let mut generate_clicked = false;
+            let mut execute_clicked = false;
+            let mut clear_preview_clicked = false;
+            let mut aihelp_clicked = false;
+            let mut refresh_mcp_clicked = false;
+            egui::Window::new("AI Command (Preview)")
+                .open(&mut open)
+                .resizable(true)
+                .default_width(560.0)
+                .default_height(380.0)
+                .show(ctx, |ui| {
+                    ui.label("Describe what you want. CadKit generates Python for review before execution.");
+                    ui.horizontal(|ui| {
+                        ui.label(format!("MCP: {}", self.ai_mcp_status));
+                        if ui.button("Refresh MCP").clicked() {
+                            refresh_mcp_clicked = true;
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Backend:");
+                        egui::ComboBox::from_id_source("ai_backend_mode")
+                            .selected_text(self.ai_backend_mode.label())
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut self.ai_backend_mode, AiBackendMode::Auto, "Auto");
+                                ui.selectable_value(
+                                    &mut self.ai_backend_mode,
+                                    AiBackendMode::LmStudio,
+                                    "LM Studio",
+                                );
+                                ui.selectable_value(
+                                    &mut self.ai_backend_mode,
+                                    AiBackendMode::LocalParser,
+                                    "Local Parser",
+                                );
+                                ui.selectable_value(&mut self.ai_backend_mode, AiBackendMode::Mcp, "MCP");
+                            });
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Profile:");
+                        egui::ComboBox::from_id_source("ai_model_profile")
+                            .selected_text(self.ai_model_profile.label())
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut self.ai_model_profile,
+                                    AiModelProfile::StrictCadCode,
+                                    "Strict CAD Code",
+                                );
+                                ui.selectable_value(
+                                    &mut self.ai_model_profile,
+                                    AiModelProfile::General,
+                                    "General",
+                                );
+                            });
+                    });
+                    if matches!(self.ai_backend_mode, AiBackendMode::Auto | AiBackendMode::LmStudio) {
+                        ui.horizontal(|ui| {
+                            ui.label("LM Studio URL:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.ai_lmstudio_endpoint)
+                                    .desired_width(380.0)
+                                    .hint_text("http://127.0.0.1:1234/v1/chat/completions"),
+                            );
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Model:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.ai_lmstudio_model)
+                                    .desired_width(240.0)
+                                    .hint_text("local-model"),
+                            );
+                        });
+                    }
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.ai_command_prompt)
+                            .desired_rows(3)
+                            .hint_text("Example: line from 0,0 to 36,0"),
+                    );
+                    ui.horizontal(|ui| {
+                        if ui.button("Generate").clicked() {
+                            generate_clicked = true;
+                        }
+                        if ui.button("Execute Preview").clicked() {
+                            execute_clicked = true;
+                        }
+                        if ui.button("Clear Preview").clicked() {
+                            clear_preview_clicked = true;
+                        }
+                        if ui.button("Insert AIHELP").clicked() {
+                            aihelp_clicked = true;
+                        }
+                    });
+                    ui.separator();
+                    ui.label("Generated Python:");
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.ai_command_preview)
+                            .desired_rows(12)
+                            .code_editor()
+                            .lock_focus(true),
+                    );
+                });
+            self.ai_command_open = open;
+            if generate_clicked {
+                let prompt = self.ai_command_prompt.clone();
+                match self.generate_ai_python_preview(&prompt) {
+                    Ok(code) => {
+                        self.ai_command_preview = code;
+                        self.command_log.push("AICMD: Generated Python preview".to_string());
+                    }
+                    Err(msg) => {
+                        self.command_log.push(format!("AICMD: {}", msg));
+                    }
+                }
+            }
+            if execute_clicked {
+                if self.ai_command_preview.trim().is_empty() {
+                    self.command_log
+                        .push("AICMD: Generate preview first".to_string());
+                } else {
+                    let src = self.ai_command_preview.clone();
+                    match self.validate_ai_preview_code(&src) {
+                        Ok(()) => self.run_python_script_source(&src, "<ai-preview>"),
+                        Err(msg) => self.command_log.push(format!(
+                            "AICMD: Preview blocked - {}",
+                            msg
+                        )),
+                    }
+                }
+            }
+            if clear_preview_clicked {
+                self.ai_command_preview.clear();
+            }
+            if aihelp_clicked {
+                self.insert_ai_help_into_prompt();
+                self.command_log
+                    .push("AIHELP: Inserted CadKit API cheat-sheet".to_string());
+            }
+            if refresh_mcp_clicked {
+                self.refresh_mcp_detection();
+            }
         }
 
         if let Some(layer_id) = self.layer_color_picking {

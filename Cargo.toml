@@ -5,11 +5,11 @@ members = [
     "crates/render-wgpu",
     "crates/ui-egui",
     "crates/geometry",
+    "crates/scripting-python",
     # TODO: Add these crates as they're implemented
     # "crates/region-find",
     # "crates/direct-3d",
     # "crates/plugin-host",
-    # "crates/scripting-python",
     # "crates/ai-engine",
     # "crates/ai-python-bridge",
 ]

@@ -8,11 +8,16 @@ license.workspace = true
 name = "cadkit"
 path = "src/main.rs"
 
+[features]
+default = []
+python-scripting = ["dep:cadkit-scripting-python"]
+
 [dependencies]
 cadkit-types = { path = "../types" }
 cadkit-2d-core = { path = "../2d-core" }
 cadkit-render-wgpu = { path = "../render-wgpu" }
 cadkit-geometry = { path = "../geometry" }
+cadkit-scripting-python = { path = "../scripting-python", optional = true }
 
 egui = { workspace = true }
 eframe = { workspace = true, features = ["wgpu"] }
@@ -23,4 +28,5 @@ env_logger = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+ureq = "2"
 rfd = "0.15"
