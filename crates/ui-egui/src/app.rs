@@ -155,6 +155,7 @@ impl Default for AppPrefs {
 pub(crate) enum AiBackendMode {
     Auto,
     LmStudio,
+    Phi3,
     LocalParser,
     Mcp,
 }
@@ -164,6 +165,7 @@ impl AiBackendMode {
         match self {
             Self::Auto => "Auto",
             Self::LmStudio => "LM Studio",
+            Self::Phi3 => "Phi-3",
             Self::LocalParser => "Local Parser",
             Self::Mcp => "MCP",
         }
@@ -334,6 +336,7 @@ pub struct CadKitApp {
     ai_model_profile: AiModelProfile,
     ai_lmstudio_endpoint: String,
     ai_lmstudio_model: String,
+    ai_phi3_model_path: String,
     bgcolor_picker_open: bool,
     last_saved_prefs: Option<AppPrefs>,
     autosave_last_at: Instant,
@@ -470,6 +473,7 @@ impl Default for CadKitApp {
             ai_model_profile: AiModelProfile::StrictCadCode,
             ai_lmstudio_endpoint: "http://127.0.0.1:1234/v1/chat/completions".to_string(),
             ai_lmstudio_model: "local-model".to_string(),
+            ai_phi3_model_path: "~/.cache/cadkit/models/phi3-mini.gguf".to_string(),
             bgcolor_picker_open: false,
             last_saved_prefs: None,
             autosave_last_at: Instant::now(),
@@ -7043,6 +7047,11 @@ impl eframe::App for CadKitApp {
                                 );
                                 ui.selectable_value(
                                     &mut self.ai_backend_mode,
+                                    AiBackendMode::Phi3,
+                                    "Phi-3",
+                                );
+                                ui.selectable_value(
+                                    &mut self.ai_backend_mode,
                                     AiBackendMode::LocalParser,
                                     "Local Parser",
                                 );
@@ -7083,6 +7092,22 @@ impl eframe::App for CadKitApp {
                                     .hint_text("local-model"),
                             );
                         });
+                    }
+                    if matches!(self.ai_backend_mode, AiBackendMode::Phi3) {
+                        ui.horizontal(|ui| {
+                            ui.label("Phi-3 model path:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.ai_phi3_model_path)
+                                    .desired_width(380.0)
+                                    .hint_text("~/.cache/cadkit/models/phi3-mini.gguf"),
+                            );
+                        });
+                        ui.label(
+                            egui::RichText::new(
+                                "Phi-3 backend uses local llama-cli runtime; falls back to parser if runtime/model unavailable.",
+                            )
+                            .small(),
+                        );
                     }
                     ui.add(
                         egui::TextEdit::multiline(&mut self.ai_command_prompt)

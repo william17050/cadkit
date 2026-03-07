@@ -140,7 +140,7 @@
 - [x] Fallback to local model backend (LM Studio OpenAI-compatible endpoint, with local parser fallback)
 
 ### Milestone 4.3: AI Code Completion
-- [ ] Phi-3 model integration
+- [x] Phi-3 model integration (initial local `llama-cli` GGUF runtime path in `AICMD`)
 - [x] Autocomplete in Python console (`Ctrl+Space` + `Complete` + API hint inserts)
 - [x] API documentation lookup (in-app `AIHELP` CadKit Python cheat-sheet for `AICMD`)
 - [x] Example code suggestions (API examples injected via `AIHELP` into generation context)

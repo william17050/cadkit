@@ -1191,6 +1191,69 @@ impl CadKitApp {
         Ok(format!("{}\n", code.trim_end()))
     }
 
+    fn generate_python_with_phi3(&self, _prompt: &str) -> Result<String, String> {
+        let p = self.ai_phi3_model_path.trim();
+        if p.is_empty() {
+            return Err("Phi-3 model path is empty".to_string());
+        }
+        let model_path = Self::expand_tilde_path(p);
+        if !model_path.exists() {
+            return Err(format!("Phi-3 model file not found: {}", model_path.display()));
+        }
+        let system_prompt = match self.ai_model_profile {
+            AiModelProfile::StrictCadCode => {
+                "Convert CAD user intent into Python code using CadKit API only. Output only python code. Use only cad.line, cad.circle, cad.arc, cad.dim_linear. No prose. No markdown. No explanations."
+            }
+            AiModelProfile::General => {
+                "Convert CAD user intent into helpful CadKit Python code. Prefer cad.line, cad.circle, cad.arc, cad.dim_linear. Output python code."
+            }
+        };
+        let full_prompt = format!(
+            "System:\n{}\n\nUser:\n{}\n\nAssistant:\n",
+            system_prompt, _prompt
+        );
+
+        let mut last_err = String::new();
+        for bin in ["llama-cli", "llama"] {
+            match std::process::Command::new(bin)
+                .args([
+                    "-m",
+                    &model_path.to_string_lossy(),
+                    "-p",
+                    &full_prompt,
+                    "-n",
+                    "256",
+                    "--temp",
+                    "0.1",
+                ])
+                .output()
+            {
+                Ok(out) => {
+                    if !out.status.success() {
+                        let stderr = String::from_utf8_lossy(&out.stderr);
+                        last_err = format!("{} exited with error: {}", bin, stderr.trim());
+                        continue;
+                    }
+                    let stdout = String::from_utf8_lossy(&out.stdout);
+                    let code = Self::extract_python_code(&stdout);
+                    if code.trim().is_empty() {
+                        return Err("Phi-3 returned empty code".to_string());
+                    }
+                    return Ok(format!("{}\n", code.trim_end()));
+                }
+                Err(e) => {
+                    last_err = format!("Failed to launch {}: {}", bin, e);
+                }
+            }
+        }
+
+        if last_err.is_empty() {
+            Err("Could not run Phi-3 runtime (llama-cli)".to_string())
+        } else {
+            Err(last_err)
+        }
+    }
+
     pub(crate) fn generate_ai_python_preview(&mut self, prompt: &str) -> Result<String, String> {
         if let Some(code) = Self::try_generate_directional_line(prompt) {
             self.command_log
@@ -1205,6 +1268,16 @@ impl CadKitApp {
         match self.ai_backend_mode {
             AiBackendMode::LocalParser => self.generate_python_from_nl_prompt(prompt),
             AiBackendMode::LmStudio => self.generate_python_with_lm_studio(prompt),
+            AiBackendMode::Phi3 => match self.generate_python_with_phi3(prompt) {
+                Ok(code) => Ok(code),
+                Err(e) => {
+                    self.command_log.push(format!(
+                        "AICMD: {}. Falling back to local parser",
+                        e
+                    ));
+                    self.generate_python_from_nl_prompt(prompt)
+                }
+            },
             AiBackendMode::Mcp => Err(
                 "MCP generation backend is not wired yet. Use LM Studio or Local Parser.".to_string(),
             ),
@@ -1367,5 +1440,14 @@ impl CadKitApp {
         };
         self.command_log
             .push(format!("MCP: {}", self.ai_mcp_status));
+    }
+
+    fn expand_tilde_path(raw: &str) -> PathBuf {
+        if let Some(rest) = raw.strip_prefix("~/") {
+            if let Some(home) = std::env::var_os("HOME") {
+                return PathBuf::from(home).join(rest);
+            }
+        }
+        PathBuf::from(raw)
     }
 }

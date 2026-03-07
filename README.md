@@ -105,6 +105,7 @@ cargo run -p cadkit
 # AICMD backend can use LM Studio local API (default URL: http://127.0.0.1:1234/v1/chat/completions)
 # AICMD profile: Strict CAD Code (recommended) or General
 # Insert API reference/examples into AICMD prompt: AIHELP
+# AICMD Phi-3 backend expects `llama-cli` in PATH + a local GGUF model file path
 ```
 
 ## Testing
