@@ -28,9 +28,11 @@ pub const LAYER_COLORS: &[[u8; 3]] = &[
 fn default_layer_color() -> [u8; 3] {
     LAYER_COLORS[0]
 }
+fn default_layer_frozen() -> bool { false }
 
 fn default_dim_arrow_length() -> f64 { 3.0 }
 fn default_dim_arrow_half_width() -> f64 { 0.75 }
+fn default_text_font_name() -> String { "STANDARD".to_string() }
 
 // =============================================================================
 // Entities
@@ -129,6 +131,8 @@ pub enum EntityKind {
         content:  String,
         height:   f64,    // glyph height in world units
         rotation: f64,    // CCW angle in radians from +X axis
+        #[serde(default = "default_text_font_name")]
+        font_name: String,
     },
 }
 
@@ -194,6 +198,8 @@ pub struct Layer {
     pub name: String,
     pub visible: bool,
     pub locked: bool,
+    #[serde(default = "default_layer_frozen")]
+    pub frozen: bool,
     /// RGB colour used when rendering entities on this layer.
     /// Defaults to white so that old `.cadkit` files without this field load cleanly.
     #[serde(default = "default_layer_color")]
@@ -207,6 +213,7 @@ impl Layer {
             name,
             visible: true,
             locked: false,
+            frozen: false,
             color,
         }
     }
@@ -327,7 +334,7 @@ impl Drawing {
         self.entities.values().filter(|e| {
             self.layers
                 .get(&e.layer)
-                .map(|l| l.visible)
+                .map(|l| l.visible && !l.frozen)
                 .unwrap_or(false)
         })
     }

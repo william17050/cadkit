@@ -45,7 +45,7 @@ Modular Rust workspace with clear separation of concerns:
 - **Editing**: move, copy, rotate, offset, trim, extend — all with ghosted rubber-band previews; cancel via Esc or right-click; undo/redo stack.
 - **Dimensions**: DIMLINEAR command (`dli`) — 3-click placement (first point, second point, line location); live preview with stroke text; readable text regardless of pick direction.
 - **Layers**: create, color, rename, set current, toggle visibility; selection highlights by layer.
-- **IO**: JSON save/load; DXF import/export with per-entity warnings; file dialogs; window title reflects current file.
+- **IO**: JSON save/load; DXF import/export with per-entity warnings; SVG/PDF export (paths-only/vector); auto-save recovery snapshots with startup restore prompt; file dialogs; window title reflects current file.
 - **Rendering/UI**: wgpu viewport, dot grid, selection marquee (window/crossing), command log, left tool palette, top menu bar, right properties/layers panel.
 
 ## Near-Term Roadmap (Q2 2026)

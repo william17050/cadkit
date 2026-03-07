@@ -54,16 +54,16 @@
 - [x] FROM-in-dimension second point (`FR` distance entry) reliability polish
 - [x] Angular dimension (`DIMANGULAR`)
 - [x] Radial / diameter dimension (`DIMRADIUS` / `DIMDIAMETER`)
-- [ ] DXF DIMENSION entity export (currently skipped with warning)
-- [ ] DXF DIMENSION entity import
+- [x] DXF DIMENSION entity export
+- [x] DXF DIMENSION entity import
 
 ### Milestone 2.2: Text Placement
 - [x] `Text` entity kind in 2d-core (content, insertion point, height, rotation)
 - [x] `TEXT` command — pick insertion point, enter height/rotation, type content (`T`)
 - [x] Text rendered via egui overlay (not stroke font)
 - [x] Text selection, move, rotate, properties editing (`ET` to edit content)
-- [ ] DXF TEXT / MTEXT export and import
-- [ ] Font name stored in drawing (currently height only)
+- [x] DXF TEXT / MTEXT export and import
+- [x] Font name stored in drawing (`font_name` persisted on Text entity; DXF style name round-tripped)
 
 ### Milestone 2.3: Advanced Editing
 - [x] Scale command
@@ -93,14 +93,14 @@
 - [x] Move entities between layers (combo box + Assign in Properties panel)
 - [x] Layer visibility toggle (eye icon; filters rendering via `visible_entities()`)
 - [x] Layer locking enforcement for edit commands and property edits
-- [ ] Layer freeze
+- [x] Layer freeze (dedicated freeze toggle; frozen layers are hidden and non-editable)
 
 ### Milestone 2.5: Precision & UI Polish
 - [x] Relative coordinates (@x,y) and polar (@dist<angle)
 - [x] Direct distance entry with live rubber-band
 - [x] Ortho mode (F8) and snap toggle (F3)
 - [x] Status bar — live cursor world coordinates, active layer, snap/ortho state
-- [ ] Perpendicular / parallel tracking snaps
+- [x] Perpendicular / parallel tracking snaps
 - [x] Preference persistence (last file, grid spacing, snap/ortho/grid, dim style)
 - [x] Recent files list in File menu
 
@@ -109,16 +109,16 @@
 ## Phase 3: File Interop & IO (Q3 2026)
 
 ### Milestone 3.1: DXF Completeness
-- [ ] DIMENSION entity export (RotatedDimension / AlignedDimension)
-- [ ] TEXT / MTEXT entity export and import
-- [ ] HATCH entity stub (import bounding geometry)
-- [ ] Block (INSERT) import as flattened geometry
-- [ ] Arc direction handling edge cases
+- [x] DIMENSION entity export (RotatedDimension / AlignedDimension)
+- [x] TEXT / MTEXT entity export and import
+- [x] HATCH entity stub (ASCII DXF fallback: import boundary points as closed polylines)
+- [x] Block (INSERT) import as flattened geometry
+- [x] Arc direction handling edge cases (DXF import normalizes arcs to stored CCW convention)
 
 ### Milestone 3.2: Additional Formats
-- [ ] SVG export (paths only)
-- [ ] PDF export (print layout)
-- [ ] Auto-save / recovery file
+- [x] SVG export (paths only)
+- [x] PDF export (single-page vector, auto-fit visible geometry)
+- [x] Auto-save / recovery file (20s recovery snapshot + startup restore/discard prompt)
 
 ---
 

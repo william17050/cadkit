@@ -337,6 +337,7 @@ pub enum SnapKind {
     Center,         // circle or arc center
     Quadrant,       // circle cardinal points (N/S/E/W)
     Intersection,   // intersection of two entities
+    Parallel,       // tracked point from previous point, parallel to nearby segment
     Nearest,        // closest point on entity curve to cursor
     Perpendicular,  // foot of perpendicular from previous drawn point
     Tangent,        // tangent point on circle/arc from previous drawn point

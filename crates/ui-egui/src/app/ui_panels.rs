@@ -86,6 +86,14 @@ impl CadKitApp {
                         ui.close_menu();
                         self.export_dxf();
                     }
+                    if ui.button("Export SVG...").clicked() {
+                        ui.close_menu();
+                        self.export_svg();
+                    }
+                    if ui.button("Export PDF...").clicked() {
+                        ui.close_menu();
+                        self.export_pdf();
+                    }
                     if ui.button("Import DXF...").clicked() {
                         ui.close_menu();
                         self.import_dxf(ctx);
@@ -225,6 +233,7 @@ impl CadKitApp {
                 self.exit_extend();
                 self.exit_copy();
                 self.exit_rotate();
+                self.text_is_mtext = false;
                 self.text_phase = TextPhase::PlacingPosition;
                 self.command_log.push("TEXT  Specify insertion point:".to_string());
             }
@@ -505,6 +514,7 @@ impl CadKitApp {
 
             let mut toggle_visible: Option<u32> = None;
             let mut toggle_locked: Option<u32> = None;
+            let mut toggle_frozen: Option<u32> = None;
             let mut delete_layer: Option<u32> = None;
             let mut set_current: Option<u32> = None;
             let mut open_color_picker: Option<u32> = None;
@@ -537,8 +547,8 @@ impl CadKitApp {
                 .max_height(layers_list_h)
                 .show(ui, |ui| {
                     for &id in &layer_ids {
-                        let (name, visible, locked, color, is_current) = match self.drawing.get_layer(id) {
-                            Some(l) => (l.name.clone(), l.visible, l.locked, l.color, self.current_layer == id),
+                        let (name, visible, locked, frozen, color, is_current) = match self.drawing.get_layer(id) {
+                            Some(l) => (l.name.clone(), l.visible, l.locked, l.frozen, l.color, self.current_layer == id),
                             None => continue,
                         };
                         let row_color = if is_current {
@@ -589,6 +599,10 @@ impl CadKitApp {
                                 let lock_icon = if locked { "🔒" } else { "🔓" };
                                 if ui.small_button(lock_icon).on_hover_text("Toggle lock").clicked() {
                                     toggle_locked = Some(id);
+                                }
+                                let freeze_icon = if frozen { "❄" } else { "·" };
+                                if ui.small_button(freeze_icon).on_hover_text("Toggle freeze").clicked() {
+                                    toggle_frozen = Some(id);
                                 }
                                 if id != 0 {
                                     if ui.small_button("✕").on_hover_text("Delete layer").clicked() {
@@ -775,12 +789,13 @@ impl CadKitApp {
                                                     ui.label("Text:"); ui.label(t.as_str()); ui.end_row();
                                                 }
                                             }
-                                            EntityKind::Text { position, content, height, rotation } => {
+                                            EntityKind::Text { position, content, height, rotation, font_name } => {
                                                 ui.label("X:"); ui.label(format!("{:.4}", position.x)); ui.end_row();
                                                 ui.label("Y:"); ui.label(format!("{:.4}", position.y)); ui.end_row();
                                                 ui.label("Content:"); ui.label(content.as_str()); ui.end_row();
                                                 ui.label("Height:"); ui.label(format!("{:.4}", height)); ui.end_row();
                                                 ui.label("Rotation:"); ui.label(format!("{:.2}°", rotation.to_degrees())); ui.end_row();
+                                                ui.label("Font:"); ui.label(font_name.as_str()); ui.end_row();
                                             }
                                         }
                                     });
@@ -892,10 +907,40 @@ impl CadKitApp {
                     }
                 }
             }
+            if let Some(id) = toggle_frozen {
+                let mut is_now_frozen = false;
+                if let Some(l) = self.drawing.get_layer_mut(id) {
+                    l.frozen = !l.frozen;
+                    is_now_frozen = l.frozen;
+                }
+                if is_now_frozen {
+                    self.selected_entities
+                        .retain(|eid| self.drawing.get_entity(eid).map(|e| e.layer != id).unwrap_or(true));
+                    if self.current_layer == id {
+                        if let Some(fallback) = layer_ids
+                            .iter()
+                            .copied()
+                            .find(|lid| !self.is_layer_locked(*lid))
+                        {
+                            self.current_layer = fallback;
+                            self.command_log.push(format!(
+                                "LAYER: Current layer was frozen; switched current to {}",
+                                fallback
+                            ));
+                        } else {
+                            if let Some(l) = self.drawing.get_layer_mut(id) {
+                                l.frozen = false;
+                            }
+                            self.command_log
+                                .push("LAYER: At least one thawed unlocked layer is required".to_string());
+                        }
+                    }
+                }
+            }
             if let Some(id) = set_current {
                 if self.is_layer_locked(id) {
                     self.command_log
-                        .push("LAYER: Cannot set a locked layer as current".to_string());
+                        .push("LAYER: Cannot set a locked/frozen layer as current".to_string());
                 } else {
                     self.current_layer = id;
                 }
@@ -980,6 +1025,25 @@ impl CadKitApp {
                         let pan_y = viewport.pan_y;
                         ui.horizontal(|ui| {
                             ui.checkbox(&mut self.snap_enabled, "Snap (F3)");
+                            ui.menu_button("Snap Modes", |ui| {
+                                ui.set_min_width(180.0);
+                                ui.checkbox(&mut self.snap_endpoint, "Endpoint");
+                                ui.checkbox(&mut self.snap_midpoint, "Midpoint");
+                                ui.checkbox(&mut self.snap_center, "Center");
+                                ui.checkbox(&mut self.snap_quadrant, "Quadrant");
+                                ui.checkbox(&mut self.snap_intersection, "Intersection");
+                                ui.checkbox(&mut self.snap_parallel, "Parallel");
+                                ui.checkbox(&mut self.snap_perpendicular, "Perpendicular");
+                                ui.checkbox(&mut self.snap_tangent, "Tangent");
+                                ui.checkbox(&mut self.snap_nearest, "Nearest");
+                                ui.separator();
+                                if ui.button("All On").clicked() {
+                                    self.set_all_snap_modes(true);
+                                }
+                                if ui.button("All Off").clicked() {
+                                    self.set_all_snap_modes(false);
+                                }
+                            });
                             ui.separator();
                             ui.checkbox(&mut self.grid_visible, "Grid");
                             ui.add(
@@ -1513,19 +1577,31 @@ impl CadKitApp {
                                 if let Some(world) = self.hover_world_pos {
                                     self.text_phase = TextPhase::EnteringHeight { position: world };
                                     self.command_log.push(format!(
-                                        "TEXT  Text height <{:.4}>:", self.last_text_height));
+                                        "{}  Text height <{:.4}>:",
+                                        if self.text_is_mtext { "MTEXT" } else { "TEXT" },
+                                        self.last_text_height
+                                    ));
                                 }
                             } else if let TextPhase::EnteringHeight { position } = self.text_phase {
                                 // Empty Enter = use last_text_height.
                                 let h = self.last_text_height;
                                 self.text_phase = TextPhase::EnteringRotation { position, height: h };
                                 self.command_log.push(format!(
-                                    "TEXT  Rotation angle <{:.1}>:", h.to_degrees()));
+                                    "{}  Rotation angle <{:.1}>:",
+                                    if self.text_is_mtext { "MTEXT" } else { "TEXT" },
+                                    h.to_degrees()
+                                ));
                             } else if let TextPhase::EnteringRotation { position, height } = self.text_phase {
                                 // Empty Enter = use last_text_rotation.
                                 let r = self.last_text_rotation;
                                 self.text_phase = TextPhase::TypingContent { position, height, rotation: r };
-                                self.command_log.push("TEXT  Enter text:".to_string());
+                                self.command_log.push(
+                                    if self.text_is_mtext {
+                                        "MTEXT  Enter text (use \\P for new line):".to_string()
+                                    } else {
+                                        "TEXT  Enter text:".to_string()
+                                    },
+                                );
                             } else if let TextPhase::TypingContent { .. } = self.text_phase {
                                 // Empty Enter in content phase = cancel.
                                 self.exit_text();
@@ -2099,13 +2175,22 @@ impl CadKitApp {
                                 self.last_text_height = h;
                                 self.text_phase = TextPhase::EnteringRotation { position, height: h };
                                 self.command_log.push(format!(
-                                    "TEXT  Rotation angle <{:.1}>:", self.last_text_rotation.to_degrees()));
+                                    "{}  Rotation angle <{:.1}>:",
+                                    if self.text_is_mtext { "MTEXT" } else { "TEXT" },
+                                    self.last_text_rotation.to_degrees()
+                                ));
                                 handled = true;
                             } else if let TextPhase::EnteringRotation { position, height } = self.text_phase {
                                 let r = cmd.trim().parse::<f64>().unwrap_or(self.last_text_rotation.to_degrees()).to_radians();
                                 self.last_text_rotation = r;
                                 self.text_phase = TextPhase::TypingContent { position, height, rotation: r };
-                                self.command_log.push("TEXT  Enter text:".to_string());
+                                self.command_log.push(
+                                    if self.text_is_mtext {
+                                        "MTEXT  Enter text (use \\P for new line):".to_string()
+                                    } else {
+                                        "TEXT  Enter text:".to_string()
+                                    },
+                                );
                                 handled = true;
                             } else if let TextPhase::TypingContent { position, height, rotation } = self.text_phase {
                                 // The typed text becomes the entity content.
@@ -2119,15 +2204,24 @@ impl CadKitApp {
                                         let mut e = Entity::new(
                                             EntityKind::Text {
                                                 position: Vec3::xy(position.x, position.y),
-                                                content: cmd.clone(),
+                                                content: if self.text_is_mtext {
+                                                    cmd.replace("\\P", "\n").replace("\\p", "\n")
+                                                } else {
+                                                    cmd.clone()
+                                                },
                                                 height,
                                                 rotation,
+                                                font_name: "STANDARD".to_string(),
                                             },
                                             self.current_layer,
                                         );
                                         e.layer = self.current_layer;
                                         self.drawing.add_entity(e);
-                                        self.command_log.push(format!("TEXT: placed \"{}\"", cmd));
+                                        self.command_log.push(format!(
+                                            "{}: placed \"{}\"",
+                                            if self.text_is_mtext { "MTEXT" } else { "TEXT" },
+                                            cmd
+                                        ));
                                     }
                                 }
                                 self.exit_text();

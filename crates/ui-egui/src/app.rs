@@ -8,6 +8,7 @@ use cadkit_geometry::{Circle as GeomCircle, Line as GeomLine};
 use eframe::egui;
 use egui_wgpu::wgpu;
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 mod io;
 mod ui_panels;
@@ -110,6 +111,15 @@ fn dim_angular_pick_segment(kind: &EntityKind, click: Vec2) -> Option<(Vec2, Vec
 #[serde(default)]
 pub(crate) struct AppPrefs {
     pub snap_enabled: bool,
+    pub snap_endpoint: bool,
+    pub snap_midpoint: bool,
+    pub snap_center: bool,
+    pub snap_quadrant: bool,
+    pub snap_intersection: bool,
+    pub snap_parallel: bool,
+    pub snap_perpendicular: bool,
+    pub snap_tangent: bool,
+    pub snap_nearest: bool,
     pub ortho_enabled: bool,
     pub grid_visible: bool,
     pub grid_spacing: f64,
@@ -122,6 +132,15 @@ impl Default for AppPrefs {
     fn default() -> Self {
         Self {
             snap_enabled: true,
+            snap_endpoint: true,
+            snap_midpoint: true,
+            snap_center: true,
+            snap_quadrant: true,
+            snap_intersection: true,
+            snap_parallel: true,
+            snap_perpendicular: true,
+            snap_tangent: true,
+            snap_nearest: true,
             ortho_enabled: true,
             grid_visible: true,
             grid_spacing: 12.0,
@@ -161,6 +180,15 @@ pub struct CadKitApp {
     hover_world_pos: Option<cadkit_types::Vec2>,
     last_hover_world_pos: Option<cadkit_types::Vec2>,
     snap_enabled: bool,
+    snap_endpoint: bool,
+    snap_midpoint: bool,
+    snap_center: bool,
+    snap_quadrant: bool,
+    snap_intersection: bool,
+    snap_parallel: bool,
+    snap_perpendicular: bool,
+    snap_tangent: bool,
+    snap_nearest: bool,
     grid_visible: bool,
     grid_spacing: f64,
     active_tool: ActiveTool,
@@ -235,6 +263,7 @@ pub struct CadKitApp {
     dim_angular_phase: DimAngularPhase,
     dim_radial_phase: DimRadialPhase,
     text_phase: TextPhase,
+    text_is_mtext: bool,
     last_text_height: f64,
     last_text_rotation: f64,
     edit_text_phase: EditTextPhase,
@@ -262,6 +291,8 @@ pub struct CadKitApp {
     help_open: bool,
     bgcolor_picker_open: bool,
     last_saved_prefs: Option<AppPrefs>,
+    autosave_last_at: Instant,
+    recovery_prompt_open: bool,
 }
 
 impl Default for CadKitApp {
@@ -277,6 +308,15 @@ impl Default for CadKitApp {
             hover_world_pos: None,
             last_hover_world_pos: None,
             snap_enabled: true,
+            snap_endpoint: true,
+            snap_midpoint: true,
+            snap_center: true,
+            snap_quadrant: true,
+            snap_intersection: true,
+            snap_parallel: true,
+            snap_perpendicular: true,
+            snap_tangent: true,
+            snap_nearest: true,
             grid_visible: true,
             grid_spacing: 12.0,
             active_tool: ActiveTool::None,
@@ -351,6 +391,7 @@ impl Default for CadKitApp {
             dim_angular_phase: DimAngularPhase::Idle,
             dim_radial_phase: DimRadialPhase::Idle,
             text_phase: TextPhase::Idle,
+            text_is_mtext: false,
             last_text_height: 2.5,
             last_text_rotation: 0.0,
             edit_text_phase: EditTextPhase::Idle,
@@ -375,6 +416,8 @@ impl Default for CadKitApp {
             help_open: false,
             bgcolor_picker_open: false,
             last_saved_prefs: None,
+            autosave_last_at: Instant::now(),
+            recovery_prompt_open: false,
         };
         app.load_preferences();
         app
@@ -386,6 +429,7 @@ impl CadKitApp {
     const PAN_SENSITIVITY: f32 = 0.3;
     const GRID_MAX_POINTS: usize = 20_000;
     const PICK_RADIUS: f32 = 16.0; // screen-space pixels
+    const TRACKING_RADIUS: f32 = 12.0; // screen-space pixels
     pub(crate) const DIM_GRIP_RADIUS: f32 = 7.0;
     const GEOM_TOL: f64 = 1e-9;
 
@@ -774,7 +818,7 @@ impl CadKitApp {
         let mut kind = pick.as_ref().map(|(_, k)| *k);
 
         // Intersection snap as fallback (still object-based).
-        if pick.is_none() && self.snap_enabled {
+        if pick.is_none() && self.snap_enabled && self.snap_intersection {
             if let Some(pt) =
                 self.find_intersection_snap_excluding(viewport, rect, screen_pos, Some(handle.entity))
             {
@@ -786,7 +830,10 @@ impl CadKitApp {
     }
 
     fn is_layer_locked(&self, layer_id: u32) -> bool {
-        self.drawing.get_layer(layer_id).map(|l| l.locked).unwrap_or(false)
+        self.drawing
+            .get_layer(layer_id)
+            .map(|l| l.locked || l.frozen)
+            .unwrap_or(false)
     }
 
     fn is_entity_on_locked_layer(&self, id: &Guid) -> bool {
@@ -805,7 +852,7 @@ impl CadKitApp {
         let skipped = ids.len().saturating_sub(editable.len());
         if skipped > 0 {
             self.command_log.push(format!(
-                "{op}: {} entit{} on locked layer{} skipped",
+                "{op}: {} entit{} on locked/frozen layer{} skipped",
                 skipped,
                 if skipped == 1 { "y" } else { "ies" },
                 if skipped == 1 { "" } else { "s" }
@@ -923,6 +970,7 @@ impl CadKitApp {
 
     fn exit_text(&mut self) {
         self.text_phase = TextPhase::Idle;
+        self.text_is_mtext = false;
         self.command_input.clear();
     }
 
@@ -1262,6 +1310,13 @@ impl CadKitApp {
             }
         }
 
+        app.recovery_prompt_open = app.recovery_snapshot_exists();
+        if app.recovery_prompt_open {
+            app.command_log.push(
+                "Recovery: Found an auto-save snapshot from a previous session".to_string(),
+            );
+        }
+
         app
     }
 
@@ -1404,12 +1459,30 @@ impl CadKitApp {
             }
         }
         match &self.text_phase {
-            TextPhase::PlacingPosition => return "TEXT  Specify insertion point:".into(),
+            TextPhase::PlacingPosition => {
+                return if self.text_is_mtext {
+                    "MTEXT  Specify insertion point:".into()
+                } else {
+                    "TEXT  Specify insertion point:".into()
+                };
+            }
             TextPhase::EnteringHeight { .. } => return format!(
-                "TEXT  Text height <{:.4}>:", self.last_text_height),
+                "{}  Text height <{:.4}>:",
+                if self.text_is_mtext { "MTEXT" } else { "TEXT" },
+                self.last_text_height
+            ),
             TextPhase::EnteringRotation { .. } => return format!(
-                "TEXT  Rotation angle <{:.1}>:", self.last_text_rotation.to_degrees()),
-            TextPhase::TypingContent { .. } => return "TEXT  Enter text:".into(),
+                "{}  Rotation angle <{:.1}>:",
+                if self.text_is_mtext { "MTEXT" } else { "TEXT" },
+                self.last_text_rotation.to_degrees()
+            ),
+            TextPhase::TypingContent { .. } => {
+                return if self.text_is_mtext {
+                    "MTEXT  Enter text (use \\P for new line):".into()
+                } else {
+                    "TEXT  Enter text:".into()
+                };
+            }
             TextPhase::Idle => {}
         }
         match self.polygon_phase {
@@ -1993,11 +2066,12 @@ impl CadKitApp {
                         arrow_length: *arrow_length,
                         arrow_half_width: *arrow_half_width,
                     },
-                    EntityKind::Text { position, content, height, rotation } => EntityKind::Text {
+                    EntityKind::Text { position, content, height, rotation, font_name } => EntityKind::Text {
                         position: Vec3::xy(position.x + dx, position.y + dy),
                         content: content.clone(),
                         height: *height,
                         rotation: *rotation,
+                        font_name: font_name.clone(),
                     },
                 };
                 let layer = entity.layer;
@@ -2117,11 +2191,13 @@ impl CadKitApp {
                 content,
                 height,
                 rotation,
+                font_name,
             } => EntityKind::Text {
                 position: Vec3::xy(position.x + dx, position.y + dy),
                 content: content.clone(),
                 height: *height,
                 rotation: *rotation,
+                font_name: font_name.clone(),
             },
         }
     }
@@ -2239,11 +2315,13 @@ impl CadKitApp {
                 content,
                 height,
                 rotation,
+                font_name,
             } => EntityKind::Text {
                 position: rotate_pt(*position),
                 content: content.clone(),
                 height: *height,
                 rotation: *rotation + angle_rad,
+                font_name: font_name.clone(),
             },
         }
     }
@@ -5059,7 +5137,7 @@ impl CadKitApp {
     fn draw_text_entities(&self, ui: &egui::Ui, rect: egui::Rect, viewport: &Viewport) {
         let painter = ui.painter_at(rect);
         for entity in self.drawing.visible_entities() {
-            if let EntityKind::Text { position, content, height, rotation } = &entity.kind {
+            if let EntityKind::Text { position, content, height, rotation, .. } = &entity.kind {
                 let (sx, sy) = world_to_screen(position.x as f32, position.y as f32, viewport);
                 let screen_pos = rect.min + egui::vec2(sx, sy);
                 let height_px = (height * viewport.zoom as f64) as f32;
@@ -6401,6 +6479,43 @@ impl eframe::App for CadKitApp {
         // UI panels (menu, toolbars, properties, command line)
         self.draw_ui_panels(ctx);
 
+        if self.recovery_prompt_open {
+            let mut restore_clicked = false;
+            let mut discard_clicked = false;
+            let mut later_clicked = false;
+            egui::Window::new("Recovery File Found")
+                .resizable(false)
+                .collapsible(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label("CadKit found an auto-save recovery snapshot.");
+                    ui.label("Restore it now, discard it, or decide later.");
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Restore").clicked() {
+                            restore_clicked = true;
+                        }
+                        if ui.button("Discard").clicked() {
+                            discard_clicked = true;
+                        }
+                        if ui.button("Later").clicked() {
+                            later_clicked = true;
+                        }
+                    });
+                });
+            if restore_clicked {
+                self.restore_recovery_snapshot(ctx);
+                self.recovery_prompt_open = false;
+            } else if discard_clicked {
+                self.delete_recovery_snapshot();
+                self.command_log.push("Recovery: Snapshot discarded".to_string());
+                self.recovery_prompt_open = false;
+            } else if later_clicked {
+                self.command_log.push("Recovery: Deferred for this session".to_string());
+                self.recovery_prompt_open = false;
+            }
+        }
+
         // === Edit Text dialog ===
         if self.text_edit_dialog.is_some() {
             let mut ok_clicked = false;
@@ -6667,6 +6782,7 @@ impl eframe::App for CadKitApp {
                                 ("EL / ELLIPSE",    "",          "Ellipse by center, radius, and height"),
                                 ("REC / RECTANGLE", "",          "Rectangle by diagonal or dimensions"),
                                 ("T / TEXT",        "",          "Place a text label"),
+                                ("MT / MTEXT",      "",          "Place multiline text (use \\P for new line)"),
                             ] {
                                 ui.label(egui::RichText::new(alias).strong());
                                 ui.label(full);
@@ -6727,6 +6843,8 @@ impl eframe::App for CadKitApp {
                         egui::Grid::new("help_file").striped(true).show(ui, |ui| {
                             for (alias, full, desc) in [
                                 ("DXFOUT", "",  "Export drawing to DXF"),
+                                ("SVGOUT", "",  "Export visible geometry to SVG paths"),
+                                ("PDFOUT", "",  "Export visible geometry to vector PDF"),
                                 ("DXFIN",  "",  "Import a DXF file"),
                             ] {
                                 ui.label(egui::RichText::new(alias).strong());
@@ -6743,6 +6861,8 @@ impl eframe::App for CadKitApp {
                                 ("BGCOLOR",     "",  "Open background colour picker"),
                                 ("GR / GRID",   "",  "Toggle grid visibility (dots off, snap still works)"),
                                 ("LA / LAYER",  "",  "Manage layers (see right panel)"),
+                                ("OSNAP",       "",  "Toggle object snap; OSNAP ON/OFF"),
+                                ("OSMODE",      "",  "Set/get object snap bitmask (e.g., OSMODE 175)"),
                             ] {
                                 ui.label(egui::RichText::new(alias).strong());
                                 ui.label(full);
@@ -8379,7 +8499,11 @@ impl eframe::App for CadKitApp {
                             }
 
                             // Intersection snap (priority 2: below entity point, above perp/tangent/nearest).
-                            if hover_pick.is_none() && self.dim_grip_drag.is_none() && self.snap_enabled {
+                            if hover_pick.is_none()
+                                && self.dim_grip_drag.is_none()
+                                && self.snap_enabled
+                                && self.snap_intersection
+                            {
                                 if let Some(snap_pt) = self.find_intersection_snap(viewport, response.rect, pointer_pos) {
                                     world = snap_pt;
                                     self.snap_intersection_point = Some(snap_pt);
@@ -8387,11 +8511,31 @@ impl eframe::App for CadKitApp {
                                 }
                             }
 
-                            // Perpendicular snap (priority 3: foot on entity from last placed point).
+                            // Parallel/perpendicular tracking (priority 3).
                             if hover_pick.is_none()
                                 && self.dim_grip_drag.is_none()
                                 && self.snap_intersection_point.is_none()
+                                && self.hover_snap_kind.is_none()
                                 && self.snap_enabled
+                                && (self.snap_parallel || self.snap_perpendicular)
+                            {
+                                if let Some(from_pt) = self.current_from_point() {
+                                    if let Some((pt, kind)) =
+                                        self.tracking_snap(viewport, response.rect, pointer_pos, from_pt)
+                                    {
+                                        world = pt;
+                                        self.hover_snap_kind = Some(kind);
+                                    }
+                                }
+                            }
+
+                            // Perpendicular snap (priority 4: foot on entity from last placed point).
+                            if hover_pick.is_none()
+                                && self.dim_grip_drag.is_none()
+                                && self.snap_intersection_point.is_none()
+                                && self.hover_snap_kind.is_none()
+                                && self.snap_enabled
+                                && self.snap_perpendicular
                             {
                                 if let Some(from_pt) = self.current_from_point() {
                                     if let Some(pt) = self.perpendicular_snap(viewport, response.rect, pointer_pos, from_pt) {
@@ -8401,12 +8545,13 @@ impl eframe::App for CadKitApp {
                                 }
                             }
 
-                            // Tangent snap (priority 4: tangent point on circle/arc from last placed point).
+                            // Tangent snap (priority 5: tangent point on circle/arc from last placed point).
                             if hover_pick.is_none()
                                 && self.dim_grip_drag.is_none()
                                 && self.snap_intersection_point.is_none()
                                 && self.hover_snap_kind.is_none()
                                 && self.snap_enabled
+                                && self.snap_tangent
                             {
                                 if let Some(from_pt) = self.current_from_point() {
                                     if let Some(pt) = self.tangent_snap(viewport, response.rect, pointer_pos, from_pt) {
@@ -8416,12 +8561,13 @@ impl eframe::App for CadKitApp {
                                 }
                             }
 
-                            // Nearest snap (priority 5: closest point on any entity curve).
+                            // Nearest snap (priority 6: closest point on any entity curve).
                             if hover_pick.is_none()
                                 && self.dim_grip_drag.is_none()
                                 && self.snap_intersection_point.is_none()
                                 && self.hover_snap_kind.is_none()
                                 && self.snap_enabled
+                                && self.snap_nearest
                             {
                                 if let Some(pt) = self.nearest_entity_snap(viewport, response.rect, pointer_pos) {
                                     world = pt;
@@ -8914,6 +9060,7 @@ impl eframe::App for CadKitApp {
         });
 
         // Persist app preferences (snap/ortho/grid/current file) when changed.
+        self.autosave_recovery_if_due();
         self.persist_preferences_if_changed();
     }
 }
@@ -9064,6 +9211,32 @@ impl CadKitApp {
         else if label.contains("east") || label.contains("west")
              || label.contains("north") || label.contains("south") { SnapKind::Quadrant }
         else { SnapKind::Endpoint }
+    }
+
+    fn is_snap_kind_enabled(&self, kind: SnapKind) -> bool {
+        match kind {
+            SnapKind::Endpoint => self.snap_endpoint,
+            SnapKind::Midpoint => self.snap_midpoint,
+            SnapKind::Center => self.snap_center,
+            SnapKind::Quadrant => self.snap_quadrant,
+            SnapKind::Intersection => self.snap_intersection,
+            SnapKind::Parallel => self.snap_parallel,
+            SnapKind::Perpendicular => self.snap_perpendicular,
+            SnapKind::Tangent => self.snap_tangent,
+            SnapKind::Nearest => self.snap_nearest,
+        }
+    }
+
+    fn set_all_snap_modes(&mut self, enabled: bool) {
+        self.snap_endpoint = enabled;
+        self.snap_midpoint = enabled;
+        self.snap_center = enabled;
+        self.snap_quadrant = enabled;
+        self.snap_intersection = enabled;
+        self.snap_parallel = enabled;
+        self.snap_perpendicular = enabled;
+        self.snap_tangent = enabled;
+        self.snap_nearest = enabled;
     }
 
     /// Pick nearest entity point (endpoints, midpoints, centers, quadrants) in screen space.
@@ -9232,6 +9405,9 @@ impl CadKitApp {
     ) {
         for (label, world) in candidates {
             let kind = Self::snap_kind_from_label(label);
+            if !self.is_snap_kind_enabled(kind) {
+                continue;
+            }
             let (sx, sy) = world_to_screen(world.x as f32, world.y as f32, viewport);
             let pos = rect.min + egui::vec2(sx, sy);
             let dist = pos.distance(screen_pos);
@@ -10216,6 +10392,85 @@ impl CadKitApp {
             ActiveTool::Polyline { points } if !points.is_empty() => points.last().copied(),
             _ => None,
         }
+    }
+
+    /// Track from `from_pt` to a point parallel/perpendicular to nearby line-like geometry.
+    fn tracking_snap(
+        &self,
+        viewport: &Viewport,
+        rect: egui::Rect,
+        screen_pos: egui::Pos2,
+        from_pt: Vec2,
+    ) -> Option<(Vec2, SnapKind)> {
+        let local = screen_pos - rect.min;
+        let cw = screen_to_world(local.x, local.y, viewport);
+        let cursor = Vec2::new(cw.x, cw.y);
+        let vx = cursor.x - from_pt.x;
+        let vy = cursor.y - from_pt.y;
+
+        let mut best: Option<(f32, Vec2, SnapKind)> = None;
+        let mut consider_direction = |ux: f64, uy: f64| {
+            let mag = (ux * ux + uy * uy).sqrt();
+            if mag < 1e-12 {
+                return;
+            }
+            let ux = ux / mag;
+            let uy = uy / mag;
+            let nx = -uy;
+            let ny = ux;
+
+            // Parallel to candidate segment direction.
+            let t_par = vx * ux + vy * uy;
+            let p_par = Vec2::new(from_pt.x + ux * t_par, from_pt.y + uy * t_par);
+            let (sx, sy) = world_to_screen(p_par.x as f32, p_par.y as f32, viewport);
+            let d_par = (rect.min + egui::vec2(sx, sy)).distance(screen_pos);
+            if self.snap_parallel && d_par <= Self::TRACKING_RADIUS {
+                match best {
+                    Some((bd, _, _)) if d_par >= bd => {}
+                    _ => best = Some((d_par, p_par, SnapKind::Parallel)),
+                }
+            }
+
+            // Perpendicular to candidate segment direction.
+            let t_perp = vx * nx + vy * ny;
+            let p_perp = Vec2::new(from_pt.x + nx * t_perp, from_pt.y + ny * t_perp);
+            let (sx, sy) = world_to_screen(p_perp.x as f32, p_perp.y as f32, viewport);
+            let d_perp = (rect.min + egui::vec2(sx, sy)).distance(screen_pos);
+            if self.snap_perpendicular && d_perp <= Self::TRACKING_RADIUS {
+                match best {
+                    Some((bd, _, _)) if d_perp >= bd => {}
+                    _ => best = Some((d_perp, p_perp, SnapKind::Perpendicular)),
+                }
+            }
+        };
+
+        for entity in self.drawing.visible_entities() {
+            match &entity.kind {
+                EntityKind::Line { start, end } => {
+                    let s: Vec2 = (*start).into();
+                    let e: Vec2 = (*end).into();
+                    consider_direction(e.x - s.x, e.y - s.y);
+                }
+                EntityKind::Polyline { vertices, closed } => {
+                    if vertices.len() < 2 {
+                        continue;
+                    }
+                    for w in vertices.windows(2) {
+                        let a: Vec2 = w[0].into();
+                        let b: Vec2 = w[1].into();
+                        consider_direction(b.x - a.x, b.y - a.y);
+                    }
+                    if *closed {
+                        let a: Vec2 = vertices[vertices.len() - 1].into();
+                        let b: Vec2 = vertices[0].into();
+                        consider_direction(b.x - a.x, b.y - a.y);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        best.map(|(_, p, k)| (p, k))
     }
 
     /// Snap to the closest point ON any entity's geometry (not just special points).

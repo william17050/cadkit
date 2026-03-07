@@ -285,7 +285,7 @@ impl CadKitApp {
             let Some(layer) = self.drawing.get_layer(entity.layer) else {
                 continue;
             };
-            if !layer.visible {
+            if !layer.visible || layer.frozen {
                 continue;
             }
             let Some(points) = Self::dim_grip_display_points(&entity.kind, viewport, rect) else {
@@ -427,6 +427,19 @@ impl CadKitApp {
                 let r = 7.0_f32;
                 painter.line_segment([pos + egui::vec2(-r, -r), pos + egui::vec2(r, r)], stroke);
                 painter.line_segment([pos + egui::vec2(-r,  r), pos + egui::vec2(r,-r)], stroke);
+            }
+            SnapKind::Parallel => {
+                // Two short parallel line segments.
+                let w = 8.0_f32;
+                let gap = 3.0_f32;
+                painter.line_segment(
+                    [pos + egui::vec2(-w, -gap), pos + egui::vec2(w, -gap)],
+                    stroke,
+                );
+                painter.line_segment(
+                    [pos + egui::vec2(-w, gap), pos + egui::vec2(w, gap)],
+                    stroke,
+                );
             }
             SnapKind::Nearest => {
                 // Circle with inner X

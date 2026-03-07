@@ -10,10 +10,90 @@ use cadkit_types::Vec2;
 impl CadKitApp {
     /// Execute a command-line alias similar to classic CAD workflows.
     pub(crate) fn execute_command_alias(&mut self, raw: &str) -> bool {
-        let cmd = raw.trim().to_ascii_lowercase();
+        let raw_trimmed = raw.trim();
+        let cmd = raw_trimmed.to_ascii_lowercase();
         if cmd.is_empty() {
             return false;
         }
+        let mut words = cmd.split_whitespace();
+        let head = words.next().unwrap_or("");
+        let arg1 = words.next();
+
+        // OSNAP / OSMODE aliases (AutoCAD-style).
+        if head == "osnap" {
+            match arg1 {
+                None => {
+                    self.snap_enabled = !self.snap_enabled;
+                    self.command_log.push(format!(
+                        "OSNAP: {}",
+                        if self.snap_enabled { "ON" } else { "OFF" }
+                    ));
+                }
+                Some("on") | Some("1") => {
+                    self.snap_enabled = true;
+                    self.command_log.push("OSNAP: ON".to_string());
+                }
+                Some("off") | Some("0") => {
+                    self.snap_enabled = false;
+                    self.command_log.push("OSNAP: OFF".to_string());
+                }
+                Some(_) => {
+                    self.command_log
+                        .push("OSNAP: Use OSNAP [ON/OFF]".to_string());
+                }
+            }
+            return true;
+        }
+        if head == "osmode" {
+            const OSMODE_ENDPOINT: u32 = 1;
+            const OSMODE_MIDPOINT: u32 = 2;
+            const OSMODE_CENTER: u32 = 4;
+            const OSMODE_QUADRANT: u32 = 16;
+            const OSMODE_INTERSECTION: u32 = 32;
+            const OSMODE_PERPENDICULAR: u32 = 128;
+            const OSMODE_TANGENT: u32 = 256;
+            const OSMODE_NEAREST: u32 = 512;
+            const OSMODE_PARALLEL: u32 = 8192;
+            match arg1 {
+                None => {
+                    let mut value = 0u32;
+                    if self.snap_endpoint { value |= OSMODE_ENDPOINT; }
+                    if self.snap_midpoint { value |= OSMODE_MIDPOINT; }
+                    if self.snap_center { value |= OSMODE_CENTER; }
+                    if self.snap_quadrant { value |= OSMODE_QUADRANT; }
+                    if self.snap_intersection { value |= OSMODE_INTERSECTION; }
+                    if self.snap_perpendicular { value |= OSMODE_PERPENDICULAR; }
+                    if self.snap_tangent { value |= OSMODE_TANGENT; }
+                    if self.snap_nearest { value |= OSMODE_NEAREST; }
+                    if self.snap_parallel { value |= OSMODE_PARALLEL; }
+                    self.command_log.push(format!("OSMODE={value}"));
+                }
+                Some(v) => {
+                    match v.parse::<i64>() {
+                        Ok(n) if n >= 0 => {
+                            let value = n as u32;
+                            self.snap_endpoint = (value & OSMODE_ENDPOINT) != 0;
+                            self.snap_midpoint = (value & OSMODE_MIDPOINT) != 0;
+                            self.snap_center = (value & OSMODE_CENTER) != 0;
+                            self.snap_quadrant = (value & OSMODE_QUADRANT) != 0;
+                            self.snap_intersection = (value & OSMODE_INTERSECTION) != 0;
+                            self.snap_perpendicular = (value & OSMODE_PERPENDICULAR) != 0;
+                            self.snap_tangent = (value & OSMODE_TANGENT) != 0;
+                            self.snap_nearest = (value & OSMODE_NEAREST) != 0;
+                            self.snap_parallel = (value & OSMODE_PARALLEL) != 0;
+                            self.snap_enabled = value != 0;
+                            self.command_log.push(format!("OSMODE set to {value}"));
+                        }
+                        _ => {
+                            self.command_log
+                                .push("OSMODE: Enter a non-negative integer (example: 175)".to_string());
+                        }
+                    }
+                }
+            }
+            return true;
+        }
+
         let keeps_dim_context = matches!(
             cmd.as_str(),
             "dal" | "dimaligned" | "dim"
@@ -434,6 +514,14 @@ impl CadKitApp {
                 self.export_dxf();
                 true
             }
+            "svgout" => {
+                self.export_svg();
+                true
+            }
+            "pdfout" => {
+                self.export_pdf();
+                true
+            }
             "dxfin" => {
                 self.pending_dxf_import = true;
                 true
@@ -454,10 +542,28 @@ impl CadKitApp {
                 self.exit_extend();
                 self.exit_copy();
                 self.exit_rotate();
+                self.text_is_mtext = false;
                 self.text_phase = TextPhase::PlacingPosition;
                 self.command_log
                     .push("TEXT  Specify insertion point:".to_string());
                 log::info!("Command: TEXT");
+                true
+            }
+            "mt" | "mtext" => {
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.text_is_mtext = true;
+                self.text_phase = TextPhase::PlacingPosition;
+                self.command_log
+                    .push("MTEXT  Specify insertion point:".to_string());
+                self.command_log
+                    .push("MTEXT  Use \\P in input to create a new line".to_string());
+                log::info!("Command: MTEXT");
                 true
             }
             "ed" | "editdim" => {
