@@ -198,7 +198,10 @@ mod tests {
         // line.intersect(poly) same as poly.intersect(line) point count
         let p = poly(&[(0.0, 0.0), (2.0, 0.0), (1.0, 2.0)], true);
         let l = Line::new(v(1.0, -1.0), v(1.0, 3.0));
-        assert_eq!(p.intersect(&l, TOL).point_count(), l.intersect(&p, TOL).point_count());
+        assert_eq!(
+            p.intersect(&l, TOL).point_count(),
+            l.intersect(&p, TOL).point_count()
+        );
     }
 
     // ----- Polyline ∩ Circle ------------------------------------------------
@@ -212,7 +215,11 @@ mod tests {
         let p = poly(&[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)], true);
         let c = Circle::new(v(0.5, 0.5), 0.6);
         let r = p.intersect(&c, TOL);
-        assert_eq!(r.point_count(), 8, "circle inside square: 2 crossings per side = 8 total");
+        assert_eq!(
+            r.point_count(),
+            8,
+            "circle inside square: 2 crossings per side = 8 total"
+        );
     }
 
     #[test]

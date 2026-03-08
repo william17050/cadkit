@@ -1,7 +1,9 @@
 use super::state::{
-    ActiveTool, CopyPhase, DimAngularPhase, DimLinearPhase, DimPhase, DimRadialPhase, EditDimPhase, EditTextPhase,
-    ArrayMode, ArrayPhase, BlockPhase, BoundaryPhase, ChamferPhase, EllipsePhase, ExtendPhase, FilletPhase, FromPhase, HatchPhase, InsertPhase, MirrorPhase, MovePhase,
-    OffsetPhase, PeditPhase, PolygonPhase, RectanglePhase, RotatePhase, ScalePhase, TextPhase, TrimPhase,
+    ActiveTool, ArrayMode, ArrayPhase, BlockPhase, BoundaryPhase, ChamferPhase, CopyPhase,
+    DimAngularPhase, DimLinearPhase, DimPhase, DimRadialPhase, EditDimPhase, EditTextPhase,
+    EllipsePhase, ExtendPhase, FilletPhase, FromPhase, HatchPhase, InsertPhase, MirrorPhase,
+    MovePhase, OffsetPhase, PeditPhase, PolygonPhase, RectanglePhase, RotatePhase, ScalePhase,
+    TextPhase, TrimPhase,
 };
 use super::{create_arc_from_three_points, AiBackendMode, AiModelProfile, CadKitApp};
 use cadkit_2d_core::{create_circle, create_line};
@@ -26,8 +28,11 @@ impl CadKitApp {
             }
             match self.define_block_from_selection(&ids, base, name) {
                 Ok(n) => {
-                    self.command_log
-                        .push(format!("BLOCK: '{}' defined from {} entities", name.trim(), n));
+                    self.command_log.push(format!(
+                        "BLOCK: '{}' defined from {} entities",
+                        name.trim(),
+                        n
+                    ));
                 }
                 Err(msg) => self.command_log.push(msg),
             }
@@ -76,39 +81,56 @@ impl CadKitApp {
             match arg1 {
                 None => {
                     let mut value = 0u32;
-                    if self.snap_endpoint { value |= OSMODE_ENDPOINT; }
-                    if self.snap_midpoint { value |= OSMODE_MIDPOINT; }
-                    if self.snap_center { value |= OSMODE_CENTER; }
-                    if self.snap_quadrant { value |= OSMODE_QUADRANT; }
-                    if self.snap_intersection { value |= OSMODE_INTERSECTION; }
-                    if self.snap_perpendicular { value |= OSMODE_PERPENDICULAR; }
-                    if self.snap_tangent { value |= OSMODE_TANGENT; }
-                    if self.snap_nearest { value |= OSMODE_NEAREST; }
-                    if self.snap_parallel { value |= OSMODE_PARALLEL; }
+                    if self.snap_endpoint {
+                        value |= OSMODE_ENDPOINT;
+                    }
+                    if self.snap_midpoint {
+                        value |= OSMODE_MIDPOINT;
+                    }
+                    if self.snap_center {
+                        value |= OSMODE_CENTER;
+                    }
+                    if self.snap_quadrant {
+                        value |= OSMODE_QUADRANT;
+                    }
+                    if self.snap_intersection {
+                        value |= OSMODE_INTERSECTION;
+                    }
+                    if self.snap_perpendicular {
+                        value |= OSMODE_PERPENDICULAR;
+                    }
+                    if self.snap_tangent {
+                        value |= OSMODE_TANGENT;
+                    }
+                    if self.snap_nearest {
+                        value |= OSMODE_NEAREST;
+                    }
+                    if self.snap_parallel {
+                        value |= OSMODE_PARALLEL;
+                    }
                     self.command_log.push(format!("OSMODE={value}"));
                 }
-                Some(v) => {
-                    match v.parse::<i64>() {
-                        Ok(n) if n >= 0 => {
-                            let value = n as u32;
-                            self.snap_endpoint = (value & OSMODE_ENDPOINT) != 0;
-                            self.snap_midpoint = (value & OSMODE_MIDPOINT) != 0;
-                            self.snap_center = (value & OSMODE_CENTER) != 0;
-                            self.snap_quadrant = (value & OSMODE_QUADRANT) != 0;
-                            self.snap_intersection = (value & OSMODE_INTERSECTION) != 0;
-                            self.snap_perpendicular = (value & OSMODE_PERPENDICULAR) != 0;
-                            self.snap_tangent = (value & OSMODE_TANGENT) != 0;
-                            self.snap_nearest = (value & OSMODE_NEAREST) != 0;
-                            self.snap_parallel = (value & OSMODE_PARALLEL) != 0;
-                            self.snap_enabled = value != 0;
-                            self.command_log.push(format!("OSMODE set to {value}"));
-                        }
-                        _ => {
-                            self.command_log
-                                .push("OSMODE: Enter a non-negative integer (example: 175)".to_string());
-                        }
+                Some(v) => match v.parse::<i64>() {
+                    Ok(n) if n >= 0 => {
+                        let value = n as u32;
+                        self.snap_endpoint = (value & OSMODE_ENDPOINT) != 0;
+                        self.snap_midpoint = (value & OSMODE_MIDPOINT) != 0;
+                        self.snap_center = (value & OSMODE_CENTER) != 0;
+                        self.snap_quadrant = (value & OSMODE_QUADRANT) != 0;
+                        self.snap_intersection = (value & OSMODE_INTERSECTION) != 0;
+                        self.snap_perpendicular = (value & OSMODE_PERPENDICULAR) != 0;
+                        self.snap_tangent = (value & OSMODE_TANGENT) != 0;
+                        self.snap_nearest = (value & OSMODE_NEAREST) != 0;
+                        self.snap_parallel = (value & OSMODE_PARALLEL) != 0;
+                        self.snap_enabled = value != 0;
+                        self.command_log.push(format!("OSMODE set to {value}"));
                     }
-                }
+                    _ => {
+                        self.command_log.push(
+                            "OSMODE: Enter a non-negative integer (example: 175)".to_string(),
+                        );
+                    }
+                },
             }
             return true;
         }
@@ -121,10 +143,8 @@ impl CadKitApp {
                 Some(v) => match v.parse::<f64>() {
                     Ok(n) if n.is_finite() && n > 0.0 => {
                         self.drawing.linetype_scale = n.clamp(0.01, 1000.0);
-                        self.command_log.push(format!(
-                            "LTSCALE set to {:.4}",
-                            self.drawing.linetype_scale
-                        ));
+                        self.command_log
+                            .push(format!("LTSCALE set to {:.4}", self.drawing.linetype_scale));
                     }
                     _ => {
                         self.command_log.push(
@@ -138,43 +158,45 @@ impl CadKitApp {
 
         let keeps_dim_context = matches!(
             cmd.as_str(),
-            "dal" | "dimaligned" | "dim"
-                | "dli" | "dimlinear"
-                | "dang" | "dimangular"
-                | "dra" | "dimradius"
-                | "ddi" | "dimdiameter"
-                | "from" | "fr"
+            "dal"
+                | "dimaligned"
+                | "dim"
+                | "dli"
+                | "dimlinear"
+                | "dang"
+                | "dimangular"
+                | "dra"
+                | "dimradius"
+                | "ddi"
+                | "dimdiameter"
+                | "from"
+                | "fr"
         ) || self.from_phase != FromPhase::Idle;
         if !keeps_dim_context {
             self.exit_dim();
         }
-        let keeps_scale_context =
-            matches!(cmd.as_str(), "sc" | "scale" | "from" | "fr")
-                || self.scale_phase != ScalePhase::Idle;
+        let keeps_scale_context = matches!(cmd.as_str(), "sc" | "scale" | "from" | "fr")
+            || self.scale_phase != ScalePhase::Idle;
         if !keeps_scale_context {
             self.exit_scale();
         }
-        let keeps_mirror_context =
-            matches!(cmd.as_str(), "mi" | "mirror" | "from" | "fr")
-                || self.mirror_phase != MirrorPhase::Idle;
+        let keeps_mirror_context = matches!(cmd.as_str(), "mi" | "mirror" | "from" | "fr")
+            || self.mirror_phase != MirrorPhase::Idle;
         if !keeps_mirror_context {
             self.exit_mirror();
         }
-        let keeps_fillet_context =
-            matches!(cmd.as_str(), "fi" | "fillet" | "from" | "fr")
-                || self.fillet_phase != FilletPhase::Idle;
+        let keeps_fillet_context = matches!(cmd.as_str(), "fi" | "fillet" | "from" | "fr")
+            || self.fillet_phase != FilletPhase::Idle;
         if !keeps_fillet_context {
             self.exit_fillet();
         }
-        let keeps_chamfer_context =
-            matches!(cmd.as_str(), "cha" | "chamfer" | "from" | "fr")
-                || self.chamfer_phase != ChamferPhase::Idle;
+        let keeps_chamfer_context = matches!(cmd.as_str(), "cha" | "chamfer" | "from" | "fr")
+            || self.chamfer_phase != ChamferPhase::Idle;
         if !keeps_chamfer_context {
             self.exit_chamfer();
         }
-        let keeps_polygon_context =
-            matches!(cmd.as_str(), "pol" | "polygon" | "from" | "fr")
-                || self.polygon_phase != PolygonPhase::Idle;
+        let keeps_polygon_context = matches!(cmd.as_str(), "pol" | "polygon" | "from" | "fr")
+            || self.polygon_phase != PolygonPhase::Idle;
         if !keeps_polygon_context {
             self.exit_polygon();
         }
@@ -190,39 +212,44 @@ impl CadKitApp {
         if !keeps_rectangle_context {
             self.exit_rectangle();
         }
-        let keeps_array_context =
-            matches!(cmd.as_str(), "ar" | "array" | "from" | "fr")
-                || self.array_phase != ArrayPhase::Idle;
+        let keeps_array_context = matches!(cmd.as_str(), "ar" | "array" | "from" | "fr")
+            || self.array_phase != ArrayPhase::Idle;
         if !keeps_array_context {
             self.exit_array();
         }
-        let keeps_pedit_context =
-            matches!(cmd.as_str(), "pe" | "pedit" | "from" | "fr")
-                || self.pedit_phase != PeditPhase::Idle;
+        let keeps_pedit_context = matches!(cmd.as_str(), "pe" | "pedit" | "from" | "fr")
+            || self.pedit_phase != PeditPhase::Idle;
         if !keeps_pedit_context {
             self.exit_pedit();
         }
-        let keeps_boundary_context =
-            matches!(cmd.as_str(), "bo" | "boundary" | "from" | "fr")
-                || self.boundary_phase != BoundaryPhase::Idle;
+        let keeps_boundary_context = matches!(cmd.as_str(), "bo" | "boundary" | "from" | "fr")
+            || self.boundary_phase != BoundaryPhase::Idle;
         if !keeps_boundary_context {
             self.exit_boundary();
         }
-        let keeps_hatch_context =
-            matches!(cmd.as_str(), "ha" | "hatch" | "from" | "fr")
-                || self.hatch_phase != HatchPhase::Idle;
+        let keeps_hatch_context = matches!(cmd.as_str(), "ha" | "hatch" | "from" | "fr")
+            || self.hatch_phase != HatchPhase::Idle;
         if !keeps_hatch_context {
             self.exit_hatch();
         }
-        let keeps_block_context =
-            matches!(cmd.as_str(), "bmake" | "block" | "insert" | "i" | "bedit" | "be" | "bsave" | "bcancel" | "from" | "fr")
-                || self.block_phase != BlockPhase::Idle;
+        let keeps_block_context = matches!(
+            cmd.as_str(),
+            "bmake"
+                | "block"
+                | "insert"
+                | "i"
+                | "bedit"
+                | "be"
+                | "bsave"
+                | "bcancel"
+                | "from"
+                | "fr"
+        ) || self.block_phase != BlockPhase::Idle;
         if !keeps_block_context {
             self.exit_block();
         }
-        let keeps_insert_context =
-            matches!(cmd.as_str(), "insert" | "i" | "from" | "fr")
-                || self.insert_phase != InsertPhase::Idle;
+        let keeps_insert_context = matches!(cmd.as_str(), "insert" | "i" | "from" | "fr")
+            || self.insert_phase != InsertPhase::Idle;
         if !keeps_insert_context {
             self.exit_insert();
         }
@@ -248,8 +275,9 @@ impl CadKitApp {
                 _ => {
                     let names = self.drawing.block_names();
                     if names.is_empty() {
-                        self.command_log
-                            .push("INSERT: No block definitions. Create one with BLOCK".to_string());
+                        self.command_log.push(
+                            "INSERT: No block definitions. Create one with BLOCK".to_string(),
+                        );
                     } else {
                         self.command_log.push(format!(
                             "INSERT: Specify block name. Available: {}",
@@ -292,7 +320,8 @@ impl CadKitApp {
                 None => {
                     let names = self.drawing.block_names();
                     if names.is_empty() {
-                        self.command_log.push("BEDIT: No block definitions.".to_string());
+                        self.command_log
+                            .push("BEDIT: No block definitions.".to_string());
                     } else {
                         self.command_log.push(format!(
                             "BEDIT: Specify block name or select insert first. Available: {}",
@@ -306,7 +335,9 @@ impl CadKitApp {
 
         if head == "bsave" {
             match self.save_block_edit() {
-                Ok(()) => self.command_log.push("BSAVE: Block definition updated".to_string()),
+                Ok(()) => self
+                    .command_log
+                    .push("BSAVE: Block definition updated".to_string()),
                 Err(msg) => self.command_log.push(msg),
             }
             return true;
@@ -314,7 +345,9 @@ impl CadKitApp {
 
         if head == "bcancel" {
             match self.cancel_block_edit() {
-                Ok(()) => self.command_log.push("BCANCEL: Block edit canceled".to_string()),
+                Ok(()) => self
+                    .command_log
+                    .push("BCANCEL: Block edit canceled".to_string()),
                 Err(msg) => self.command_log.push(msg),
             }
             return true;
@@ -360,7 +393,10 @@ impl CadKitApp {
                 true
             }
             "a" | "arc" => {
-                self.active_tool = ActiveTool::Arc { start: None, mid: None };
+                self.active_tool = ActiveTool::Arc {
+                    start: None,
+                    mid: None,
+                };
                 self.distance_input.clear();
                 self.command_log.push("ARC".to_string());
                 log::info!("Command: ARC");
@@ -400,8 +436,10 @@ impl CadKitApp {
                 self.exit_chamfer();
                 self.exit_pedit();
                 self.polygon_phase = PolygonPhase::EnteringSides;
-                self.command_log
-                    .push(format!("POLYGON: Enter number of sides <{}>", self.polygon_sides));
+                self.command_log.push(format!(
+                    "POLYGON: Enter number of sides <{}>",
+                    self.polygon_sides
+                ));
                 log::info!("Command: POLYGON");
                 true
             }
@@ -565,11 +603,10 @@ impl CadKitApp {
                 self.exit_mirror();
                 self.exit_fillet();
                 self.chamfer_phase = ChamferPhase::EnteringDistance;
-                self.command_log
-                    .push(format!(
-                        "CHAMFER: Enter distances <{:.4},{:.4}>",
-                        self.chamfer_distance1, self.chamfer_distance2
-                    ));
+                self.command_log.push(format!(
+                    "CHAMFER: Enter distances <{:.4},{:.4}>",
+                    self.chamfer_distance1, self.chamfer_distance2
+                ));
                 log::info!("Command: CHAMFER");
                 true
             }
@@ -678,8 +715,7 @@ impl CadKitApp {
                 } else {
                     let ids: Vec<_> = self.selected_entities.iter().copied().collect();
                     self.block_phase = BlockPhase::PickBase { ids };
-                    self.command_log
-                        .push("BLOCK: Pick base point".to_string());
+                    self.command_log.push("BLOCK: Pick base point".to_string());
                 }
                 true
             }
@@ -702,8 +738,9 @@ impl CadKitApp {
             "x" | "explode" => {
                 let (arrays, blocks) = self.explode_selected_assoc_groups();
                 if arrays == 0 && blocks == 0 {
-                    self.command_log
-                        .push("EXPLODE: No associative array or block group in selection".to_string());
+                    self.command_log.push(
+                        "EXPLODE: No associative array or block group in selection".to_string(),
+                    );
                 } else {
                     self.command_log.push(format!(
                         "EXPLODE: Exploded {} array group(s), {} block group(s)",
@@ -950,7 +987,8 @@ impl CadKitApp {
             }
             "dimstyle" | "dst" => {
                 self.open_dim_style_dialog();
-                self.command_log.push("DIMSTYLE: Edit dimension style".to_string());
+                self.command_log
+                    .push("DIMSTYLE: Edit dimension style".to_string());
                 true
             }
             "grid" | "gr" => {
@@ -1048,14 +1086,22 @@ impl CadKitApp {
                     if val <= f64::EPSILON {
                         return false;
                     }
-                    let desired_r = if self.circle_use_diameter { val * 0.5 } else { val };
-                    let hover =
-                        self.hover_world_pos
-                            .unwrap_or(Vec2::new(c.x + desired_r, c.y));
+                    let desired_r = if self.circle_use_diameter {
+                        val * 0.5
+                    } else {
+                        val
+                    };
+                    let hover = self
+                        .hover_world_pos
+                        .unwrap_or(Vec2::new(c.x + desired_r, c.y));
                     let dx = hover.x - c.x;
                     let dy = hover.y - c.y;
                     let len = (dx * dx + dy * dy).sqrt();
-                    let (nx, ny) = if len > f64::EPSILON { (dx / len, dy / len) } else { (1.0, 0.0) };
+                    let (nx, ny) = if len > f64::EPSILON {
+                        (dx / len, dy / len)
+                    } else {
+                        (1.0, 0.0)
+                    };
                     Vec2::new(c.x + nx * desired_r, c.y + ny * desired_r)
                 } else {
                     return false;
@@ -1123,7 +1169,8 @@ impl CadKitApp {
                             world.y
                         );
                     } else {
-                        self.command_log.push("  *Invalid arc (collinear points)*".to_string());
+                        self.command_log
+                            .push("  *Invalid arc (collinear points)*".to_string());
                         log::warn!("Arc creation failed (collinear or invalid).");
                     }
                 }
@@ -1156,8 +1203,12 @@ impl CadKitApp {
 
                 points.push(world);
                 self.distance_input.clear();
-                self.command_log
-                    .push(format!("  Pt {}: {:.4}, {:.4}", points.len(), world.x, world.y));
+                self.command_log.push(format!(
+                    "  Pt {}: {:.4}, {:.4}",
+                    points.len(),
+                    world.x,
+                    world.y
+                ));
                 log::info!(
                     "Polyline point {} set at ({:.3}, {:.3})",
                     points.len(),
@@ -1215,7 +1266,8 @@ impl CadKitApp {
         if !self.python_console_input.ends_with('\n') {
             self.python_console_input.push('\n');
         }
-        self.command_log.push(format!("PYCON: Completed '{}'", cand));
+        self.command_log
+            .push(format!("PYCON: Completed '{}'", cand));
         true
     }
 
@@ -1271,7 +1323,8 @@ impl CadKitApp {
         if !t.contains("line") || !t.contains("from") {
             return None;
         }
-        let has_dir = t.contains("left") || t.contains("right") || t.contains("up") || t.contains("down");
+        let has_dir =
+            t.contains("left") || t.contains("right") || t.contains("up") || t.contains("down");
         if !has_dir {
             return None;
         }
@@ -1345,7 +1398,9 @@ impl CadKitApp {
             }
             return Ok(format!(
                 "cad.circle({}, {}, {})\n",
-                nums[0], nums[1], nums[2].abs()
+                nums[0],
+                nums[1],
+                nums[2].abs()
             ));
         }
 
@@ -1355,7 +1410,11 @@ impl CadKitApp {
             }
             return Ok(format!(
                 "cad.arc({}, {}, {}, {}, {})\n",
-                nums[0], nums[1], nums[2].abs(), nums[3], nums[4]
+                nums[0],
+                nums[1],
+                nums[2].abs(),
+                nums[3],
+                nums[4]
             ));
         }
 
@@ -1377,7 +1436,11 @@ impl CadKitApp {
         let s = text.trim();
         if let Some(start) = s.find("```") {
             let rest = &s[start + 3..];
-            let rest = if let Some(r) = rest.strip_prefix("python") { r } else { rest };
+            let rest = if let Some(r) = rest.strip_prefix("python") {
+                r
+            } else {
+                rest
+            };
             let rest = rest.strip_prefix('\n').unwrap_or(rest);
             if let Some(end) = rest.find("```") {
                 return rest[..end].trim().to_string();
@@ -1424,8 +1487,8 @@ impl CadKitApp {
             .map_err(|e| format!("LM Studio request failed: {}", e))?
             .into_string()
             .map_err(|e| format!("LM Studio response read failed: {}", e))?;
-        let v: serde_json::Value =
-            serde_json::from_str(&body).map_err(|e| format!("LM Studio JSON parse failed: {}", e))?;
+        let v: serde_json::Value = serde_json::from_str(&body)
+            .map_err(|e| format!("LM Studio JSON parse failed: {}", e))?;
         let raw = v
             .get("choices")
             .and_then(|c| c.get(0))
@@ -1447,7 +1510,10 @@ impl CadKitApp {
         }
         let model_path = Self::expand_tilde_path(p);
         if !model_path.exists() {
-            return Err(format!("Phi-3 model file not found: {}", model_path.display()));
+            return Err(format!(
+                "Phi-3 model file not found: {}",
+                model_path.display()
+            ));
         }
         let system_prompt = match self.ai_model_profile {
             AiModelProfile::StrictCadCode => {
@@ -1520,15 +1586,14 @@ impl CadKitApp {
             AiBackendMode::Phi3 => match self.generate_python_with_phi3(prompt) {
                 Ok(code) => Ok(code),
                 Err(e) => {
-                    self.command_log.push(format!(
-                        "AICMD: {}. Falling back to local parser",
-                        e
-                    ));
+                    self.command_log
+                        .push(format!("AICMD: {}. Falling back to local parser", e));
                     self.generate_python_from_nl_prompt(prompt)
                 }
             },
             AiBackendMode::Mcp => Err(
-                "MCP generation backend is not wired yet. Use LM Studio or Local Parser.".to_string(),
+                "MCP generation backend is not wired yet. Use LM Studio or Local Parser."
+                    .to_string(),
             ),
             AiBackendMode::Auto => {
                 if self.ai_mcp_detected {
@@ -1603,7 +1668,10 @@ impl CadKitApp {
                 || t.contains("eval(")
                 || t.contains("open(")
             {
-                return Err(format!("Line {} contains disallowed Python construct", line_no));
+                return Err(format!(
+                    "Line {} contains disallowed Python construct",
+                    line_no
+                ));
             }
             if !t.starts_with("cad.") {
                 return Err(format!(
@@ -1630,11 +1698,19 @@ impl CadKitApp {
     pub(crate) fn refresh_mcp_detection(&mut self) {
         let mut candidate_paths: Vec<PathBuf> = Vec::new();
         if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
-            candidate_paths.push(PathBuf::from(xdg).join("Claude").join("claude_desktop_config.json"));
+            candidate_paths.push(
+                PathBuf::from(xdg)
+                    .join("Claude")
+                    .join("claude_desktop_config.json"),
+            );
         }
         if let Some(home) = std::env::var_os("HOME") {
             let home = PathBuf::from(home);
-            candidate_paths.push(home.join(".config").join("Claude").join("claude_desktop_config.json"));
+            candidate_paths.push(
+                home.join(".config")
+                    .join("Claude")
+                    .join("claude_desktop_config.json"),
+            );
             candidate_paths.push(home.join(".claude").join("claude_desktop_config.json"));
         }
         // Preserve insertion order while removing duplicates.

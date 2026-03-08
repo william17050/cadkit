@@ -55,7 +55,9 @@ impl Viewport {
     fn linetype_pattern(linetype: Linetype) -> Option<DashPattern> {
         match linetype {
             Linetype::Continuous => None,
-            Linetype::Hidden => Some(DashPattern { segments: &[0.25, 0.125] }),
+            Linetype::Hidden => Some(DashPattern {
+                segments: &[0.25, 0.125],
+            }),
             Linetype::Center => Some(DashPattern {
                 segments: &[0.75, 0.125, 0.125, 0.125],
             }),
@@ -89,7 +91,10 @@ impl Viewport {
         };
 
         if pattern.segments.is_empty()
-            || pattern.segments.iter().any(|v| *v <= 1e-9 || !v.is_finite())
+            || pattern
+                .segments
+                .iter()
+                .any(|v| *v <= 1e-9 || !v.is_finite())
         {
             for w in points.windows(2) {
                 Self::push_segment(vertices, w[0], w[1], c);
@@ -152,7 +157,10 @@ impl Viewport {
         for i in 0..=steps {
             let t = i as f64 / steps as f64;
             let a = start_angle + span * t;
-            pts.push(Vec2::new(center.x + radius * a.cos(), center.y + radius * a.sin()));
+            pts.push(Vec2::new(
+                center.x + radius * a.cos(),
+                center.y + radius * a.sin(),
+            ));
         }
         pts
     }
@@ -164,7 +172,10 @@ impl Viewport {
         for i in 0..steps {
             let t = i as f64 / steps as f64;
             let a = std::f64::consts::TAU * t;
-            pts.push(Vec2::new(center.x + radius * a.cos(), center.y + radius * a.sin()));
+            pts.push(Vec2::new(
+                center.x + radius * a.cos(),
+                center.y + radius * a.sin(),
+            ));
         }
         pts
     }
@@ -176,7 +187,7 @@ impl Viewport {
             backends: wgpu::Backends::all(),
             ..Default::default()
         });
-        
+
         // Request adapter
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -186,7 +197,7 @@ impl Viewport {
             })
             .await
             .ok_or_else(|| anyhow::anyhow!("Failed to find suitable GPU adapter"))?;
-        
+
         // Request device and queue
         let (device, queue) = adapter
             .request_device(
@@ -198,7 +209,7 @@ impl Viewport {
                 None,
             )
             .await?;
-        
+
         Self::from_device_queue(Arc::new(device), Arc::new(queue), width, height)
     }
 
@@ -223,7 +234,7 @@ impl Viewport {
             label: Some("CAD Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         });
-        
+
         // Create transform uniform buffer
         let transform = ViewTransform::identity();
         let transform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -231,7 +242,7 @@ impl Viewport {
             contents: bytemuck::cast_slice(&[transform]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-        
+
         // Create bind group layout for transform
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Transform Bind Group Layout"),
@@ -246,7 +257,7 @@ impl Viewport {
                 count: None,
             }],
         });
-        
+
         let transform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Transform Bind Group"),
             layout: &bind_group_layout,
@@ -255,14 +266,14 @@ impl Viewport {
                 resource: transform_buffer.as_entire_binding(),
             }],
         });
-        
+
         // Create pipeline layout
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Render Pipeline Layout"),
             bind_group_layouts: &[&bind_group_layout],
             push_constant_ranges: &[],
         });
-        
+
         // Create render pipeline
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Render Pipeline"),
@@ -298,7 +309,7 @@ impl Viewport {
             },
             multiview: None,
         });
-        
+
         // Create render texture
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Viewport Texture"),
@@ -314,9 +325,9 @@ impl Viewport {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
-        
+
         let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        
+
         Ok(Self {
             device,
             queue,
@@ -333,12 +344,12 @@ impl Viewport {
             height,
         })
     }
-    
+
     /// Resize viewport
     pub fn resize(&mut self, width: u32, height: u32) {
         self.width = width;
         self.height = height;
-        
+
         // Recreate texture with new size
         self.texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Viewport Texture"),
@@ -354,10 +365,12 @@ impl Viewport {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
-        
-        self.texture_view = self.texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        self.texture_view = self
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
     }
-    
+
     /// Render the drawing to the viewport texture
     pub fn render(&mut self, drawing: &Drawing) {
         // Update transform matrix
@@ -368,13 +381,13 @@ impl Viewport {
             self.pan_x,
             self.pan_y,
         );
-        
+
         self.queue.write_buffer(
             &self.transform_buffer,
             0,
             bytemuck::cast_slice(&[transform]),
         );
-        
+
         // Convert drawing entities to vertices
         let vertices = self.generate_vertices(drawing);
         let vertex_buffer = if vertices.is_empty() {
@@ -389,14 +402,14 @@ impl Viewport {
                     }),
             )
         };
-        
+
         // Create command encoder
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Render Encoder"),
             });
-        
+
         // Render pass
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -418,7 +431,7 @@ impl Viewport {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            
+
             if let Some(vb) = &vertex_buffer {
                 render_pass.set_pipeline(&self.render_pipeline);
                 render_pass.set_bind_group(0, &self.transform_bind_group, &[]);
@@ -426,11 +439,11 @@ impl Viewport {
                 render_pass.draw(0..vertices.len() as u32, 0..1);
             }
         }
-        
+
         // Submit command buffer
         self.queue.submit(std::iter::once(encoder.finish()));
     }
-    
+
     /// Convert drawing entities to vertex list.
     /// Only iterates visible entities; uses each entity's layer colour.
     fn generate_vertices(&self, drawing: &Drawing) -> Vec<Vertex> {
@@ -445,7 +458,11 @@ impl Viewport {
             let layer = drawing.get_layer(entity.layer);
             // Resolve colour: entity override → layer colour → white fallback.
             let c = if let Some(ec) = entity.color {
-                [ec[0] as f32 / 255.0, ec[1] as f32 / 255.0, ec[2] as f32 / 255.0]
+                [
+                    ec[0] as f32 / 255.0,
+                    ec[1] as f32 / 255.0,
+                    ec[2] as f32 / 255.0,
+                ]
             } else {
                 layer
                     .map(|l| {
@@ -490,7 +507,12 @@ impl Viewport {
                         effective_lt_scale,
                     );
                 }
-                EntityKind::Arc { center, radius, start_angle, end_angle } => {
+                EntityKind::Arc {
+                    center,
+                    radius,
+                    start_angle,
+                    end_angle,
+                } => {
                     let pts = Self::sample_arc_points(
                         Vec2::new(center.x, center.y),
                         *radius,
@@ -506,7 +528,10 @@ impl Viewport {
                         effective_lt_scale,
                     );
                 }
-                EntityKind::Polyline { vertices: verts, closed } => {
+                EntityKind::Polyline {
+                    vertices: verts,
+                    closed,
+                } => {
                     if verts.len() < 2 {
                         continue;
                     }
@@ -520,7 +545,15 @@ impl Viewport {
                         effective_lt_scale,
                     );
                 }
-                EntityKind::DimAligned { start, end, offset, text_override, text_pos, arrow_length, arrow_half_width } => {
+                EntityKind::DimAligned {
+                    start,
+                    end,
+                    offset,
+                    text_override,
+                    text_pos,
+                    arrow_length,
+                    arrow_half_width,
+                } => {
                     let sx = start.x as f32;
                     let sy = start.y as f32;
                     let ex = end.x as f32;
@@ -570,9 +603,18 @@ impl Viewport {
 
                     // Arrow at dl1
                     let a1_s = if arrows_outside { -1.0f32 } else { 1.0f32 };
-                    let a1_base = [dl1[0] + dir[0] * arrow_len * a1_s, dl1[1] + dir[1] * arrow_len * a1_s];
-                    let a1_w1 = [a1_base[0] + perp[0] * arrow_hw, a1_base[1] + perp[1] * arrow_hw];
-                    let a1_w2 = [a1_base[0] - perp[0] * arrow_hw, a1_base[1] - perp[1] * arrow_hw];
+                    let a1_base = [
+                        dl1[0] + dir[0] * arrow_len * a1_s,
+                        dl1[1] + dir[1] * arrow_len * a1_s,
+                    ];
+                    let a1_w1 = [
+                        a1_base[0] + perp[0] * arrow_hw,
+                        a1_base[1] + perp[1] * arrow_hw,
+                    ];
+                    let a1_w2 = [
+                        a1_base[0] - perp[0] * arrow_hw,
+                        a1_base[1] - perp[1] * arrow_hw,
+                    ];
                     vertices.push(Vertex::new(dl1[0], dl1[1], c[0], c[1], c[2]));
                     vertices.push(Vertex::new(a1_w1[0], a1_w1[1], c[0], c[1], c[2]));
                     vertices.push(Vertex::new(dl1[0], dl1[1], c[0], c[1], c[2]));
@@ -580,9 +622,18 @@ impl Viewport {
 
                     // Arrow at dl2
                     let a2_s = if arrows_outside { 1.0f32 } else { -1.0f32 };
-                    let a2_base = [dl2[0] + dir[0] * arrow_len * a2_s, dl2[1] + dir[1] * arrow_len * a2_s];
-                    let a2_w1 = [a2_base[0] + perp[0] * arrow_hw, a2_base[1] + perp[1] * arrow_hw];
-                    let a2_w2 = [a2_base[0] - perp[0] * arrow_hw, a2_base[1] - perp[1] * arrow_hw];
+                    let a2_base = [
+                        dl2[0] + dir[0] * arrow_len * a2_s,
+                        dl2[1] + dir[1] * arrow_len * a2_s,
+                    ];
+                    let a2_w1 = [
+                        a2_base[0] + perp[0] * arrow_hw,
+                        a2_base[1] + perp[1] * arrow_hw,
+                    ];
+                    let a2_w2 = [
+                        a2_base[0] - perp[0] * arrow_hw,
+                        a2_base[1] - perp[1] * arrow_hw,
+                    ];
                     vertices.push(Vertex::new(dl2[0], dl2[1], c[0], c[1], c[2]));
                     vertices.push(Vertex::new(a2_w1[0], a2_w1[1], c[0], c[1], c[2]));
                     vertices.push(Vertex::new(dl2[0], dl2[1], c[0], c[1], c[2]));
@@ -592,7 +643,16 @@ impl Viewport {
                     // not by the wgpu vertex buffer.
                     let _ = (text_override, text_pos);
                 }
-                EntityKind::DimLinear { start, end, offset, text_override, text_pos, horizontal, arrow_length, arrow_half_width } => {
+                EntityKind::DimLinear {
+                    start,
+                    end,
+                    offset,
+                    text_override,
+                    text_pos,
+                    horizontal,
+                    arrow_length,
+                    arrow_half_width,
+                } => {
                     let sx = start.x as f32;
                     let sy = start.y as f32;
                     let ex = end.x as f32;
@@ -632,9 +692,17 @@ impl Viewport {
 
                     // Dimension line — orient so dl_a has lower coord value
                     let (dl_a, dl_b) = if dir[0] > 0.5 {
-                        if dl1[0] <= dl2[0] { (dl1, dl2) } else { (dl2, dl1) }
+                        if dl1[0] <= dl2[0] {
+                            (dl1, dl2)
+                        } else {
+                            (dl2, dl1)
+                        }
                     } else {
-                        if dl1[1] <= dl2[1] { (dl1, dl2) } else { (dl2, dl1) }
+                        if dl1[1] <= dl2[1] {
+                            (dl1, dl2)
+                        } else {
+                            (dl2, dl1)
+                        }
                     };
                     vertices.push(Vertex::new(dl_a[0], dl_a[1], c[0], c[1], c[2]));
                     vertices.push(Vertex::new(dl_b[0], dl_b[1], c[0], c[1], c[2]));
@@ -643,9 +711,18 @@ impl Viewport {
 
                     // Arrow at dl_a
                     let a1_s = if arrows_outside { -1.0f32 } else { 1.0f32 };
-                    let a1_base = [dl_a[0] + dir[0] * arrow_len * a1_s, dl_a[1] + dir[1] * arrow_len * a1_s];
-                    let a1_w1 = [a1_base[0] + perp[0] * arrow_hw, a1_base[1] + perp[1] * arrow_hw];
-                    let a1_w2 = [a1_base[0] - perp[0] * arrow_hw, a1_base[1] - perp[1] * arrow_hw];
+                    let a1_base = [
+                        dl_a[0] + dir[0] * arrow_len * a1_s,
+                        dl_a[1] + dir[1] * arrow_len * a1_s,
+                    ];
+                    let a1_w1 = [
+                        a1_base[0] + perp[0] * arrow_hw,
+                        a1_base[1] + perp[1] * arrow_hw,
+                    ];
+                    let a1_w2 = [
+                        a1_base[0] - perp[0] * arrow_hw,
+                        a1_base[1] - perp[1] * arrow_hw,
+                    ];
                     vertices.push(Vertex::new(dl_a[0], dl_a[1], c[0], c[1], c[2]));
                     vertices.push(Vertex::new(a1_w1[0], a1_w1[1], c[0], c[1], c[2]));
                     vertices.push(Vertex::new(dl_a[0], dl_a[1], c[0], c[1], c[2]));
@@ -653,9 +730,18 @@ impl Viewport {
 
                     // Arrow at dl_b
                     let a2_s = if arrows_outside { 1.0f32 } else { -1.0f32 };
-                    let a2_base = [dl_b[0] + dir[0] * arrow_len * a2_s, dl_b[1] + dir[1] * arrow_len * a2_s];
-                    let a2_w1 = [a2_base[0] + perp[0] * arrow_hw, a2_base[1] + perp[1] * arrow_hw];
-                    let a2_w2 = [a2_base[0] - perp[0] * arrow_hw, a2_base[1] - perp[1] * arrow_hw];
+                    let a2_base = [
+                        dl_b[0] + dir[0] * arrow_len * a2_s,
+                        dl_b[1] + dir[1] * arrow_len * a2_s,
+                    ];
+                    let a2_w1 = [
+                        a2_base[0] + perp[0] * arrow_hw,
+                        a2_base[1] + perp[1] * arrow_hw,
+                    ];
+                    let a2_w2 = [
+                        a2_base[0] - perp[0] * arrow_hw,
+                        a2_base[1] - perp[1] * arrow_hw,
+                    ];
                     vertices.push(Vertex::new(dl_b[0], dl_b[1], c[0], c[1], c[2]));
                     vertices.push(Vertex::new(a2_w1[0], a2_w1[1], c[0], c[1], c[2]));
                     vertices.push(Vertex::new(dl_b[0], dl_b[1], c[0], c[1], c[2]));
@@ -664,18 +750,28 @@ impl Viewport {
                     let _ = (text_override, text_pos);
                 }
                 EntityKind::DimAngular {
-                    vertex, line1_pt, line2_pt, radius,
-                    text_override, text_pos,
-                    arrow_length, arrow_half_width,
+                    vertex,
+                    line1_pt,
+                    line2_pt,
+                    radius,
+                    text_override,
+                    text_pos,
+                    arrow_length,
+                    arrow_half_width,
                 } => {
                     use std::f32::consts::TAU;
                     let vx = vertex.x as f32;
                     let vy = vertex.y as f32;
                     let a1 = ((line1_pt.y - vertex.y) as f32).atan2((line1_pt.x - vertex.x) as f32);
-                    let mut a2 = ((line2_pt.y - vertex.y) as f32).atan2((line2_pt.x - vertex.x) as f32);
-                    if a2 <= a1 { a2 += TAU; }
+                    let mut a2 =
+                        ((line2_pt.y - vertex.y) as f32).atan2((line2_pt.x - vertex.x) as f32);
+                    if a2 <= a1 {
+                        a2 += TAU;
+                    }
                     let rad = *radius as f32;
-                    if rad < 1e-6 { continue; }
+                    if rad < 1e-6 {
+                        continue;
+                    }
 
                     let ec = [c[0] * 0.75, c[1] * 0.75, c[2] * 0.75];
                     let gap = 1.0f32;
@@ -684,21 +780,49 @@ impl Viewport {
                     // Extension lines: from gap inside arc to slightly past arc
                     let r_inner = (rad - gap).max(0.0);
                     let r_outer = rad + ext_extra;
-                    let cos1 = a1.cos(); let sin1 = a1.sin();
-                    let cos2 = a2.cos(); let sin2 = a2.sin();
-                    vertices.push(Vertex::new(vx + cos1 * r_inner, vy + sin1 * r_inner, ec[0], ec[1], ec[2]));
-                    vertices.push(Vertex::new(vx + cos1 * r_outer, vy + sin1 * r_outer, ec[0], ec[1], ec[2]));
-                    vertices.push(Vertex::new(vx + cos2 * r_inner, vy + sin2 * r_inner, ec[0], ec[1], ec[2]));
-                    vertices.push(Vertex::new(vx + cos2 * r_outer, vy + sin2 * r_outer, ec[0], ec[1], ec[2]));
+                    let cos1 = a1.cos();
+                    let sin1 = a1.sin();
+                    let cos2 = a2.cos();
+                    let sin2 = a2.sin();
+                    vertices.push(Vertex::new(
+                        vx + cos1 * r_inner,
+                        vy + sin1 * r_inner,
+                        ec[0],
+                        ec[1],
+                        ec[2],
+                    ));
+                    vertices.push(Vertex::new(
+                        vx + cos1 * r_outer,
+                        vy + sin1 * r_outer,
+                        ec[0],
+                        ec[1],
+                        ec[2],
+                    ));
+                    vertices.push(Vertex::new(
+                        vx + cos2 * r_inner,
+                        vy + sin2 * r_inner,
+                        ec[0],
+                        ec[1],
+                        ec[2],
+                    ));
+                    vertices.push(Vertex::new(
+                        vx + cos2 * r_outer,
+                        vy + sin2 * r_outer,
+                        ec[0],
+                        ec[1],
+                        ec[2],
+                    ));
 
                     // Arc segments
                     let sweep = a2 - a1;
                     let steps = ((sweep * rad).abs().max(6.0) as usize).clamp(12, 96);
-                    let arc_pts: Vec<[f32; 2]> = (0..=steps).map(|i| {
-                        let t = i as f32 / steps as f32;
-                        let a = a1 + sweep * t;
-                        [vx + rad * a.cos(), vy + rad * a.sin()]
-                    }).collect();
+                    let arc_pts: Vec<[f32; 2]> = (0..=steps)
+                        .map(|i| {
+                            let t = i as f32 / steps as f32;
+                            let a = a1 + sweep * t;
+                            [vx + rad * a.cos(), vy + rad * a.sin()]
+                        })
+                        .collect();
                     for pair in arc_pts.windows(2) {
                         vertices.push(Vertex::new(pair[0][0], pair[0][1], c[0], c[1], c[2]));
                         vertices.push(Vertex::new(pair[1][0], pair[1][1], c[0], c[1], c[2]));
@@ -777,9 +901,18 @@ impl Viewport {
                     let arrow_hw = *arrow_half_width as f32;
 
                     // Outer arrow points toward center (-dir).
-                    let a1_base = [tip_outer[0] + dir[0] * arrow_len, tip_outer[1] + dir[1] * arrow_len];
-                    let a1_w1 = [a1_base[0] - dir[1] * arrow_hw, a1_base[1] + dir[0] * arrow_hw];
-                    let a1_w2 = [a1_base[0] + dir[1] * arrow_hw, a1_base[1] - dir[0] * arrow_hw];
+                    let a1_base = [
+                        tip_outer[0] + dir[0] * arrow_len,
+                        tip_outer[1] + dir[1] * arrow_len,
+                    ];
+                    let a1_w1 = [
+                        a1_base[0] - dir[1] * arrow_hw,
+                        a1_base[1] + dir[0] * arrow_hw,
+                    ];
+                    let a1_w2 = [
+                        a1_base[0] + dir[1] * arrow_hw,
+                        a1_base[1] - dir[0] * arrow_hw,
+                    ];
                     vertices.push(Vertex::new(tip_outer[0], tip_outer[1], c[0], c[1], c[2]));
                     vertices.push(Vertex::new(a1_w1[0], a1_w1[1], c[0], c[1], c[2]));
                     vertices.push(Vertex::new(tip_outer[0], tip_outer[1], c[0], c[1], c[2]));
@@ -787,9 +920,18 @@ impl Viewport {
 
                     if *is_diameter {
                         // Inner arrow also points toward center (+dir).
-                        let a2_base = [tip_inner[0] - dir[0] * arrow_len, tip_inner[1] - dir[1] * arrow_len];
-                        let a2_w1 = [a2_base[0] - dir[1] * arrow_hw, a2_base[1] + dir[0] * arrow_hw];
-                        let a2_w2 = [a2_base[0] + dir[1] * arrow_hw, a2_base[1] - dir[0] * arrow_hw];
+                        let a2_base = [
+                            tip_inner[0] - dir[0] * arrow_len,
+                            tip_inner[1] - dir[1] * arrow_len,
+                        ];
+                        let a2_w1 = [
+                            a2_base[0] - dir[1] * arrow_hw,
+                            a2_base[1] + dir[0] * arrow_hw,
+                        ];
+                        let a2_w2 = [
+                            a2_base[0] + dir[1] * arrow_hw,
+                            a2_base[1] - dir[0] * arrow_hw,
+                        ];
                         vertices.push(Vertex::new(tip_inner[0], tip_inner[1], c[0], c[1], c[2]));
                         vertices.push(Vertex::new(a2_w1[0], a2_w1[1], c[0], c[1], c[2]));
                         vertices.push(Vertex::new(tip_inner[0], tip_inner[1], c[0], c[1], c[2]));
@@ -812,8 +954,20 @@ impl Viewport {
                     let Some(def) = drawing.get_block(name) else {
                         continue;
                     };
-                    let sx = *scale_x;
-                    let sy = *scale_y;
+                    let mut sx = *scale_x;
+                    let mut sy = *scale_y;
+                    if let Some(dynb) = &def.dynamic {
+                        if dynb.enable_width && dynb.base_width.abs() > 1e-9 {
+                            if let Some(w) = entity.block_params.width.filter(|v| *v > 1e-9) {
+                                sx *= w / dynb.base_width;
+                            }
+                        }
+                        if dynb.enable_height && dynb.base_height.abs() > 1e-9 {
+                            if let Some(h) = entity.block_params.height.filter(|v| *v > 1e-9) {
+                                sy *= h / dynb.base_height;
+                            }
+                        }
+                    }
                     let ca = rotation.cos();
                     let sa = rotation.sin();
                     let tp = |x: f64, y: f64| -> Vec2 {
@@ -827,7 +981,11 @@ impl Viewport {
                     for be in &def.entities {
                         let blayer = drawing.get_layer(be.layer);
                         let bc = if let Some(ec) = be.color {
-                            [ec[0] as f32 / 255.0, ec[1] as f32 / 255.0, ec[2] as f32 / 255.0]
+                            [
+                                ec[0] as f32 / 255.0,
+                                ec[1] as f32 / 255.0,
+                                ec[2] as f32 / 255.0,
+                            ]
                         } else {
                             blayer
                                 .map(|l| {
@@ -897,7 +1055,10 @@ impl Viewport {
                                     beff_scale,
                                 );
                             }
-                            EntityKind::Polyline { vertices: verts, closed } => {
+                            EntityKind::Polyline {
+                                vertices: verts,
+                                closed,
+                            } => {
                                 if verts.len() < 2 {
                                     continue;
                                 }
@@ -920,7 +1081,7 @@ impl Viewport {
 
         vertices
     }
-    
+
     /// Get the rendered texture (for display in egui)
     pub fn texture(&self) -> &wgpu::Texture {
         &self.texture
@@ -946,13 +1107,13 @@ impl Viewport {
             to_srgb(self.clear_color[2]),
         ]
     }
-    
+
     /// Pan the viewport
     pub fn pan(&mut self, dx: f32, dy: f32) {
         self.pan_x += dx / self.zoom;
         self.pan_y += dy / self.zoom;
     }
-    
+
     /// Zoom the viewport (centered on current view)
     pub fn zoom_delta(&mut self, delta: f32) {
         self.zoom *= 1.0 + delta;

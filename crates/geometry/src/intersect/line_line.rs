@@ -67,10 +67,7 @@ impl Intersects<Line> for Line {
             if overlap <= 2.0 * t_tol {
                 // Segments touch at exactly one endpoint
                 let t = ((lo + hi) * 0.5).clamp(0.0, 1.0);
-                return Intersection::Points(vec![Vec3::xy(
-                    p1.0 + t * d1.0,
-                    p1.1 + t * d1.1,
-                )]);
+                return Intersection::Points(vec![Vec3::xy(p1.0 + t * d1.0, p1.1 + t * d1.1)]);
             }
 
             return Intersection::Coincident;

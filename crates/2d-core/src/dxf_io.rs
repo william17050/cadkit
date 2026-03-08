@@ -43,16 +43,16 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [u8; 3] {
 /// Convert AutoCAD Color Index (ACI) 0-255 to RGB.
 pub fn aci_to_rgb(idx: u8) -> [u8; 3] {
     match idx {
-        0   => [  0,   0,   0],
-        1   => [255,   0,   0],
-        2   => [255, 255,   0],
-        3   => [  0, 255,   0],
-        4   => [  0, 255, 255],
-        5   => [  0,   0, 255],
-        6   => [255,   0, 255],
-        7   => [255, 255, 255],
-        8   => [ 65,  65,  65],
-        9   => [128, 128, 128],
+        0 => [0, 0, 0],
+        1 => [255, 0, 0],
+        2 => [255, 255, 0],
+        3 => [0, 255, 0],
+        4 => [0, 255, 255],
+        5 => [0, 0, 255],
+        6 => [255, 0, 255],
+        7 => [255, 255, 255],
+        8 => [65, 65, 65],
+        9 => [128, 128, 128],
         10..=249 => {
             let group = (idx - 10) / 10;
             let shade = (idx - 10) % 10;
@@ -71,12 +71,12 @@ pub fn aci_to_rgb(idx: u8) -> [u8; 3] {
             };
             hsv_to_rgb(hue, s, v)
         }
-        250 => [ 26,  26,  26],
-        251 => [ 51,  51,  51],
-        252 => [ 77,  77,  77],
+        250 => [26, 26, 26],
+        251 => [51, 51, 51],
+        252 => [77, 77, 77],
         253 => [102, 102, 102],
         254 => [153, 153, 153],
-        _   => [204, 204, 204],
+        _ => [204, 204, 204],
     }
 }
 
@@ -148,7 +148,7 @@ impl Drawing {
 
             let color = match entity.color {
                 Some(rgb) => Color::from_index(rgb_to_aci(rgb)),
-                None      => Color::by_layer(),
+                None => Color::by_layer(),
             };
 
             let opt: Option<DxfEntity> = match &entity.kind {
@@ -156,7 +156,7 @@ impl Drawing {
                     use dxf::entities::Line as DxfLine;
                     let mut e = DxfEntity::new(EntityType::Line(DxfLine::new(
                         Point::new(start.x, start.y, start.z),
-                        Point::new(end.x,   end.y,   end.z),
+                        Point::new(end.x, end.y, end.z),
                     )));
                     e.common.layer = layer_name;
                     e.common.color = color;
@@ -182,7 +182,12 @@ impl Drawing {
                     };
                     Some(e)
                 }
-                EntityKind::Arc { center, radius, start_angle, end_angle } => {
+                EntityKind::Arc {
+                    center,
+                    radius,
+                    start_angle,
+                    end_angle,
+                } => {
                     use dxf::entities::Arc as DxfArc;
                     let mut e = DxfEntity::new(EntityType::Arc(DxfArc::new(
                         Point::new(center.x, center.y, center.z),
@@ -221,15 +226,21 @@ impl Drawing {
                         let mut e = DxfEntity::new(EntityType::LwPolyline(poly));
                         e.common.layer = layer_name;
                         e.common.color = color;
-                    e.common.line_type_name = if entity.linetype_by_layer {
-                        "BYLAYER".to_string()
-                    } else {
-                        entity.linetype.to_dxf_name().to_string()
-                    };
+                        e.common.line_type_name = if entity.linetype_by_layer {
+                            "BYLAYER".to_string()
+                        } else {
+                            entity.linetype.to_dxf_name().to_string()
+                        };
                         Some(e)
                     }
                 }
-                EntityKind::Text { position, content, height, rotation, font_name } => {
+                EntityKind::Text {
+                    position,
+                    content,
+                    height,
+                    rotation,
+                    font_name,
+                } => {
                     if content.contains('\n') {
                         use dxf::entities::MText as DxfMText;
                         let mut mt = DxfMText::default();
@@ -243,24 +254,29 @@ impl Drawing {
                         } else {
                             font_name.clone()
                         };
-                        let max_line = content.lines().map(|l| l.chars().count()).max().unwrap_or(1) as f64;
-                        mt.reference_rectangle_width = (max_line * mt.initial_text_height * 0.6).max(mt.initial_text_height);
+                        let max_line = content
+                            .lines()
+                            .map(|l| l.chars().count())
+                            .max()
+                            .unwrap_or(1) as f64;
+                        mt.reference_rectangle_width =
+                            (max_line * mt.initial_text_height * 0.6).max(mt.initial_text_height);
                         let mut e = dxf::entities::Entity::new(EntityType::MText(mt));
                         e.common.layer = layer_name;
                         e.common.color = color;
-                    e.common.line_type_name = if entity.linetype_by_layer {
-                        "BYLAYER".to_string()
-                    } else {
-                        entity.linetype.to_dxf_name().to_string()
-                    };
+                        e.common.line_type_name = if entity.linetype_by_layer {
+                            "BYLAYER".to_string()
+                        } else {
+                            entity.linetype.to_dxf_name().to_string()
+                        };
                         Some(e)
                     } else {
                         use dxf::entities::Text as DxfText;
                         let mut t = DxfText::default();
-                        t.location   = Point::new(position.x, position.y, 0.0);
+                        t.location = Point::new(position.x, position.y, 0.0);
                         t.text_height = *height;
-                        t.value      = content.clone();
-                        t.rotation   = rotation.to_degrees();
+                        t.value = content.clone();
+                        t.rotation = rotation.to_degrees();
                         t.text_style_name = if font_name.trim().is_empty() {
                             "STANDARD".to_string()
                         } else {
@@ -269,15 +285,22 @@ impl Drawing {
                         let mut e = dxf::entities::Entity::new(EntityType::Text(t));
                         e.common.layer = layer_name;
                         e.common.color = color;
-                    e.common.line_type_name = if entity.linetype_by_layer {
-                        "BYLAYER".to_string()
-                    } else {
-                        entity.linetype.to_dxf_name().to_string()
-                    };
+                        e.common.line_type_name = if entity.linetype_by_layer {
+                            "BYLAYER".to_string()
+                        } else {
+                            entity.linetype.to_dxf_name().to_string()
+                        };
                         Some(e)
                     }
                 }
-                EntityKind::DimAligned { start, end, offset, text_override, text_pos, .. } => {
+                EntityKind::DimAligned {
+                    start,
+                    end,
+                    offset,
+                    text_override,
+                    text_pos,
+                    ..
+                } => {
                     use dxf::entities::{DimensionBase, RotatedDimension};
                     let sx = start.x;
                     let sy = start.y;
@@ -310,15 +333,23 @@ impl Drawing {
                         let mut e = DxfEntity::new(EntityType::RotatedDimension(dim));
                         e.common.layer = layer_name;
                         e.common.color = color;
-                    e.common.line_type_name = if entity.linetype_by_layer {
-                        "BYLAYER".to_string()
-                    } else {
-                        entity.linetype.to_dxf_name().to_string()
-                    };
+                        e.common.line_type_name = if entity.linetype_by_layer {
+                            "BYLAYER".to_string()
+                        } else {
+                            entity.linetype.to_dxf_name().to_string()
+                        };
                         Some(e)
                     }
                 }
-                EntityKind::DimLinear { start, end, offset, text_override, text_pos, horizontal, .. } => {
+                EntityKind::DimLinear {
+                    start,
+                    end,
+                    offset,
+                    text_override,
+                    text_pos,
+                    horizontal,
+                    ..
+                } => {
                     use dxf::entities::{DimensionBase, RotatedDimension};
                     let sx = start.x;
                     let sy = start.y;
@@ -336,7 +367,11 @@ impl Drawing {
                     base.definition_point_1 = ins.clone();
                     base.text_mid_point = Point::new(text_pos.x, text_pos.y, 0.0);
                     base.text = text_override.clone().unwrap_or_else(|| "<>".to_string());
-                    base.actual_measurement = if *horizontal { (ex - sx).abs() } else { (ey - sy).abs() };
+                    base.actual_measurement = if *horizontal {
+                        (ex - sx).abs()
+                    } else {
+                        (ey - sy).abs()
+                    };
                     let mut dim = RotatedDimension::default();
                     dim.dimension_base = base;
                     dim.insertion_point = ins;
@@ -354,7 +389,15 @@ impl Drawing {
                     };
                     Some(e)
                 }
-                EntityKind::DimAngular { vertex, line1_pt, line2_pt, radius, text_override, text_pos, .. } => {
+                EntityKind::DimAngular {
+                    vertex,
+                    line1_pt,
+                    line2_pt,
+                    radius,
+                    text_override,
+                    text_pos,
+                    ..
+                } => {
                     use dxf::entities::{AngularThreePointDimension, DimensionBase};
                     let a1 = (line1_pt.y - vertex.y).atan2(line1_pt.x - vertex.x);
                     let mut a2 = (line2_pt.y - vertex.y).atan2(line2_pt.x - vertex.x);
@@ -362,7 +405,11 @@ impl Drawing {
                         a2 += std::f64::consts::TAU;
                     }
                     let am = (a1 + a2) * 0.5;
-                    let p_arc = Point::new(vertex.x + *radius * am.cos(), vertex.y + *radius * am.sin(), 0.0);
+                    let p_arc = Point::new(
+                        vertex.x + *radius * am.cos(),
+                        vertex.y + *radius * am.sin(),
+                        0.0,
+                    );
                     let mut base = DimensionBase::default();
                     base.dimension_type = DimensionType::AngularThreePoint;
                     base.definition_point_1 = p_arc.clone();
@@ -385,7 +432,15 @@ impl Drawing {
                     };
                     Some(e)
                 }
-                EntityKind::DimRadial { center, radius, leader_pt, is_diameter, text_override, text_pos, .. } => {
+                EntityKind::DimRadial {
+                    center,
+                    radius,
+                    leader_pt,
+                    is_diameter,
+                    text_override,
+                    text_pos,
+                    ..
+                } => {
                     use dxf::entities::{DiameterDimension, DimensionBase, RadialDimension};
                     let mut base = DimensionBase::default();
                     base.dimension_type = if *is_diameter {
@@ -397,9 +452,10 @@ impl Drawing {
                     base.text_mid_point = Point::new(text_pos.x, text_pos.y, 0.0);
                     base.text = text_override.clone().unwrap_or_else(|| "<>".to_string());
                     base.actual_measurement = *radius;
-                    let leader_length = ((leader_pt.x - center.x).powi(2) + (leader_pt.y - center.y).powi(2))
-                        .sqrt()
-                        .max(0.0);
+                    let leader_length = ((leader_pt.x - center.x).powi(2)
+                        + (leader_pt.y - center.y).powi(2))
+                    .sqrt()
+                    .max(0.0);
                     let mut e = if *is_diameter {
                         let mut dim = DiameterDimension::default();
                         dim.dimension_base = base;
@@ -434,25 +490,23 @@ impl Drawing {
             }
         }
 
-        dxf.save_file(path).map_err(|e| CadError::DxfError(e.to_string()))?;
+        dxf.save_file(path)
+            .map_err(|e| CadError::DxfError(e.to_string()))?;
         Ok(count)
     }
 
     /// Import a DXF file, returning the drawing and import statistics.
     /// Unsupported entity types are skipped and reported in the result.
     pub fn load_from_dxf(path: &str) -> Result<DxfImportResult> {
-        let dxf = dxf::Drawing::load_file(path)
-            .map_err(|e| CadError::DxfError(e.to_string()))?;
+        let dxf = dxf::Drawing::load_file(path).map_err(|e| CadError::DxfError(e.to_string()))?;
 
         let mut drawing = Drawing::new("Imported".to_string());
 
         // layer name → CadKit layer id
         let mut name_to_id: HashMap<String, u32> = HashMap::new();
         name_to_id.insert("0".to_string(), 0);
-        let blocks_by_name: HashMap<String, dxf::Block> = dxf
-            .blocks()
-            .map(|b| (b.name.clone(), b.clone()))
-            .collect();
+        let blocks_by_name: HashMap<String, dxf::Block> =
+            dxf.blocks().map(|b| (b.name.clone(), b.clone())).collect();
 
         let mut layer_count = 1usize; // layer "0" always exists
 
@@ -464,7 +518,7 @@ impl Drawing {
             if dl.name == "0" {
                 // Update the existing default layer.
                 if let Some(l) = drawing.get_layer_mut(0) {
-                    l.color   = rgb;
+                    l.color = rgb;
                     l.visible = dl.is_layer_on;
                     l.linetype = Linetype::from_dxf_name(&dl.line_type_name);
                 }
@@ -507,39 +561,49 @@ impl Drawing {
             let mut insert_count = 0usize;
             let cadkit: Option<Entity> = match &de.specific {
                 EntityType::Line(line) => Some(Entity {
-                    id:    Guid::new(),
-                    kind:  EntityKind::Line {
+                    id: Guid::new(),
+                    kind: EntityKind::Line {
                         start: Vec3::new(line.p1.x, line.p1.y, line.p1.z),
-                        end:   Vec3::new(line.p2.x, line.p2.y, line.p2.z),
+                        end: Vec3::new(line.p2.x, line.p2.y, line.p2.z),
                     },
                     layer: layer_id,
                     color,
                     linetype,
-                    linetype_by_layer: de.common.line_type_name.trim().eq_ignore_ascii_case("BYLAYER"),
+                    linetype_by_layer: de
+                        .common
+                        .line_type_name
+                        .trim()
+                        .eq_ignore_ascii_case("BYLAYER"),
                     linetype_scale: None,
+                    block_params: crate::BlockParamValues::default(),
                 }),
 
                 EntityType::Circle(circle) => Some(Entity {
-                    id:    Guid::new(),
-                    kind:  EntityKind::Circle {
+                    id: Guid::new(),
+                    kind: EntityKind::Circle {
                         center: Vec3::new(circle.center.x, circle.center.y, circle.center.z),
                         radius: circle.radius,
                     },
                     layer: layer_id,
                     color,
                     linetype,
-                    linetype_by_layer: de.common.line_type_name.trim().eq_ignore_ascii_case("BYLAYER"),
+                    linetype_by_layer: de
+                        .common
+                        .line_type_name
+                        .trim()
+                        .eq_ignore_ascii_case("BYLAYER"),
                     linetype_scale: None,
+                    block_params: crate::BlockParamValues::default(),
                 }),
 
                 EntityType::Arc(arc) => Some(Entity {
-                    id:    Guid::new(),
-                    kind:  {
+                    id: Guid::new(),
+                    kind: {
                         let (start_angle, end_angle) =
                             dxf_arc_angles_ccw_radians(arc.start_angle, arc.end_angle);
                         EntityKind::Arc {
-                            center:      Vec3::new(arc.center.x, arc.center.y, arc.center.z),
-                            radius:      arc.radius,
+                            center: Vec3::new(arc.center.x, arc.center.y, arc.center.z),
+                            radius: arc.radius,
                             start_angle,
                             end_angle,
                         }
@@ -547,8 +611,13 @@ impl Drawing {
                     layer: layer_id,
                     color,
                     linetype,
-                    linetype_by_layer: de.common.line_type_name.trim().eq_ignore_ascii_case("BYLAYER"),
+                    linetype_by_layer: de
+                        .common
+                        .line_type_name
+                        .trim()
+                        .eq_ignore_ascii_case("BYLAYER"),
                     linetype_scale: None,
+                    block_params: crate::BlockParamValues::default(),
                 }),
 
                 EntityType::LwPolyline(poly) => {
@@ -560,13 +629,21 @@ impl Drawing {
                     if verts.len() >= 2 {
                         let closed = (poly.flags & 1) != 0;
                         Some(Entity {
-                            id:    Guid::new(),
-                            kind:  EntityKind::Polyline { vertices: verts, closed },
+                            id: Guid::new(),
+                            kind: EntityKind::Polyline {
+                                vertices: verts,
+                                closed,
+                            },
                             layer: layer_id,
                             color,
                             linetype,
-                    linetype_by_layer: de.common.line_type_name.trim().eq_ignore_ascii_case("BYLAYER"),
-                    linetype_scale: None,
+                            linetype_by_layer: de
+                                .common
+                                .line_type_name
+                                .trim()
+                                .eq_ignore_ascii_case("BYLAYER"),
+                            linetype_scale: None,
+                            block_params: crate::BlockParamValues::default(),
                         })
                     } else {
                         None
@@ -582,13 +659,21 @@ impl Drawing {
                     if verts.len() >= 2 {
                         let closed = (poly.flags & 1) != 0;
                         Some(Entity {
-                            id:    Guid::new(),
-                            kind:  EntityKind::Polyline { vertices: verts, closed },
+                            id: Guid::new(),
+                            kind: EntityKind::Polyline {
+                                vertices: verts,
+                                closed,
+                            },
                             layer: layer_id,
                             color,
                             linetype,
-                    linetype_by_layer: de.common.line_type_name.trim().eq_ignore_ascii_case("BYLAYER"),
-                    linetype_scale: None,
+                            linetype_by_layer: de
+                                .common
+                                .line_type_name
+                                .trim()
+                                .eq_ignore_ascii_case("BYLAYER"),
+                            linetype_scale: None,
+                            block_params: crate::BlockParamValues::default(),
                         })
                     } else {
                         None
@@ -596,11 +681,11 @@ impl Drawing {
                 }
 
                 EntityType::Text(t) => Some(Entity {
-                    id:    Guid::new(),
-                    kind:  EntityKind::Text {
+                    id: Guid::new(),
+                    kind: EntityKind::Text {
                         position: Vec3::xy(t.location.x, t.location.y),
-                        content:  t.value.clone(),
-                        height:   t.text_height.max(0.01),
+                        content: t.value.clone(),
+                        height: t.text_height.max(0.01),
                         rotation: t.rotation.to_radians(),
                         font_name: if t.text_style_name.trim().is_empty() {
                             "STANDARD".to_string()
@@ -611,8 +696,13 @@ impl Drawing {
                     layer: layer_id,
                     color,
                     linetype,
-                    linetype_by_layer: de.common.line_type_name.trim().eq_ignore_ascii_case("BYLAYER"),
+                    linetype_by_layer: de
+                        .common
+                        .line_type_name
+                        .trim()
+                        .eq_ignore_ascii_case("BYLAYER"),
                     linetype_scale: None,
+                    block_params: crate::BlockParamValues::default(),
                 }),
 
                 EntityType::MText(t) => {
@@ -626,15 +716,13 @@ impl Drawing {
                         s
                     };
                     // Convert common DXF MTEXT paragraph delimiters back to plain newlines.
-                    let content = raw
-                        .replace("\\P", "\n")
-                        .replace("\\p", "\n");
+                    let content = raw.replace("\\P", "\n").replace("\\p", "\n");
                     Some(Entity {
-                        id:    Guid::new(),
-                        kind:  EntityKind::Text {
+                        id: Guid::new(),
+                        kind: EntityKind::Text {
                             position: Vec3::xy(t.insertion_point.x, t.insertion_point.y),
                             content,
-                            height:   t.initial_text_height.max(0.01),
+                            height: t.initial_text_height.max(0.01),
                             rotation: t.rotation_angle.to_radians(),
                             font_name: if t.text_style_name.trim().is_empty() {
                                 "STANDARD".to_string()
@@ -645,14 +733,22 @@ impl Drawing {
                         layer: layer_id,
                         color,
                         linetype,
-                    linetype_by_layer: de.common.line_type_name.trim().eq_ignore_ascii_case("BYLAYER"),
-                    linetype_scale: None,
+                        linetype_by_layer: de
+                            .common
+                            .line_type_name
+                            .trim()
+                            .eq_ignore_ascii_case("BYLAYER"),
+                        linetype_scale: None,
+                        block_params: crate::BlockParamValues::default(),
                     })
                 }
 
                 EntityType::RotatedDimension(d) => {
                     let text_override = parse_dimension_text_override(&d.dimension_base.text);
-                    let text_pos = Vec3::xy(d.dimension_base.text_mid_point.x, d.dimension_base.text_mid_point.y);
+                    let text_pos = Vec3::xy(
+                        d.dimension_base.text_mid_point.x,
+                        d.dimension_base.text_mid_point.y,
+                    );
                     let sx = d.definition_point_2.x;
                     let sy = d.definition_point_2.y;
                     let ex = d.definition_point_3.x;
@@ -666,7 +762,8 @@ impl Drawing {
                         } else {
                             let px = -dy / len;
                             let py = dx / len;
-                            let off = (d.insertion_point.x - sx) * px + (d.insertion_point.y - sy) * py;
+                            let off =
+                                (d.insertion_point.x - sx) * px + (d.insertion_point.y - sy) * py;
                             Some(Entity {
                                 id: Guid::new(),
                                 kind: EntityKind::DimAligned {
@@ -681,13 +778,19 @@ impl Drawing {
                                 layer: layer_id,
                                 color,
                                 linetype,
-                    linetype_by_layer: de.common.line_type_name.trim().eq_ignore_ascii_case("BYLAYER"),
-                    linetype_scale: None,
+                                linetype_by_layer: de
+                                    .common
+                                    .line_type_name
+                                    .trim()
+                                    .eq_ignore_ascii_case("BYLAYER"),
+                                linetype_scale: None,
+                                block_params: crate::BlockParamValues::default(),
                             })
                         }
                     } else {
                         let rot = d.rotation_angle.rem_euclid(360.0);
-                        let horizontal = !(45.0..135.0).contains(&rot) && !(225.0..315.0).contains(&rot);
+                        let horizontal =
+                            !(45.0..135.0).contains(&rot) && !(225.0..315.0).contains(&rot);
                         let mid_x = (sx + ex) * 0.5;
                         let mid_y = (sy + ey) * 0.5;
                         let off = if horizontal {
@@ -710,8 +813,13 @@ impl Drawing {
                             layer: layer_id,
                             color,
                             linetype,
-                    linetype_by_layer: de.common.line_type_name.trim().eq_ignore_ascii_case("BYLAYER"),
-                    linetype_scale: None,
+                            linetype_by_layer: de
+                                .common
+                                .line_type_name
+                                .trim()
+                                .eq_ignore_ascii_case("BYLAYER"),
+                            linetype_scale: None,
+                            block_params: crate::BlockParamValues::default(),
                         })
                     }
                 }
@@ -736,23 +844,36 @@ impl Drawing {
                             line2_pt,
                             radius,
                             text_override,
-                            text_pos: Vec3::xy(d.dimension_base.text_mid_point.x, d.dimension_base.text_mid_point.y),
+                            text_pos: Vec3::xy(
+                                d.dimension_base.text_mid_point.x,
+                                d.dimension_base.text_mid_point.y,
+                            ),
                             arrow_length: 3.0,
                             arrow_half_width: 0.75,
                         },
                         layer: layer_id,
                         color,
                         linetype,
-                    linetype_by_layer: de.common.line_type_name.trim().eq_ignore_ascii_case("BYLAYER"),
-                    linetype_scale: None,
+                        linetype_by_layer: de
+                            .common
+                            .line_type_name
+                            .trim()
+                            .eq_ignore_ascii_case("BYLAYER"),
+                        linetype_scale: None,
+                        block_params: crate::BlockParamValues::default(),
                     })
                 }
 
                 EntityType::RadialDimension(d) => {
                     let text_override = parse_dimension_text_override(&d.dimension_base.text);
-                    let center = Vec3::xy(d.dimension_base.definition_point_1.x, d.dimension_base.definition_point_1.y);
+                    let center = Vec3::xy(
+                        d.dimension_base.definition_point_1.x,
+                        d.dimension_base.definition_point_1.y,
+                    );
                     let leader_pt = Vec3::xy(d.definition_point_2.x, d.definition_point_2.y);
-                    let geom_r = ((leader_pt.x - center.x).powi(2) + (leader_pt.y - center.y).powi(2)).sqrt();
+                    let geom_r = ((leader_pt.x - center.x).powi(2)
+                        + (leader_pt.y - center.y).powi(2))
+                    .sqrt();
                     let radius = if d.dimension_base.actual_measurement > 1e-9 {
                         d.dimension_base.actual_measurement
                     } else {
@@ -766,23 +887,36 @@ impl Drawing {
                             leader_pt,
                             is_diameter: false,
                             text_override,
-                            text_pos: Vec3::xy(d.dimension_base.text_mid_point.x, d.dimension_base.text_mid_point.y),
+                            text_pos: Vec3::xy(
+                                d.dimension_base.text_mid_point.x,
+                                d.dimension_base.text_mid_point.y,
+                            ),
                             arrow_length: 3.0,
                             arrow_half_width: 0.75,
                         },
                         layer: layer_id,
                         color,
                         linetype,
-                    linetype_by_layer: de.common.line_type_name.trim().eq_ignore_ascii_case("BYLAYER"),
-                    linetype_scale: None,
+                        linetype_by_layer: de
+                            .common
+                            .line_type_name
+                            .trim()
+                            .eq_ignore_ascii_case("BYLAYER"),
+                        linetype_scale: None,
+                        block_params: crate::BlockParamValues::default(),
                     })
                 }
 
                 EntityType::DiameterDimension(d) => {
                     let text_override = parse_dimension_text_override(&d.dimension_base.text);
-                    let center = Vec3::xy(d.dimension_base.definition_point_1.x, d.dimension_base.definition_point_1.y);
+                    let center = Vec3::xy(
+                        d.dimension_base.definition_point_1.x,
+                        d.dimension_base.definition_point_1.y,
+                    );
                     let leader_pt = Vec3::xy(d.definition_point_2.x, d.definition_point_2.y);
-                    let geom_r = ((leader_pt.x - center.x).powi(2) + (leader_pt.y - center.y).powi(2)).sqrt();
+                    let geom_r = ((leader_pt.x - center.x).powi(2)
+                        + (leader_pt.y - center.y).powi(2))
+                    .sqrt();
                     let radius = if d.dimension_base.actual_measurement > 1e-9 {
                         d.dimension_base.actual_measurement
                     } else {
@@ -796,15 +930,23 @@ impl Drawing {
                             leader_pt,
                             is_diameter: true,
                             text_override,
-                            text_pos: Vec3::xy(d.dimension_base.text_mid_point.x, d.dimension_base.text_mid_point.y),
+                            text_pos: Vec3::xy(
+                                d.dimension_base.text_mid_point.x,
+                                d.dimension_base.text_mid_point.y,
+                            ),
                             arrow_length: 3.0,
                             arrow_half_width: 0.75,
                         },
                         layer: layer_id,
                         color,
                         linetype,
-                    linetype_by_layer: de.common.line_type_name.trim().eq_ignore_ascii_case("BYLAYER"),
-                    linetype_scale: None,
+                        linetype_by_layer: de
+                            .common
+                            .line_type_name
+                            .trim()
+                            .eq_ignore_ascii_case("BYLAYER"),
+                        linetype_scale: None,
+                        block_params: crate::BlockParamValues::default(),
                     })
                 }
 
@@ -841,12 +983,8 @@ impl Drawing {
         // Best-effort HATCH stub import for ASCII DXF:
         // current dxf crate version does not expose HATCH entities, so we parse
         // raw code pairs and convert boundary points into closed polylines.
-        let hatch_stub_count = import_ascii_hatch_boundaries(
-            path,
-            &mut drawing,
-            &mut name_to_id,
-            &mut layer_count,
-        );
+        let hatch_stub_count =
+            import_ascii_hatch_boundaries(path, &mut drawing, &mut name_to_id, &mut layer_count);
         entity_count += hatch_stub_count;
 
         Ok(DxfImportResult {
@@ -861,26 +999,26 @@ impl Drawing {
 /// Return a human-readable DXF entity type name for warning messages.
 fn dxf_type_name(et: &EntityType) -> &'static str {
     match et {
-        EntityType::Insert(_)                      => "INSERT",
+        EntityType::Insert(_) => "INSERT",
         EntityType::RotatedDimension(_)
         | EntityType::RadialDimension(_)
         | EntityType::DiameterDimension(_)
         | EntityType::AngularThreePointDimension(_)
-        | EntityType::OrdinateDimension(_)         => "DIMENSION",
-        EntityType::Spline(_)                      => "SPLINE",
-        EntityType::Ellipse(_)                     => "ELLIPSE",
-        EntityType::Image(_)                       => "IMAGE",
-        EntityType::Leader(_)                      => "LEADER",
-        EntityType::Solid(_)                       => "SOLID",
-        EntityType::Trace(_)                       => "TRACE",
-        EntityType::Face3D(_)                      => "3DFACE",
-        EntityType::Attribute(_)                   => "ATTRIB",
-        EntityType::AttributeDefinition(_)         => "ATTDEF",
-        EntityType::Ray(_)                         => "RAY",
-        EntityType::XLine(_)                       => "XLINE",
-        EntityType::Body(_)                        => "BODY",
-        EntityType::Region(_)                      => "REGION",
-        _                                          => "UNSUPPORTED",
+        | EntityType::OrdinateDimension(_) => "DIMENSION",
+        EntityType::Spline(_) => "SPLINE",
+        EntityType::Ellipse(_) => "ELLIPSE",
+        EntityType::Image(_) => "IMAGE",
+        EntityType::Leader(_) => "LEADER",
+        EntityType::Solid(_) => "SOLID",
+        EntityType::Trace(_) => "TRACE",
+        EntityType::Face3D(_) => "3DFACE",
+        EntityType::Attribute(_) => "ATTRIB",
+        EntityType::AttributeDefinition(_) => "ATTDEF",
+        EntityType::Ray(_) => "RAY",
+        EntityType::XLine(_) => "XLINE",
+        EntityType::Body(_) => "BODY",
+        EntityType::Region(_) => "REGION",
+        _ => "UNSUPPORTED",
     }
 }
 
@@ -919,17 +1057,45 @@ struct Aff2 {
 
 impl Aff2 {
     fn identity() -> Self {
-        Self { m11: 1.0, m12: 0.0, m21: 0.0, m22: 1.0, tx: 0.0, ty: 0.0 }
+        Self {
+            m11: 1.0,
+            m12: 0.0,
+            m21: 0.0,
+            m22: 1.0,
+            tx: 0.0,
+            ty: 0.0,
+        }
     }
     fn translate(dx: f64, dy: f64) -> Self {
-        Self { m11: 1.0, m12: 0.0, m21: 0.0, m22: 1.0, tx: dx, ty: dy }
+        Self {
+            m11: 1.0,
+            m12: 0.0,
+            m21: 0.0,
+            m22: 1.0,
+            tx: dx,
+            ty: dy,
+        }
     }
     fn scale(sx: f64, sy: f64) -> Self {
-        Self { m11: sx, m12: 0.0, m21: 0.0, m22: sy, tx: 0.0, ty: 0.0 }
+        Self {
+            m11: sx,
+            m12: 0.0,
+            m21: 0.0,
+            m22: sy,
+            tx: 0.0,
+            ty: 0.0,
+        }
     }
     fn rotate(theta: f64) -> Self {
         let (s, c) = theta.sin_cos();
-        Self { m11: c, m12: -s, m21: s, m22: c, tx: 0.0, ty: 0.0 }
+        Self {
+            m11: c,
+            m12: -s,
+            m21: s,
+            m22: c,
+            tx: 0.0,
+            ty: 0.0,
+        }
     }
     fn compose(self, other: Self) -> Self {
         // self ∘ other
@@ -1024,8 +1190,16 @@ fn expand_insert_flattened(
 
     let cols = ins.column_count.max(1) as usize;
     let rows = ins.row_count.max(1) as usize;
-    let sx = if ins.x_scale_factor.abs() < 1e-12 { 1.0 } else { ins.x_scale_factor };
-    let sy = if ins.y_scale_factor.abs() < 1e-12 { 1.0 } else { ins.y_scale_factor };
+    let sx = if ins.x_scale_factor.abs() < 1e-12 {
+        1.0
+    } else {
+        ins.x_scale_factor
+    };
+    let sy = if ins.y_scale_factor.abs() < 1e-12 {
+        1.0
+    } else {
+        ins.y_scale_factor
+    };
     let rot = ins.rotation.to_radians();
 
     let mut added = 0usize;
@@ -1044,7 +1218,8 @@ fn expand_insert_flattened(
             let xf = parent_xf.compose(local_to_insert);
 
             for be in &block.entities {
-                let layer_id = if be.common.layer.trim() == "0" || be.common.layer.trim().is_empty() {
+                let layer_id = if be.common.layer.trim() == "0" || be.common.layer.trim().is_empty()
+                {
                     insert_layer_id
                 } else {
                     resolve_layer_id_by_name(&be.common.layer, drawing, name_to_id, layer_count)
@@ -1061,11 +1236,8 @@ fn expand_insert_flattened(
                         end: xf.apply(line.p2.x, line.p2.y),
                     }),
                     EntityType::LwPolyline(poly) => {
-                        let verts: Vec<Vec3> = poly
-                            .vertices
-                            .iter()
-                            .map(|v| xf.apply(v.x, v.y))
-                            .collect();
+                        let verts: Vec<Vec3> =
+                            poly.vertices.iter().map(|v| xf.apply(v.x, v.y)).collect();
                         if verts.len() >= 2 {
                             Some(EntityKind::Polyline {
                                 vertices: verts,
@@ -1091,7 +1263,10 @@ fn expand_insert_flattened(
                     }
                     EntityType::Circle(circle) => {
                         let verts = sampled_circle_poly(xf, &circle.center, circle.radius, 96);
-                        Some(EntityKind::Polyline { vertices: verts, closed: true })
+                        Some(EntityKind::Polyline {
+                            vertices: verts,
+                            closed: true,
+                        })
                     }
                     EntityType::Arc(arc) => {
                         let verts = sampled_arc_poly(
@@ -1103,7 +1278,10 @@ fn expand_insert_flattened(
                             64,
                         );
                         if verts.len() >= 2 {
-                            Some(EntityKind::Polyline { vertices: verts, closed: false })
+                            Some(EntityKind::Polyline {
+                                vertices: verts,
+                                closed: false,
+                            })
                         } else {
                             None
                         }
@@ -1183,6 +1361,7 @@ fn expand_insert_flattened(
                         linetype: insert_linetype,
                         linetype_by_layer: false,
                         linetype_scale: None,
+                        block_params: crate::BlockParamValues::default(),
                     });
                     added += 1;
                 }
@@ -1332,10 +1511,7 @@ fn hatch_pairs_to_polyline(
     Some(Entity {
         id: Guid::new(),
         kind: EntityKind::Polyline {
-            vertices: verts_xy
-                .into_iter()
-                .map(|(x, y)| Vec3::xy(x, y))
-                .collect(),
+            vertices: verts_xy.into_iter().map(|(x, y)| Vec3::xy(x, y)).collect(),
             closed: true,
         },
         layer: layer_id,
@@ -1343,5 +1519,6 @@ fn hatch_pairs_to_polyline(
         linetype: Linetype::Continuous,
         linetype_by_layer: false,
         linetype_scale: None,
+        block_params: crate::BlockParamValues::default(),
     })
 }

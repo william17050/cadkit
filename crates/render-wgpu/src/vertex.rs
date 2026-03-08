@@ -7,8 +7,8 @@ use bytemuck::{Pod, Zeroable};
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct Vertex {
-    pub position: [f32; 2],  // X, Y in world coordinates
-    pub color: [f32; 3],     // RGB
+    pub position: [f32; 2], // X, Y in world coordinates
+    pub color: [f32; 3],    // RGB
 }
 
 impl Vertex {
@@ -18,7 +18,7 @@ impl Vertex {
             color: [r, g, b],
         }
     }
-    
+
     /// Vertex buffer layout descriptor for wgpu
     pub fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
         wgpu::VertexBufferLayout {
@@ -46,7 +46,7 @@ impl Vertex {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct ViewTransform {
-    pub view_proj: [[f32; 4]; 4],  // 4x4 matrix
+    pub view_proj: [[f32; 4]; 4], // 4x4 matrix
 }
 
 impl ViewTransform {
@@ -61,7 +61,7 @@ impl ViewTransform {
             ],
         }
     }
-    
+
     /// Create orthographic projection for 2D viewport
     /// screen_width, screen_height in pixels
     /// zoom: scale factor (1.0 = normal, 2.0 = zoomed in 2x)
@@ -77,18 +77,18 @@ impl ViewTransform {
         let aspect = screen_width / screen_height;
         let half_height = 100.0 / zoom; // Base view height
         let half_width = half_height * aspect;
-        
+
         // Orthographic projection matrix
         let left = -half_width + pan_x;
         let right = half_width + pan_x;
         let bottom = -half_height + pan_y;
         let top = half_height + pan_y;
-        
+
         let sx = 2.0 / (right - left);
         let sy = 2.0 / (top - bottom);
         let tx = -(right + left) / (right - left);
         let ty = -(top + bottom) / (top - bottom);
-        
+
         Self {
             view_proj: [
                 [sx, 0.0, 0.0, 0.0],

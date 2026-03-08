@@ -102,8 +102,8 @@ mod tests {
         let r = rot90(v);
         assert!((r.0 - 0.0).abs() < 1e-12);
         assert!((r.1 - (-1.0_f64).abs()).abs() < 1e-12 || (r.1 + 1.0).abs() < 1e-12); // (0, -1) wait
-        // rot90((1,0)) = (0, 1) — CCW rotation: (x,y) -> (-y, x)
-        // (-0, 1) = (0, 1) ✓  wait: rot90((1,0)) = (-0, 1) = (0, 1) ✓
+                                                                                      // rot90((1,0)) = (0, 1) — CCW rotation: (x,y) -> (-y, x)
+                                                                                      // (-0, 1) = (0, 1) ✓  wait: rot90((1,0)) = (-0, 1) = (0, 1) ✓
         assert!((r.0).abs() < 1e-12);
         assert!((r.1 - 1.0).abs() < 1e-12); // actually wait: rot90(v) = (-v.1, v.0) = (-0, 1) = (0,1)
     }

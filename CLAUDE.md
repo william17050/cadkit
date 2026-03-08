@@ -44,7 +44,7 @@ Line, Circle, Arc, Polyline, Text, DimAligned, DimLinear, DimAngular, DimRadial,
 - `execute_command_alias` calls `exit_dim()` for any unrecognised input — guard with `|| self.from_phase != FromPhase::Idle` to preserve dim context during FROM offset entry
 
 ## Next Tasks (priority order)
-1. **Dynamic/parametric blocks** — parameter schema + per-insert overrides + evaluator
+1. **Dynamic/parametric blocks** — expand first pass (width/height params + per-insert overrides) into richer parameter schema/constraints/actions
 2. **Gap healing for boundary** — close near-miss loops under tolerance for boundary/hatch
 3. **Polyline interior-join improvements** (PEDIT/JOIN currently endpoint-driven)
 4. **Array persistence polish** — preserve associative arrays robustly across save/load/edit cycles
@@ -119,3 +119,8 @@ Phase 8: Cabinet designer (target market)
   - `BEDIT` opens isolated block editing context
   - `BSAVE` commits definition updates
   - `BCANCEL` discards edits/restores drawing
+- Dynamic blocks first pass
+  - block defs infer base width/height from local bounds
+  - inserts persist per-instance width/height override values
+  - insert transform/render/snap/select/trim-boundary paths use resolved dynamic scale
+  - Properties panel exposes `Dyn Width` / `Dyn Height` + Reset for selected insert

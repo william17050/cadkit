@@ -21,10 +21,7 @@ impl Intersects<Circle> for Line {
     /// - `Points([p1, p2])` or `Points([p])` – one or two crossing points
     ///   (one point if only one end of the chord lies on the segment).
     fn intersect(&self, circle: &Circle, tol: f64) -> Intersection {
-        let d = (
-            self.end.x - self.start.x,
-            self.end.y - self.start.y,
-        );
+        let d = (self.end.x - self.start.x, self.end.y - self.start.y);
         let len_sq = dot2(d, d);
         if len_sq < tol * tol {
             return Intersection::None; // degenerate segment
@@ -80,10 +77,7 @@ impl Intersects<Circle> for Line {
         for &t in &[t1, t2] {
             if t >= -t_tol && t <= 1.0 + t_tol {
                 let tc = t.clamp(0.0, 1.0);
-                pts.push(Vec3::xy(
-                    self.start.x + tc * d.0,
-                    self.start.y + tc * d.1,
-                ));
+                pts.push(Vec3::xy(self.start.x + tc * d.0, self.start.y + tc * d.1));
             }
         }
 

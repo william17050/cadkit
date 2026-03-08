@@ -43,10 +43,7 @@ pub(crate) fn circle_circle_pts(c1: &Circle, c2: &Circle, tol: f64) -> Intersect
 
     // External tangent: circles touch from outside
     if (d - sum_r).abs() <= tol {
-        let pt = Vec3::xy(
-            c1.center.x + (r1 / d) * dx,
-            c1.center.y + (r1 / d) * dy,
-        );
+        let pt = Vec3::xy(c1.center.x + (r1 / d) * dx, c1.center.y + (r1 / d) * dy);
         return Intersection::Tangent(pt);
     }
 

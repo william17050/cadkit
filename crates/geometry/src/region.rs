@@ -399,7 +399,12 @@ fn canonical_loop_key(vertices: &[Vec3]) -> String {
 
     let quant: Vec<(i64, i64)> = vertices
         .iter()
-        .map(|p| ((p.x * 1_000_000.0).round() as i64, (p.y * 1_000_000.0).round() as i64))
+        .map(|p| {
+            (
+                (p.x * 1_000_000.0).round() as i64,
+                (p.y * 1_000_000.0).round() as i64,
+            )
+        })
         .collect();
     if quant.is_empty() {
         return String::new();

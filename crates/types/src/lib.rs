@@ -63,10 +63,26 @@ pub struct Vec3 {
 }
 
 impl Vec3 {
-    pub const ZERO: Self = Self { x: 0.0, y: 0.0, z: 0.0 };
-    pub const X_AXIS: Self = Self { x: 1.0, y: 0.0, z: 0.0 };
-    pub const Y_AXIS: Self = Self { x: 0.0, y: 1.0, z: 0.0 };
-    pub const Z_AXIS: Self = Self { x: 0.0, y: 0.0, z: 1.0 };
+    pub const ZERO: Self = Self {
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+    };
+    pub const X_AXIS: Self = Self {
+        x: 1.0,
+        y: 0.0,
+        z: 0.0,
+    };
+    pub const Y_AXIS: Self = Self {
+        x: 0.0,
+        y: 1.0,
+        z: 0.0,
+    };
+    pub const Z_AXIS: Self = Self {
+        x: 0.0,
+        y: 0.0,
+        z: 1.0,
+    };
 
     pub fn new(x: f64, y: f64, z: f64) -> Self {
         Self { x, y, z }
@@ -259,7 +275,7 @@ mod tests {
     fn test_vec2_basics() {
         let v = Vec2::new(3.0, 4.0);
         assert_eq!(v.length(), 5.0);
-        
+
         let n = v.normalize().unwrap();
         assert!((n.length() - 1.0).abs() < 1e-10);
     }
@@ -268,7 +284,7 @@ mod tests {
     fn test_vec3_basics() {
         let v = Vec3::new(1.0, 2.0, 2.0);
         assert_eq!(v.length(), 3.0);
-        
+
         let xy = Vec3::xy(10.0, 20.0);
         assert_eq!(xy.z, 0.0);
     }
@@ -287,7 +303,7 @@ mod tests {
         let g1 = Guid::new();
         let g2 = Guid::new();
         assert_ne!(g1, g2);
-        
+
         let nil = Guid::nil();
         assert!(nil.is_nil());
     }
@@ -296,7 +312,7 @@ mod tests {
     fn test_unit_conversion() {
         let mm = Unit::Millimeters;
         let inches = Unit::Inches;
-        
+
         assert_eq!(inches.to_mm(1.0), 25.4);
         assert_eq!(mm.from_mm(25.4), 25.4);
         assert!((inches.from_mm(25.4) - 1.0).abs() < 1e-10);

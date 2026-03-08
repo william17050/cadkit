@@ -137,7 +137,11 @@ impl CadKitApp {
         };
         if let Some(parent) = path.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
-                log::warn!("Failed to create prefs directory {}: {}", parent.display(), e);
+                log::warn!(
+                    "Failed to create prefs directory {}: {}",
+                    parent.display(),
+                    e
+                );
                 return;
             }
         }
@@ -214,7 +218,9 @@ impl CadKitApp {
         if let Some(path) = path {
             let path_str = path.to_string_lossy().to_string();
             match self.drawing.save_to_dxf(&path_str) {
-                Ok(n) => self.command_log.push(format!("DXF: Exported {} entities to {}", n, path_str)),
+                Ok(n) => self
+                    .command_log
+                    .push(format!("DXF: Exported {} entities to {}", n, path_str)),
                 Err(e) => self.command_log.push(format!("DXF: Export failed - {}", e)),
             }
         }
@@ -269,10 +275,8 @@ impl CadKitApp {
                 }
                 Err(e) => {
                     let _ = self.undo_stack.pop();
-                    self.command_log.push(format!(
-                        "PYRUN: Script failed - {} ({})",
-                        e, label
-                    ));
+                    self.command_log
+                        .push(format!("PYRUN: Script failed - {} ({})", e, label));
                 }
             }
         }
@@ -289,7 +293,9 @@ impl CadKitApp {
 
         match self.build_svg_document() {
             Ok(svg) => match std::fs::write(&path, svg) {
-                Ok(()) => self.command_log.push(format!("SVG: Exported to {}", path_str)),
+                Ok(()) => self
+                    .command_log
+                    .push(format!("SVG: Exported to {}", path_str)),
                 Err(e) => self.command_log.push(format!("SVG: Export failed - {}", e)),
             },
             Err(e) => self.command_log.push(format!("SVG: Export failed - {}", e)),
@@ -307,7 +313,9 @@ impl CadKitApp {
 
         match self.build_pdf_document() {
             Ok(pdf) => match std::fs::write(&path, pdf) {
-                Ok(()) => self.command_log.push(format!("PDF: Exported to {}", path_str)),
+                Ok(()) => self
+                    .command_log
+                    .push(format!("PDF: Exported to {}", path_str)),
                 Err(e) => self.command_log.push(format!("PDF: Export failed - {}", e)),
             },
             Err(e) => self.command_log.push(format!("PDF: Export failed - {}", e)),
@@ -323,7 +331,12 @@ impl CadKitApp {
         if let Some(path) = path {
             let path_str = path.to_string_lossy().to_string();
             match Drawing::load_from_dxf(&path_str) {
-                Ok(DxfImportResult { drawing, entity_count, layer_count, skipped_entity_types }) => {
+                Ok(DxfImportResult {
+                    drawing,
+                    entity_count,
+                    layer_count,
+                    skipped_entity_types,
+                }) => {
                     self.drawing = drawing;
                     self.current_file = None;
                     self.selected_entities.clear();
@@ -333,7 +346,10 @@ impl CadKitApp {
                         entity_count, layer_count, path_str
                     ));
                     for t in &skipped_entity_types {
-                        self.command_log.push(format!("DXF: Warning - skipped unsupported entity type: {}", t));
+                        self.command_log.push(format!(
+                            "DXF: Warning - skipped unsupported entity type: {}",
+                            t
+                        ));
                     }
                     Self::update_title(ctx, &path_str);
                 }
@@ -347,15 +363,11 @@ impl CadKitApp {
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| path.to_string());
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(
-            format!("CadKit - {}", name),
-        ));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!("CadKit - {}", name)));
     }
 
     pub(crate) fn recovery_snapshot_exists(&self) -> bool {
-        Self::recovery_path()
-            .map(|p| p.exists())
-            .unwrap_or(false)
+        Self::recovery_path().map(|p| p.exists()).unwrap_or(false)
     }
 
     pub(crate) fn autosave_recovery_if_due(&mut self) {
@@ -370,7 +382,9 @@ impl CadKitApp {
             return;
         }
 
-        let Some(path) = Self::recovery_path() else { return };
+        let Some(path) = Self::recovery_path() else {
+            return;
+        };
         if let Some(parent) = path.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
                 log::warn!(
@@ -382,11 +396,7 @@ impl CadKitApp {
             }
         }
         if let Err(e) = self.drawing.save_to_file(&path.to_string_lossy()) {
-            log::warn!(
-                "Recovery: auto-save failed at {}: {}",
-                path.display(),
-                e
-            );
+            log::warn!("Recovery: auto-save failed at {}: {}", path.display(), e);
         }
     }
 
@@ -417,15 +427,13 @@ impl CadKitApp {
     }
 
     pub(crate) fn delete_recovery_snapshot(&mut self) {
-        let Some(path) = Self::recovery_path() else { return };
+        let Some(path) = Self::recovery_path() else {
+            return;
+        };
         match std::fs::remove_file(&path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => log::warn!(
-                "Recovery: failed to delete {}: {}",
-                path.display(),
-                e
-            ),
+            Err(e) => log::warn!("Recovery: failed to delete {}: {}", path.display(), e),
         }
     }
 
@@ -489,7 +497,12 @@ impl CadKitApp {
                         .collect();
                     push_poly(&pts, true, rgb);
                 }
-                EntityKind::Arc { center, radius, start_angle, end_angle } => {
+                EntityKind::Arc {
+                    center,
+                    radius,
+                    start_angle,
+                    end_angle,
+                } => {
                     let sweep = (end_angle - start_angle).max(1e-6);
                     let steps = ((sweep.abs() * radius.abs()).max(12.0) as usize).clamp(12, 256);
                     let pts: Vec<(f64, f64)> = (0..=steps)

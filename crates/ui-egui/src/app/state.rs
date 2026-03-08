@@ -1,15 +1,26 @@
 use cadkit_2d_core::Entity;
-use cadkit_geometry::{Arc as GeomArc, Circle as GeomCircle, Line as GeomLine, Polyline as GeomPolyline};
+use cadkit_geometry::{
+    Arc as GeomArc, Circle as GeomCircle, Line as GeomLine, Polyline as GeomPolyline,
+};
 use cadkit_types::{Guid, Vec2};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
 pub enum ActiveTool {
     None,
-    Line { start: Option<Vec2> },
-    Circle { center: Option<Vec2> },
-    Arc { start: Option<Vec2>, mid: Option<Vec2> },
-    Polyline { points: Vec<Vec2> },
+    Line {
+        start: Option<Vec2>,
+    },
+    Circle {
+        center: Option<Vec2>,
+    },
+    Arc {
+        start: Option<Vec2>,
+        mid: Option<Vec2>,
+    },
+    Polyline {
+        points: Vec<Vec2>,
+    },
 }
 
 #[allow(dead_code)]
@@ -46,9 +57,17 @@ pub enum ExtendPhase {
 /// Result returned by `compute_extend`.
 pub enum ExtendResult {
     /// Move a line endpoint to `new_pt`.
-    Line { id: Guid, is_start: bool, new_pt: Vec2 },
+    Line {
+        id: Guid,
+        is_start: bool,
+        new_pt: Vec2,
+    },
     /// Rotate an arc endpoint to `new_angle` (radians, world CCW from +X).
-    Arc  { id: Guid, is_start: bool, new_angle: f64 },
+    Arc {
+        id: Guid,
+        is_start: bool,
+        new_angle: f64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -132,9 +151,17 @@ pub enum EllipsePhase {
 pub enum RectanglePhase {
     Idle,
     FirstCorner,
-    SecondCorner { first: Vec2 },
-    EnteringDimensions { first: Vec2 },
-    Direction { first: Vec2, width: f64, height: f64 },
+    SecondCorner {
+        first: Vec2,
+    },
+    EnteringDimensions {
+        first: Vec2,
+    },
+    Direction {
+        first: Vec2,
+        width: f64,
+        height: f64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -208,13 +235,24 @@ pub enum FromPhase {
 pub enum TextPhase {
     Idle,
     PlacingPosition,
-    EnteringHeight   { position: Vec2 },
-    EnteringRotation { position: Vec2, height: f64 },
-    TypingContent    { position: Vec2, height: f64, rotation: f64 },
+    EnteringHeight {
+        position: Vec2,
+    },
+    EnteringRotation {
+        position: Vec2,
+        height: f64,
+    },
+    TypingContent {
+        position: Vec2,
+        height: f64,
+        rotation: f64,
+    },
 }
 
 impl Default for TextPhase {
-    fn default() -> Self { TextPhase::Idle }
+    fn default() -> Self {
+        TextPhase::Idle
+    }
 }
 
 /// EDITTEXT workflow: select a text entity then edit it via dialog.
@@ -225,16 +263,18 @@ pub enum EditTextPhase {
 }
 
 impl Default for EditTextPhase {
-    fn default() -> Self { EditTextPhase::Idle }
+    fn default() -> Self {
+        EditTextPhase::Idle
+    }
 }
 
 /// State held while the Edit Text dialog is open.
 #[derive(Debug, Clone)]
 pub struct TextEditDialog {
-    pub id:              Guid,
-    pub content:         String,
-    pub height_str:      String,
-    pub rotation_str:    String,
+    pub id: Guid,
+    pub content: String,
+    pub height_str: String,
+    pub rotation_str: String,
     /// Set to true after the first frame so we only steal focus once.
     pub focus_requested: bool,
 }
@@ -247,15 +287,17 @@ pub enum EditDimPhase {
 }
 
 impl Default for EditDimPhase {
-    fn default() -> Self { EditDimPhase::Idle }
+    fn default() -> Self {
+        EditDimPhase::Idle
+    }
 }
 
 /// State held while the Edit Dim dialog is open.
 #[derive(Debug, Clone)]
 pub struct DimEditDialog {
-    pub id:              Guid,
+    pub id: Guid,
     /// Empty string = use the measured distance (auto).
-    pub override_str:    String,
+    pub override_str: String,
     pub focus_requested: bool,
 }
 
@@ -316,13 +358,21 @@ pub enum DimLinearPhase {
 pub enum DimRadialPhase {
     Idle,
     /// Waiting for the user to click a circle or arc entity.
-    SelectingEntity { is_diameter: bool },
+    SelectingEntity {
+        is_diameter: bool,
+    },
     /// Entity picked; drag the leader endpoint, click to place.
-    Placing { center: Vec2, radius: f64, is_diameter: bool },
+    Placing {
+        center: Vec2,
+        radius: f64,
+        is_diameter: bool,
+    },
 }
 
 impl Default for DimRadialPhase {
-    fn default() -> Self { DimRadialPhase::Idle }
+    fn default() -> Self {
+        DimRadialPhase::Idle
+    }
 }
 
 /// DimAngular placement workflow phases.
@@ -335,12 +385,16 @@ pub enum DimAngularPhase {
     FirstEntity,
     /// First segment selected; waiting for the second.
     SecondEntity {
-        first_click: Vec2,  // world pos where user clicked (ray direction indicator)
-        first_start: Vec2,  // segment start in world space
-        first_end:   Vec2,  // segment end in world space
+        first_click: Vec2, // world pos where user clicked (ray direction indicator)
+        first_start: Vec2, // segment start in world space
+        first_end: Vec2,   // segment end in world space
     },
     /// Both segments selected; vertex computed. Drag to set arc radius, click to place.
-    Placing { vertex: Vec2, line1_pt: Vec2, line2_pt: Vec2 },
+    Placing {
+        vertex: Vec2,
+        line1_pt: Vec2,
+        line2_pt: Vec2,
+    },
 }
 
 /// Result of a read-only trim computation; mutations are applied by the caller.
@@ -357,15 +411,15 @@ pub enum TrimResult {
 /// Identifies what kind of geometric snap point was found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SnapKind {
-    Endpoint,       // end/start of line, arc, polyline vertex
-    Midpoint,       // midpoint of a segment
-    Center,         // circle or arc center
-    Quadrant,       // circle cardinal points (N/S/E/W)
-    Intersection,   // intersection of two entities
-    Parallel,       // tracked point from previous point, parallel to nearby segment
-    Nearest,        // closest point on entity curve to cursor
-    Perpendicular,  // foot of perpendicular from previous drawn point
-    Tangent,        // tangent point on circle/arc from previous drawn point
+    Endpoint,      // end/start of line, arc, polyline vertex
+    Midpoint,      // midpoint of a segment
+    Center,        // circle or arc center
+    Quadrant,      // circle cardinal points (N/S/E/W)
+    Intersection,  // intersection of two entities
+    Parallel,      // tracked point from previous point, parallel to nearby segment
+    Nearest,       // closest point on entity curve to cursor
+    Perpendicular, // foot of perpendicular from previous drawn point
+    Tangent,       // tangent point on circle/arc from previous drawn point
 }
 
 #[derive(Debug, Clone)]

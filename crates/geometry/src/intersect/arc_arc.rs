@@ -170,8 +170,8 @@ mod tests {
         // Same circles but arcs on opposite halves
         let a1 = arc(-0.5, 0.0, 1.0, 0.0, PI); // upper
         let a2 = arc(0.5, 0.0, 1.0, PI, 0.0); // lower (π → 2π)
-        // One circle-circle point is in upper half, one in lower.
-        // Upper point is on a1 but is it on a2? a2 is the LOWER arc.
+                                              // One circle-circle point is in upper half, one in lower.
+                                              // Upper point is on a1 but is it on a2? a2 is the LOWER arc.
         let r = a1.intersect(&a2, TOL);
         assert_eq!(r.point_count(), 0);
     }

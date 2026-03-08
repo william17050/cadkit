@@ -167,6 +167,7 @@
 - [x] Block definition
 - [x] Insert block reference (true `Insert` entity, non-exploded by default)
 - [x] Block editor (first pass: `BEDIT` / `BSAVE` / `BCANCEL`)
+- [~] Dynamic blocks (simple first pass: auto width/height parameters + per-insert property overrides)
 - [ ] Nested blocks
 - [~] Block library / palette (name list + insert flow; thumbnails pending)
 

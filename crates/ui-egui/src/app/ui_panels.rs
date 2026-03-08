@@ -1,7 +1,9 @@
 use super::state::{
-    ActiveTool, CopyPhase, DimAngularPhase, DimLinearPhase, DimPhase, DimRadialPhase, EditDimPhase, EditTextPhase,
-    ArrayMode, ArrayPhase, BlockPhase, BoundaryPhase, ChamferPhase, EllipsePhase, ExtendPhase, FilletPhase, FromPhase, HatchPhase, InsertPhase, MirrorPhase, MovePhase,
-    OffsetPhase, PeditPhase, PolygonPhase, RectanglePhase, RotatePhase, ScalePhase, TextPhase, TrimPhase,
+    ActiveTool, ArrayMode, ArrayPhase, BlockPhase, BoundaryPhase, ChamferPhase, CopyPhase,
+    DimAngularPhase, DimLinearPhase, DimPhase, DimRadialPhase, EditDimPhase, EditTextPhase,
+    EllipsePhase, ExtendPhase, FilletPhase, FromPhase, HatchPhase, InsertPhase, MirrorPhase,
+    MovePhase, OffsetPhase, PeditPhase, PolygonPhase, RectanglePhase, RotatePhase, ScalePhase,
+    TextPhase, TrimPhase,
 };
 use super::CadKitApp;
 use cadkit_2d_core::{EntityKind, Linetype};
@@ -68,7 +70,8 @@ impl CadKitApp {
                                 ui.close_menu();
                             }
                             if remove_missing {
-                                self.recent_files.retain(|p| std::path::Path::new(p).exists());
+                                self.recent_files
+                                    .retain(|p| std::path::Path::new(p).exists());
                             }
                         }
                     });
@@ -131,7 +134,10 @@ impl CadKitApp {
                     }
                     if ui.button("Arc").clicked() {
                         self.exit_dim();
-                        self.active_tool = ActiveTool::Arc { start: None, mid: None };
+                        self.active_tool = ActiveTool::Arc {
+                            start: None,
+                            mid: None,
+                        };
                         self.distance_input.clear();
                         ui.close_menu();
                     }
@@ -155,8 +161,10 @@ impl CadKitApp {
                         self.exit_dim();
                         self.cancel_active_tool();
                         self.polygon_phase = PolygonPhase::EnteringSides;
-                        self.command_log
-                            .push(format!("POLYGON: Enter number of sides <{}>", self.polygon_sides));
+                        self.command_log.push(format!(
+                            "POLYGON: Enter number of sides <{}>",
+                            self.polygon_sides
+                        ));
                         ui.close_menu();
                     }
                 });
@@ -172,432 +180,461 @@ impl CadKitApp {
     }
 
     fn draw_left_toolbar(&mut self, ctx: &egui::Context) {
-        egui::SidePanel::left("tools").default_width(150.0).show(ctx, |ui| {
-            ui.heading("Draw");
-            ui.separator();
+        egui::SidePanel::left("tools")
+            .default_width(150.0)
+            .show(ctx, |ui| {
+                ui.heading("Draw");
+                ui.separator();
 
-            if ui.button("📏 Line").clicked() {
-                self.exit_dim();
-                match self.active_tool {
-                    ActiveTool::Line { .. } => self.cancel_active_tool(),
-                    _ => {
-                        self.active_tool = ActiveTool::Line { start: None };
-                    }
-                }
-            }
-            if ui.button("⭕ Circle").clicked() {
-                self.exit_dim();
-                match self.active_tool {
-                    ActiveTool::Circle { .. } => self.cancel_active_tool(),
-                    _ => {
-                        self.active_tool = ActiveTool::Circle { center: None };
-                        self.distance_input.clear();
-                    }
-                }
-            }
-            if ui.button("🧵 Polyline").clicked() {
-                self.exit_dim();
-                match self.active_tool {
-                    ActiveTool::Polyline { .. } => self.cancel_active_tool(),
-                    _ => {
-                        self.active_tool = ActiveTool::Polyline { points: Vec::new() };
-                        self.distance_input.clear();
-                    }
-                }
-            }
-            if ui.button("◜ Arc").clicked() {
-                self.exit_dim();
-                match self.active_tool {
-                    ActiveTool::Arc { .. } => self.cancel_active_tool(),
-                    _ => {
-                        self.active_tool = ActiveTool::Arc { start: None, mid: None };
-                        self.distance_input.clear();
-                    }
-                }
-            }
-            if ui.button("▭ Rectangle").clicked() {
-                self.exit_dim();
-                self.cancel_active_tool();
-                self.rectangle_phase = RectanglePhase::FirstCorner;
-                self.command_log
-                    .push("RECTANGLE: Specify first corner".to_string());
-            }
-            if ui.button("⬭ Ellipse").clicked() {
-                self.exit_dim();
-                self.cancel_active_tool();
-                self.ellipse_phase = EllipsePhase::Center;
-                self.command_log
-                    .push("ELLIPSE: Specify center point".to_string());
-            }
-            if ui.button("⬡ Polygon").clicked() {
-                self.exit_dim();
-                self.cancel_active_tool();
-                self.polygon_phase = PolygonPhase::EnteringSides;
-                self.command_log
-                    .push(format!("POLYGON: Enter number of sides <{}>", self.polygon_sides));
-            }
-            if ui.button("T Text").clicked() {
-                self.exit_dim();
-                self.cancel_active_tool();
-                self.exit_trim();
-                self.exit_offset();
-                self.exit_move();
-                self.exit_extend();
-                self.exit_copy();
-                self.exit_rotate();
-                self.text_is_mtext = false;
-                self.text_phase = TextPhase::PlacingPosition;
-                self.command_log.push("TEXT  Specify insertion point:".to_string());
-            }
-            if ui.button("✏ Edit Text").clicked() {
-                self.exit_dim();
-                self.cancel_active_tool();
-                self.exit_trim();
-                self.exit_offset();
-                self.exit_move();
-                self.exit_extend();
-                self.exit_copy();
-                self.exit_rotate();
-                self.exit_text();
-                self.edit_text_phase = EditTextPhase::SelectingEntity;
-                self.text_edit_dialog = None;
-                self.command_log.push("EDITTEXT: Click a text entity to edit".to_string());
-            }
-
-            ui.add_space(20.0);
-            ui.heading("Blocks");
-            ui.separator();
-
-            if ui.button("🧱 BMake").clicked() {
-                let _ = self.execute_command_alias("bmake");
-            }
-
-            let block_names = self.drawing.block_names();
-            if !block_names.is_empty()
-                && (self.block_palette_selected.is_empty()
-                    || !block_names.iter().any(|n| n == &self.block_palette_selected))
-            {
-                self.block_palette_selected = block_names[0].clone();
-            }
-            if block_names.is_empty() {
-                ui.label(egui::RichText::new("No blocks defined yet").italics());
-            } else {
-                if ui.button("⬇ Insert Selected").clicked() {
-                    let cmd = format!("insert {}", self.block_palette_selected);
-                    let _ = self.execute_command_alias(&cmd);
-                }
-
-                egui::CollapsingHeader::new("Block Palette")
-                    .id_source("left_blocks_palette")
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        for name in &block_names {
-                            if ui
-                                .selectable_label(self.block_palette_selected == *name, name)
-                                .clicked()
-                            {
-                                self.block_palette_selected = name.clone();
-                            }
+                if ui.button("📏 Line").clicked() {
+                    self.exit_dim();
+                    match self.active_tool {
+                        ActiveTool::Line { .. } => self.cancel_active_tool(),
+                        _ => {
+                            self.active_tool = ActiveTool::Line { start: None };
                         }
-                    });
-            }
+                    }
+                }
+                if ui.button("⭕ Circle").clicked() {
+                    self.exit_dim();
+                    match self.active_tool {
+                        ActiveTool::Circle { .. } => self.cancel_active_tool(),
+                        _ => {
+                            self.active_tool = ActiveTool::Circle { center: None };
+                            self.distance_input.clear();
+                        }
+                    }
+                }
+                if ui.button("🧵 Polyline").clicked() {
+                    self.exit_dim();
+                    match self.active_tool {
+                        ActiveTool::Polyline { .. } => self.cancel_active_tool(),
+                        _ => {
+                            self.active_tool = ActiveTool::Polyline { points: Vec::new() };
+                            self.distance_input.clear();
+                        }
+                    }
+                }
+                if ui.button("◜ Arc").clicked() {
+                    self.exit_dim();
+                    match self.active_tool {
+                        ActiveTool::Arc { .. } => self.cancel_active_tool(),
+                        _ => {
+                            self.active_tool = ActiveTool::Arc {
+                                start: None,
+                                mid: None,
+                            };
+                            self.distance_input.clear();
+                        }
+                    }
+                }
+                if ui.button("▭ Rectangle").clicked() {
+                    self.exit_dim();
+                    self.cancel_active_tool();
+                    self.rectangle_phase = RectanglePhase::FirstCorner;
+                    self.command_log
+                        .push("RECTANGLE: Specify first corner".to_string());
+                }
+                if ui.button("⬭ Ellipse").clicked() {
+                    self.exit_dim();
+                    self.cancel_active_tool();
+                    self.ellipse_phase = EllipsePhase::Center;
+                    self.command_log
+                        .push("ELLIPSE: Specify center point".to_string());
+                }
+                if ui.button("⬡ Polygon").clicked() {
+                    self.exit_dim();
+                    self.cancel_active_tool();
+                    self.polygon_phase = PolygonPhase::EnteringSides;
+                    self.command_log.push(format!(
+                        "POLYGON: Enter number of sides <{}>",
+                        self.polygon_sides
+                    ));
+                }
+                if ui.button("T Text").clicked() {
+                    self.exit_dim();
+                    self.cancel_active_tool();
+                    self.exit_trim();
+                    self.exit_offset();
+                    self.exit_move();
+                    self.exit_extend();
+                    self.exit_copy();
+                    self.exit_rotate();
+                    self.text_is_mtext = false;
+                    self.text_phase = TextPhase::PlacingPosition;
+                    self.command_log
+                        .push("TEXT  Specify insertion point:".to_string());
+                }
+                if ui.button("✏ Edit Text").clicked() {
+                    self.exit_dim();
+                    self.cancel_active_tool();
+                    self.exit_trim();
+                    self.exit_offset();
+                    self.exit_move();
+                    self.exit_extend();
+                    self.exit_copy();
+                    self.exit_rotate();
+                    self.exit_text();
+                    self.edit_text_phase = EditTextPhase::SelectingEntity;
+                    self.text_edit_dialog = None;
+                    self.command_log
+                        .push("EDITTEXT: Click a text entity to edit".to_string());
+                }
 
-            ui.add_space(20.0);
-            ui.heading("Dimension");
-            ui.separator();
+                ui.add_space(20.0);
+                ui.heading("Blocks");
+                ui.separator();
 
-            if ui.button("📐 Dim Aligned").clicked() {
-                self.exit_dim();
-                self.cancel_active_tool();
-                self.exit_trim();
-                self.exit_offset();
-                self.exit_move();
-                self.exit_extend();
-                self.exit_copy();
-                self.exit_rotate();
-                self.dim_phase = DimPhase::FirstPoint;
-                self.command_log.push("DIMALIGNED: Specify first extension line origin".to_string());
-            }
-            if ui.button("↔ Dim Linear").clicked() {
-                self.exit_dim();
-                self.cancel_active_tool();
-                self.exit_trim();
-                self.exit_offset();
-                self.exit_move();
-                self.exit_extend();
-                self.exit_copy();
-                self.exit_rotate();
-                self.dim_linear_phase = DimLinearPhase::FirstPoint;
-                self.command_log.push("DIMLINEAR: Specify first extension line origin".to_string());
-            }
-            if ui.button("∠ Dim Angular").clicked() {
-                self.exit_dim();
-                self.cancel_active_tool();
-                self.exit_trim();
-                self.exit_offset();
-                self.exit_move();
-                self.exit_extend();
-                self.exit_copy();
-                self.exit_rotate();
-                self.dim_angular_phase = DimAngularPhase::FirstEntity;
-                self.command_log.push("DIMANGULAR: Click the first line or polyline segment".to_string());
-            }
-            if ui.button("R Dim Radius").clicked() {
-                self.exit_dim();
-                self.cancel_active_tool();
-                self.exit_trim();
-                self.exit_offset();
-                self.exit_move();
-                self.exit_extend();
-                self.exit_copy();
-                self.exit_rotate();
-                self.dim_radial_phase = DimRadialPhase::SelectingEntity { is_diameter: false };
-                self.command_log.push("DIMRADIUS: Click a circle or arc".to_string());
-            }
-            if ui.button("Ø Dim Diameter").clicked() {
-                self.exit_dim();
-                self.cancel_active_tool();
-                self.exit_trim();
-                self.exit_offset();
-                self.exit_move();
-                self.exit_extend();
-                self.exit_copy();
-                self.exit_rotate();
-                self.dim_radial_phase = DimRadialPhase::SelectingEntity { is_diameter: true };
-                self.command_log.push("DIMDIAMETER: Click a circle or arc".to_string());
-            }
-            if ui.button("✏ Edit Dim").clicked() {
-                self.exit_dim();
-                self.cancel_active_tool();
-                self.exit_trim();
-                self.exit_offset();
-                self.exit_move();
-                self.exit_extend();
-                self.exit_copy();
-                self.exit_rotate();
-                self.exit_text();
-                self.exit_edit_text();
-                self.edit_dim_phase = EditDimPhase::SelectingEntity;
-                self.dim_edit_dialog = None;
-                self.command_log.push("EDITDIM: Click a dimension entity to edit".to_string());
-            }
-            if ui.button("⚙ DimStyle").clicked() {
-                self.open_dim_style_dialog();
-                self.command_log.push("DIMSTYLE: Edit dimension style".to_string());
-            }
+                if ui.button("🧱 BMake").clicked() {
+                    let _ = self.execute_command_alias("bmake");
+                }
 
-            ui.add_space(20.0);
-            ui.heading("Modify");
-            ui.separator();
+                let block_names = self.drawing.block_names();
+                if !block_names.is_empty()
+                    && (self.block_palette_selected.is_empty()
+                        || !block_names
+                            .iter()
+                            .any(|n| n == &self.block_palette_selected))
+                {
+                    self.block_palette_selected = block_names[0].clone();
+                }
+                if block_names.is_empty() {
+                    ui.label(egui::RichText::new("No blocks defined yet").italics());
+                } else {
+                    if ui.button("⬇ Insert Selected").clicked() {
+                        let cmd = format!("insert {}", self.block_palette_selected);
+                        let _ = self.execute_command_alias(&cmd);
+                    }
 
-            if ui.button("✂ Trim").clicked() {
-                self.exit_dim();
-                self.cancel_active_tool();
-                self.trim_phase = TrimPhase::SelectingEdges;
-                self.trim_cutting_edges.clear();
-                self.command_log.push("TRIM: Select cutting edges, press Enter to continue".to_string());
-            }
-            if ui.button("↔ Extend").clicked() {
-                self.exit_dim();
-                self.cancel_active_tool();
-                self.exit_trim();
-                self.exit_offset();
-                self.exit_move();
-                self.extend_phase = ExtendPhase::SelectingBoundaries;
-                self.extend_boundary_edges.clear();
-                self.command_log.push("EXTEND: Select boundary edges, press Enter to continue".to_string());
-            }
-            if ui.button("⬚ Boundary").clicked() {
-                self.exit_dim();
-                self.cancel_active_tool();
-                self.exit_trim();
-                self.exit_offset();
-                self.exit_move();
-                self.exit_extend();
-                self.exit_copy();
-                self.exit_rotate();
-                self.exit_scale();
-                self.exit_mirror();
-                self.exit_fillet();
-                self.exit_chamfer();
-                self.exit_polygon();
-                self.exit_ellipse();
-                self.exit_rectangle();
-                self.exit_array();
-                self.exit_pedit();
-                self.boundary_phase = BoundaryPhase::PickingPoint;
-                self.command_log.push("BOUNDARY: Click an internal point".to_string());
-            }
-            if ui.button("//// Hatch").clicked() {
-                self.exit_dim();
-                self.cancel_active_tool();
-                self.exit_trim();
-                self.exit_offset();
-                self.exit_move();
-                self.exit_extend();
-                self.exit_copy();
-                self.exit_rotate();
-                self.exit_scale();
-                self.exit_mirror();
-                self.exit_fillet();
-                self.exit_chamfer();
-                self.exit_polygon();
-                self.exit_ellipse();
-                self.exit_rectangle();
-                self.exit_array();
-                self.exit_pedit();
-                self.exit_boundary();
-                self.hatch_dialog_open = true;
-                self.hatch_phase = HatchPhase::PickingPoint;
-                self.command_log
-                    .push("HATCH: Dialog open. Click internal point or adjust settings first".to_string());
-            }
-            if ui.button("⊙ Offset").clicked() {
-                self.exit_dim();
-                self.cancel_active_tool();
-                self.exit_trim();
-                self.offset_phase = OffsetPhase::EnteringDistance;
-                self.offset_distance = None;
-                self.offset_selected_entity = None;
-                self.command_log.push("OFFSET: Enter distance".to_string());
-            }
-            if ui.button("➡️ Move").clicked() {
-                self.exit_dim();
-                self.cancel_active_tool();
-                self.exit_trim();
-                self.exit_offset();
-                self.exit_scale();
-                self.move_phase = MovePhase::SelectingEntities;
-                self.move_base_point = None;
-                self.move_entities.clear();
-                self.command_log.push("MOVE: Select entities to move, press Enter to continue".to_string());
-            }
-            if ui.button("📋 Copy").clicked() {
-                self.exit_dim();
-                self.cancel_active_tool();
-                self.exit_trim();
-                self.exit_offset();
-                self.exit_move();
-                self.exit_extend();
-                self.exit_scale();
-                self.copy_phase = CopyPhase::SelectingEntities;
-                self.copy_base_point = None;
-                self.copy_entities.clear();
-                self.command_log.push("COPY: Select entities to copy, press Enter to continue".to_string());
-            }
-            if ui.button("▦ Array").clicked() {
-                self.exit_dim();
-                self.cancel_active_tool();
-                self.exit_trim();
-                self.exit_offset();
-                self.exit_move();
-                self.exit_extend();
-                self.exit_copy();
-                self.exit_rotate();
-                self.exit_scale();
-                self.exit_mirror();
-                self.exit_fillet();
-                self.exit_chamfer();
-                self.exit_polygon();
-                self.exit_ellipse();
-                self.exit_rectangle();
-                self.exit_pedit();
-                self.array_mode = ArrayMode::Rectangular;
-                self.array_entities.clear();
-                self.array_edit_assoc = None;
-                self.array_phase = ArrayPhase::SelectingEntities;
-                self.command_log.push("ARRAY: Select entities, press Enter to continue".to_string());
-            }
-            if ui.button("🔄 Rotate").clicked() {
-                self.exit_dim();
-                self.cancel_active_tool();
-                self.exit_trim();
-                self.exit_offset();
-                self.exit_move();
-                self.exit_extend();
-                self.exit_copy();
-                self.exit_scale();
-                self.rotate_phase = RotatePhase::SelectingEntities;
-                self.rotate_base_point = None;
-                self.rotate_entities.clear();
-                self.command_log.push("ROTATE: Select entities, press Enter to continue".to_string());
-            }
-            if ui.button("📏 Scale").clicked() {
-                self.exit_dim();
-                self.cancel_active_tool();
-                self.exit_trim();
-                self.exit_offset();
-                self.exit_move();
-                self.exit_extend();
-                self.exit_copy();
-                self.exit_rotate();
-                self.scale_phase = ScalePhase::SelectingEntities;
-                self.scale_base_point = None;
-                self.scale_ref_point = None;
-                self.scale_entities.clear();
-                self.command_log.push("SCALE: Select entities, press Enter to continue".to_string());
-            }
-            if ui.button("🪞 Mirror").clicked() {
-                self.exit_dim();
-                self.cancel_active_tool();
-                self.exit_trim();
-                self.exit_offset();
-                self.exit_move();
-                self.exit_extend();
-                self.exit_copy();
-                self.exit_rotate();
-                self.exit_scale();
-                self.mirror_phase = MirrorPhase::SelectingEntities;
-                self.mirror_axis_p1 = None;
-                self.mirror_entities.clear();
-                self.command_log.push("MIRROR: Select entities, press Enter to continue".to_string());
-            }
-            if ui.button("◜ Fillet").clicked() {
-                self.exit_dim();
-                self.cancel_active_tool();
-                self.exit_trim();
-                self.exit_offset();
-                self.exit_move();
-                self.exit_extend();
-                self.exit_copy();
-                self.exit_rotate();
-                self.exit_scale();
-                self.exit_mirror();
-                self.fillet_phase = FilletPhase::EnteringRadius;
-                self.command_log.push(format!("FILLET: Enter radius <{:.4}>", self.fillet_radius));
-            }
-            if ui.button("⟂ Chamfer").clicked() {
-                self.exit_dim();
-                self.cancel_active_tool();
-                self.exit_trim();
-                self.exit_offset();
-                self.exit_move();
-                self.exit_extend();
-                self.exit_copy();
-                self.exit_rotate();
-                self.exit_scale();
-                self.exit_mirror();
-                self.exit_fillet();
-                self.chamfer_phase = ChamferPhase::EnteringDistance;
-                self.command_log
-                    .push(format!(
+                    egui::CollapsingHeader::new("Block Palette")
+                        .id_source("left_blocks_palette")
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            for name in &block_names {
+                                if ui
+                                    .selectable_label(self.block_palette_selected == *name, name)
+                                    .clicked()
+                                {
+                                    self.block_palette_selected = name.clone();
+                                }
+                            }
+                        });
+                }
+
+                ui.add_space(20.0);
+                ui.heading("Dimension");
+                ui.separator();
+
+                if ui.button("📐 Dim Aligned").clicked() {
+                    self.exit_dim();
+                    self.cancel_active_tool();
+                    self.exit_trim();
+                    self.exit_offset();
+                    self.exit_move();
+                    self.exit_extend();
+                    self.exit_copy();
+                    self.exit_rotate();
+                    self.dim_phase = DimPhase::FirstPoint;
+                    self.command_log
+                        .push("DIMALIGNED: Specify first extension line origin".to_string());
+                }
+                if ui.button("↔ Dim Linear").clicked() {
+                    self.exit_dim();
+                    self.cancel_active_tool();
+                    self.exit_trim();
+                    self.exit_offset();
+                    self.exit_move();
+                    self.exit_extend();
+                    self.exit_copy();
+                    self.exit_rotate();
+                    self.dim_linear_phase = DimLinearPhase::FirstPoint;
+                    self.command_log
+                        .push("DIMLINEAR: Specify first extension line origin".to_string());
+                }
+                if ui.button("∠ Dim Angular").clicked() {
+                    self.exit_dim();
+                    self.cancel_active_tool();
+                    self.exit_trim();
+                    self.exit_offset();
+                    self.exit_move();
+                    self.exit_extend();
+                    self.exit_copy();
+                    self.exit_rotate();
+                    self.dim_angular_phase = DimAngularPhase::FirstEntity;
+                    self.command_log
+                        .push("DIMANGULAR: Click the first line or polyline segment".to_string());
+                }
+                if ui.button("R Dim Radius").clicked() {
+                    self.exit_dim();
+                    self.cancel_active_tool();
+                    self.exit_trim();
+                    self.exit_offset();
+                    self.exit_move();
+                    self.exit_extend();
+                    self.exit_copy();
+                    self.exit_rotate();
+                    self.dim_radial_phase = DimRadialPhase::SelectingEntity { is_diameter: false };
+                    self.command_log
+                        .push("DIMRADIUS: Click a circle or arc".to_string());
+                }
+                if ui.button("Ø Dim Diameter").clicked() {
+                    self.exit_dim();
+                    self.cancel_active_tool();
+                    self.exit_trim();
+                    self.exit_offset();
+                    self.exit_move();
+                    self.exit_extend();
+                    self.exit_copy();
+                    self.exit_rotate();
+                    self.dim_radial_phase = DimRadialPhase::SelectingEntity { is_diameter: true };
+                    self.command_log
+                        .push("DIMDIAMETER: Click a circle or arc".to_string());
+                }
+                if ui.button("✏ Edit Dim").clicked() {
+                    self.exit_dim();
+                    self.cancel_active_tool();
+                    self.exit_trim();
+                    self.exit_offset();
+                    self.exit_move();
+                    self.exit_extend();
+                    self.exit_copy();
+                    self.exit_rotate();
+                    self.exit_text();
+                    self.exit_edit_text();
+                    self.edit_dim_phase = EditDimPhase::SelectingEntity;
+                    self.dim_edit_dialog = None;
+                    self.command_log
+                        .push("EDITDIM: Click a dimension entity to edit".to_string());
+                }
+                if ui.button("⚙ DimStyle").clicked() {
+                    self.open_dim_style_dialog();
+                    self.command_log
+                        .push("DIMSTYLE: Edit dimension style".to_string());
+                }
+
+                ui.add_space(20.0);
+                ui.heading("Modify");
+                ui.separator();
+
+                if ui.button("✂ Trim").clicked() {
+                    self.exit_dim();
+                    self.cancel_active_tool();
+                    self.trim_phase = TrimPhase::SelectingEdges;
+                    self.trim_cutting_edges.clear();
+                    self.command_log
+                        .push("TRIM: Select cutting edges, press Enter to continue".to_string());
+                }
+                if ui.button("↔ Extend").clicked() {
+                    self.exit_dim();
+                    self.cancel_active_tool();
+                    self.exit_trim();
+                    self.exit_offset();
+                    self.exit_move();
+                    self.extend_phase = ExtendPhase::SelectingBoundaries;
+                    self.extend_boundary_edges.clear();
+                    self.command_log
+                        .push("EXTEND: Select boundary edges, press Enter to continue".to_string());
+                }
+                if ui.button("⬚ Boundary").clicked() {
+                    self.exit_dim();
+                    self.cancel_active_tool();
+                    self.exit_trim();
+                    self.exit_offset();
+                    self.exit_move();
+                    self.exit_extend();
+                    self.exit_copy();
+                    self.exit_rotate();
+                    self.exit_scale();
+                    self.exit_mirror();
+                    self.exit_fillet();
+                    self.exit_chamfer();
+                    self.exit_polygon();
+                    self.exit_ellipse();
+                    self.exit_rectangle();
+                    self.exit_array();
+                    self.exit_pedit();
+                    self.boundary_phase = BoundaryPhase::PickingPoint;
+                    self.command_log
+                        .push("BOUNDARY: Click an internal point".to_string());
+                }
+                if ui.button("//// Hatch").clicked() {
+                    self.exit_dim();
+                    self.cancel_active_tool();
+                    self.exit_trim();
+                    self.exit_offset();
+                    self.exit_move();
+                    self.exit_extend();
+                    self.exit_copy();
+                    self.exit_rotate();
+                    self.exit_scale();
+                    self.exit_mirror();
+                    self.exit_fillet();
+                    self.exit_chamfer();
+                    self.exit_polygon();
+                    self.exit_ellipse();
+                    self.exit_rectangle();
+                    self.exit_array();
+                    self.exit_pedit();
+                    self.exit_boundary();
+                    self.hatch_dialog_open = true;
+                    self.hatch_phase = HatchPhase::PickingPoint;
+                    self.command_log.push(
+                        "HATCH: Dialog open. Click internal point or adjust settings first"
+                            .to_string(),
+                    );
+                }
+                if ui.button("⊙ Offset").clicked() {
+                    self.exit_dim();
+                    self.cancel_active_tool();
+                    self.exit_trim();
+                    self.offset_phase = OffsetPhase::EnteringDistance;
+                    self.offset_distance = None;
+                    self.offset_selected_entity = None;
+                    self.command_log.push("OFFSET: Enter distance".to_string());
+                }
+                if ui.button("➡️ Move").clicked() {
+                    self.exit_dim();
+                    self.cancel_active_tool();
+                    self.exit_trim();
+                    self.exit_offset();
+                    self.exit_scale();
+                    self.move_phase = MovePhase::SelectingEntities;
+                    self.move_base_point = None;
+                    self.move_entities.clear();
+                    self.command_log
+                        .push("MOVE: Select entities to move, press Enter to continue".to_string());
+                }
+                if ui.button("📋 Copy").clicked() {
+                    self.exit_dim();
+                    self.cancel_active_tool();
+                    self.exit_trim();
+                    self.exit_offset();
+                    self.exit_move();
+                    self.exit_extend();
+                    self.exit_scale();
+                    self.copy_phase = CopyPhase::SelectingEntities;
+                    self.copy_base_point = None;
+                    self.copy_entities.clear();
+                    self.command_log
+                        .push("COPY: Select entities to copy, press Enter to continue".to_string());
+                }
+                if ui.button("▦ Array").clicked() {
+                    self.exit_dim();
+                    self.cancel_active_tool();
+                    self.exit_trim();
+                    self.exit_offset();
+                    self.exit_move();
+                    self.exit_extend();
+                    self.exit_copy();
+                    self.exit_rotate();
+                    self.exit_scale();
+                    self.exit_mirror();
+                    self.exit_fillet();
+                    self.exit_chamfer();
+                    self.exit_polygon();
+                    self.exit_ellipse();
+                    self.exit_rectangle();
+                    self.exit_pedit();
+                    self.array_mode = ArrayMode::Rectangular;
+                    self.array_entities.clear();
+                    self.array_edit_assoc = None;
+                    self.array_phase = ArrayPhase::SelectingEntities;
+                    self.command_log
+                        .push("ARRAY: Select entities, press Enter to continue".to_string());
+                }
+                if ui.button("🔄 Rotate").clicked() {
+                    self.exit_dim();
+                    self.cancel_active_tool();
+                    self.exit_trim();
+                    self.exit_offset();
+                    self.exit_move();
+                    self.exit_extend();
+                    self.exit_copy();
+                    self.exit_scale();
+                    self.rotate_phase = RotatePhase::SelectingEntities;
+                    self.rotate_base_point = None;
+                    self.rotate_entities.clear();
+                    self.command_log
+                        .push("ROTATE: Select entities, press Enter to continue".to_string());
+                }
+                if ui.button("📏 Scale").clicked() {
+                    self.exit_dim();
+                    self.cancel_active_tool();
+                    self.exit_trim();
+                    self.exit_offset();
+                    self.exit_move();
+                    self.exit_extend();
+                    self.exit_copy();
+                    self.exit_rotate();
+                    self.scale_phase = ScalePhase::SelectingEntities;
+                    self.scale_base_point = None;
+                    self.scale_ref_point = None;
+                    self.scale_entities.clear();
+                    self.command_log
+                        .push("SCALE: Select entities, press Enter to continue".to_string());
+                }
+                if ui.button("🪞 Mirror").clicked() {
+                    self.exit_dim();
+                    self.cancel_active_tool();
+                    self.exit_trim();
+                    self.exit_offset();
+                    self.exit_move();
+                    self.exit_extend();
+                    self.exit_copy();
+                    self.exit_rotate();
+                    self.exit_scale();
+                    self.mirror_phase = MirrorPhase::SelectingEntities;
+                    self.mirror_axis_p1 = None;
+                    self.mirror_entities.clear();
+                    self.command_log
+                        .push("MIRROR: Select entities, press Enter to continue".to_string());
+                }
+                if ui.button("◜ Fillet").clicked() {
+                    self.exit_dim();
+                    self.cancel_active_tool();
+                    self.exit_trim();
+                    self.exit_offset();
+                    self.exit_move();
+                    self.exit_extend();
+                    self.exit_copy();
+                    self.exit_rotate();
+                    self.exit_scale();
+                    self.exit_mirror();
+                    self.fillet_phase = FilletPhase::EnteringRadius;
+                    self.command_log
+                        .push(format!("FILLET: Enter radius <{:.4}>", self.fillet_radius));
+                }
+                if ui.button("⟂ Chamfer").clicked() {
+                    self.exit_dim();
+                    self.cancel_active_tool();
+                    self.exit_trim();
+                    self.exit_offset();
+                    self.exit_move();
+                    self.exit_extend();
+                    self.exit_copy();
+                    self.exit_rotate();
+                    self.exit_scale();
+                    self.exit_mirror();
+                    self.exit_fillet();
+                    self.chamfer_phase = ChamferPhase::EnteringDistance;
+                    self.command_log.push(format!(
                         "CHAMFER: Enter distances <{:.4},{:.4}>",
                         self.chamfer_distance1, self.chamfer_distance2
                     ));
-            }
-            if ui.button("🗑️ Delete").clicked() {
-                let requested: Vec<Guid> = self.selected_entities.iter().copied().collect();
-                let ids = self.filter_editable_entity_ids(&requested, "DELETE");
-                if !ids.is_empty() {
-                    self.push_undo();
-                    for id in &ids {
-                        let _ = self.drawing.remove_entity(id);
-                    }
-                    self.selected_entities.clear();
-                    self.selection = None;
                 }
-            }
-        });
+                if ui.button("🗑️ Delete").clicked() {
+                    let requested: Vec<Guid> = self.selected_entities.iter().copied().collect();
+                    let ids = self.filter_editable_entity_ids(&requested, "DELETE");
+                    if !ids.is_empty() {
+                        self.push_undo();
+                        for id in &ids {
+                            let _ = self.drawing.remove_entity(id);
+                        }
+                        self.selected_entities.clear();
+                        self.selection = None;
+                    }
+                }
+            });
     }
 
     fn draw_right_panel(&mut self, ctx: &egui::Context) {
@@ -621,6 +658,7 @@ impl CadKitApp {
             let mut assign_entity_linetype: Option<Linetype> = None;
             let mut assign_entity_linetype_bylayer: Option<bool> = None;
             let mut assign_entity_linetype_scale: Option<Option<f64>> = None;
+            let mut assign_insert_dynamic: Option<(Guid, Option<f64>, Option<f64>)> = None;
             let mut set_entity_bylayer = false;
             let mut open_entity_color_picker = false;
 
@@ -961,6 +999,62 @@ impl CadKitApp {
                                                 ui.label("Rotation:"); ui.label(format!("{:.2}°", rotation.to_degrees())); ui.end_row();
                                                 ui.label("Scale X:"); ui.label(format!("{:.4}", scale_x)); ui.end_row();
                                                 ui.label("Scale Y:"); ui.label(format!("{:.4}", scale_y)); ui.end_row();
+                                                if let Some(def) = self.drawing.get_block(name) {
+                                                    if let Some(dynb) = &def.dynamic {
+                                                        let mut width_val = entity
+                                                            .block_params
+                                                            .width
+                                                            .unwrap_or(dynb.base_width);
+                                                        let mut height_val = entity
+                                                            .block_params
+                                                            .height
+                                                            .unwrap_or(dynb.base_height);
+                                                        let mut changed = false;
+                                                        if dynb.enable_width {
+                                                            ui.label("Dyn Width:");
+                                                            if ui
+                                                                .add(
+                                                                    egui::DragValue::new(&mut width_val)
+                                                                        .clamp_range(0.001..=1_000_000.0)
+                                                                        .speed(0.5),
+                                                                )
+                                                                .changed()
+                                                            {
+                                                                changed = true;
+                                                            }
+                                                            ui.end_row();
+                                                        }
+                                                        if dynb.enable_height {
+                                                            ui.label("Dyn Height:");
+                                                            if ui
+                                                                .add(
+                                                                    egui::DragValue::new(&mut height_val)
+                                                                        .clamp_range(0.001..=1_000_000.0)
+                                                                        .speed(0.5),
+                                                                )
+                                                                .changed()
+                                                            {
+                                                                changed = true;
+                                                            }
+                                                            ui.end_row();
+                                                        }
+                                                        ui.label("Dynamic:");
+                                                        if ui.button("Reset").clicked() {
+                                                            assign_insert_dynamic = Some((
+                                                                eid,
+                                                                dynb.enable_width.then_some(dynb.base_width),
+                                                                dynb.enable_height.then_some(dynb.base_height),
+                                                            ));
+                                                        } else if changed {
+                                                            assign_insert_dynamic = Some((
+                                                                eid,
+                                                                dynb.enable_width.then_some(width_val.max(0.001)),
+                                                                dynb.enable_height.then_some(height_val.max(0.001)),
+                                                            ));
+                                                        }
+                                                        ui.end_row();
+                                                    }
+                                                }
                                             }
                                         }
                                     });
@@ -1275,6 +1369,18 @@ impl CadKitApp {
                 for id in &ids {
                     if let Some(e) = self.drawing.get_entity_mut(id) {
                         e.linetype_scale = scale_override;
+                    }
+                }
+            }
+            if let Some((eid, width, height)) = assign_insert_dynamic {
+                let requested = vec![eid];
+                let ids = self.filter_editable_entity_ids(&requested, "PROPERTIES");
+                if ids.iter().any(|id| *id == eid) {
+                    if let Some(e) = self.drawing.get_entity_mut(&eid) {
+                        if matches!(e.kind, EntityKind::Insert { .. }) {
+                            e.block_params.width = width;
+                            e.block_params.height = height;
+                        }
                     }
                 }
             }

@@ -13,11 +13,11 @@
 // ---------------------------------------------------------------------------
 
 const TOP: (f32, f32, f32, f32) = (0.5, 0.0, 3.5, 0.0); // a – horizontal top
-const TR:  (f32, f32, f32, f32) = (4.0, 0.5, 4.0, 2.5); // b – upper-right vertical
-const BR:  (f32, f32, f32, f32) = (4.0, 3.5, 4.0, 5.5); // c – lower-right vertical
+const TR: (f32, f32, f32, f32) = (4.0, 0.5, 4.0, 2.5); // b – upper-right vertical
+const BR: (f32, f32, f32, f32) = (4.0, 3.5, 4.0, 5.5); // c – lower-right vertical
 const BOT: (f32, f32, f32, f32) = (0.5, 6.0, 3.5, 6.0); // d – horizontal bottom
-const BL:  (f32, f32, f32, f32) = (0.0, 3.5, 0.0, 5.5); // e – lower-left vertical
-const TL:  (f32, f32, f32, f32) = (0.0, 0.5, 0.0, 2.5); // f – upper-left vertical
+const BL: (f32, f32, f32, f32) = (0.0, 3.5, 0.0, 5.5); // e – lower-left vertical
+const TL: (f32, f32, f32, f32) = (0.0, 0.5, 0.0, 2.5); // f – upper-left vertical
 const MID: (f32, f32, f32, f32) = (0.5, 3.0, 3.5, 3.0); // g – horizontal middle
 
 // Decimal point: small cross at bottom-centre of cell
@@ -42,7 +42,7 @@ fn glyph_segs(ch: char) -> &'static [(f32, f32, f32, f32)] {
         '9' => &[TOP, TL, TR, MID, BR, BOT],
         '-' => &[MID],
         '.' => &[DOT_H, DOT_V],
-        _   => &[],
+        _ => &[],
     }
 }
 
@@ -67,8 +67,8 @@ const ADVANCE: f32 = 5.0;
 pub fn text_segments(
     text: &str,
     center: [f32; 2],
-    dir:    [f32; 2],
-    up:     [f32; 2],
+    dir: [f32; 2],
+    up: [f32; 2],
     height: f32,
 ) -> Vec<([f32; 2], [f32; 2])> {
     let n = text.chars().count();

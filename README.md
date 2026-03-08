@@ -45,6 +45,7 @@ Modular Rust workspace with clear separation of concerns:
 - **Editing**: move, copy, rotate, offset, trim, extend — all with ghosted rubber-band previews; cancel via Esc or right-click; undo/redo stack.
 - **Blocks**: block definitions (`BLOCK`/`BMAKE`), true block inserts (`INSERT`), explode (`X/EXPLODE`), and first-pass block editing workflow (`BEDIT`, `BSAVE`, `BCANCEL`).
 - **Block snapping/selection**: insert geometry is selectable/snappable from transformed block geometry (not just insert origin); selected insert highlights full block geometry.
+- **Dynamic blocks (simple)**: new blocks auto-store base width/height; placed inserts expose per-instance `Dyn Width` / `Dyn Height` in Properties (Reset available).
 - **Trim/Extend policy**: non-block entities can trim/extend against block geometry; direct trim/extend of insert internals requires explode or block edit workflow.
 - **Dimensions**: DIMLINEAR command (`dli`) — 3-click placement (first point, second point, line location); live preview with stroke text; readable text regardless of pick direction.
 - **Layers**: create, color, rename, set current, toggle visibility; selection highlights by layer.
@@ -134,6 +135,7 @@ cargo test -p cadkit-types
 - `BEDIT <name>` or `BEDIT` with an insert selected: open block edit workspace.
 - `BSAVE`: commit block edits back to definition.
 - `BCANCEL`: discard block edits and restore drawing state.
+- Dynamic insert sizing is currently property-driven (select one insert → Properties panel → `Dyn Width` / `Dyn Height`).
 
 ## Project Status
 **Current**: Interactive 2D drafting MVP — command-line tools, snaps, layers, undo/redo, DXF IO, linear dimensions.

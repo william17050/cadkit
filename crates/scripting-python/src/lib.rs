@@ -69,7 +69,11 @@ impl CadPy {
     /// Supports `line(x1,y1,x2,y2)` or `line((x1,y1),(x2,y2))`.
     /// Also supports keyword style: `line(start=(x1,y1), end=(x2,y2))`.
     #[pyo3(signature = (*args, **kwargs))]
-    fn line(&mut self, args: &Bound<'_, PyTuple>, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<()> {
+    fn line(
+        &mut self,
+        args: &Bound<'_, PyTuple>,
+        kwargs: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<()> {
         let kwargs_xy = {
             let start = Self::kw_point(kwargs, "start")?;
             let end = Self::kw_point(kwargs, "end")?;
@@ -89,22 +93,22 @@ impl CadPy {
             xy
         } else {
             match args.len() {
-            4 => (
-                args.get_item(0)?.extract::<f64>()?,
-                args.get_item(1)?.extract::<f64>()?,
-                args.get_item(2)?.extract::<f64>()?,
-                args.get_item(3)?.extract::<f64>()?,
-            ),
-            2 => {
-                let (x1, y1) = Self::parse_point(&args.get_item(0)?)?;
-                let (x2, y2) = Self::parse_point(&args.get_item(1)?)?;
-                (x1, y1, x2, y2)
-            }
-            _ => {
-                return Err(PyValueError::new_err(
-                    "line expects (x1,y1,x2,y2), ((x1,y1),(x2,y2)), or keywords start/end",
-                ))
-            }
+                4 => (
+                    args.get_item(0)?.extract::<f64>()?,
+                    args.get_item(1)?.extract::<f64>()?,
+                    args.get_item(2)?.extract::<f64>()?,
+                    args.get_item(3)?.extract::<f64>()?,
+                ),
+                2 => {
+                    let (x1, y1) = Self::parse_point(&args.get_item(0)?)?;
+                    let (x2, y2) = Self::parse_point(&args.get_item(1)?)?;
+                    (x1, y1, x2, y2)
+                }
+                _ => {
+                    return Err(PyValueError::new_err(
+                        "line expects (x1,y1,x2,y2), ((x1,y1),(x2,y2)), or keywords start/end",
+                    ))
+                }
             }
         };
         let mut line = create_line(Vec2::new(x1, y1), Vec2::new(x2, y2));
@@ -117,7 +121,11 @@ impl CadPy {
     /// Supports `circle(cx,cy,radius)` or `circle((cx,cy), radius)`.
     /// Also supports keyword style: `circle(center=(cx,cy), radius=r)`.
     #[pyo3(signature = (*args, **kwargs))]
-    fn circle(&mut self, args: &Bound<'_, PyTuple>, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<()> {
+    fn circle(
+        &mut self,
+        args: &Bound<'_, PyTuple>,
+        kwargs: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<()> {
         let kwargs_vals = {
             let center = Self::kw_point(kwargs, "center")?;
             let radius = Self::kw_f64(kwargs, "radius")?;
@@ -135,21 +143,21 @@ impl CadPy {
             v
         } else {
             match args.len() {
-            3 => (
-                args.get_item(0)?.extract::<f64>()?,
-                args.get_item(1)?.extract::<f64>()?,
-                args.get_item(2)?.extract::<f64>()?,
-            ),
-            2 => {
-                let (cx, cy) = Self::parse_point(&args.get_item(0)?)?;
-                let radius = args.get_item(1)?.extract::<f64>()?;
-                (cx, cy, radius)
-            }
-            _ => {
-                return Err(PyValueError::new_err(
-                    "circle expects (cx,cy,r), ((cx,cy),r), or keywords center/radius",
-                ))
-            }
+                3 => (
+                    args.get_item(0)?.extract::<f64>()?,
+                    args.get_item(1)?.extract::<f64>()?,
+                    args.get_item(2)?.extract::<f64>()?,
+                ),
+                2 => {
+                    let (cx, cy) = Self::parse_point(&args.get_item(0)?)?;
+                    let radius = args.get_item(1)?.extract::<f64>()?;
+                    (cx, cy, radius)
+                }
+                _ => {
+                    return Err(PyValueError::new_err(
+                        "circle expects (cx,cy,r), ((cx,cy),r), or keywords center/radius",
+                    ))
+                }
             }
         };
         if !(radius.is_finite() && radius > 0.0) {
@@ -165,14 +173,17 @@ impl CadPy {
     /// Supports `arc(cx,cy,r,start_deg,end_deg)` or `arc((cx,cy),r,start_deg,end_deg)`.
     /// Also supports keyword style: `arc(center=(cx,cy), radius=r, start_deg=a, end_deg=b)`.
     #[pyo3(signature = (*args, **kwargs))]
-    fn arc(&mut self, args: &Bound<'_, PyTuple>, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<()> {
+    fn arc(
+        &mut self,
+        args: &Bound<'_, PyTuple>,
+        kwargs: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<()> {
         let kwargs_vals = {
             let center = Self::kw_point(kwargs, "center")?;
             let radius = Self::kw_f64(kwargs, "radius")?;
-            let start_deg = Self::kw_f64(kwargs, "start_deg")?
-                .or(Self::kw_f64(kwargs, "start_angle")?);
-            let end_deg = Self::kw_f64(kwargs, "end_deg")?
-                .or(Self::kw_f64(kwargs, "end_angle")?);
+            let start_deg =
+                Self::kw_f64(kwargs, "start_deg")?.or(Self::kw_f64(kwargs, "start_angle")?);
+            let end_deg = Self::kw_f64(kwargs, "end_deg")?.or(Self::kw_f64(kwargs, "end_angle")?);
             let cx = Self::kw_f64(kwargs, "cx")?;
             let cy = Self::kw_f64(kwargs, "cy")?;
             if let (Some((cx, cy)), Some(radius), Some(sa), Some(ea)) =
@@ -191,25 +202,25 @@ impl CadPy {
             v
         } else {
             match args.len() {
-            5 => (
-                args.get_item(0)?.extract::<f64>()?,
-                args.get_item(1)?.extract::<f64>()?,
-                args.get_item(2)?.extract::<f64>()?,
-                args.get_item(3)?.extract::<f64>()?,
-                args.get_item(4)?.extract::<f64>()?,
-            ),
-            4 => {
-                let (cx, cy) = Self::parse_point(&args.get_item(0)?)?;
-                let radius = args.get_item(1)?.extract::<f64>()?;
-                let start_deg = args.get_item(2)?.extract::<f64>()?;
-                let end_deg = args.get_item(3)?.extract::<f64>()?;
-                (cx, cy, radius, start_deg, end_deg)
-            }
-            _ => {
-                return Err(PyValueError::new_err(
-                    "arc expects positional or keyword center/radius/start_deg/end_deg",
-                ))
-            }
+                5 => (
+                    args.get_item(0)?.extract::<f64>()?,
+                    args.get_item(1)?.extract::<f64>()?,
+                    args.get_item(2)?.extract::<f64>()?,
+                    args.get_item(3)?.extract::<f64>()?,
+                    args.get_item(4)?.extract::<f64>()?,
+                ),
+                4 => {
+                    let (cx, cy) = Self::parse_point(&args.get_item(0)?)?;
+                    let radius = args.get_item(1)?.extract::<f64>()?;
+                    let start_deg = args.get_item(2)?.extract::<f64>()?;
+                    let end_deg = args.get_item(3)?.extract::<f64>()?;
+                    (cx, cy, radius, start_deg, end_deg)
+                }
+                _ => {
+                    return Err(PyValueError::new_err(
+                        "arc expects positional or keyword center/radius/start_deg/end_deg",
+                    ))
+                }
             }
         };
         if !(radius.is_finite() && radius > 0.0) {
@@ -238,7 +249,12 @@ impl CadPy {
         horizontal: bool,
         text_override: Option<String>,
     ) -> PyResult<()> {
-        if !(offset.is_finite() && x1.is_finite() && y1.is_finite() && x2.is_finite() && y2.is_finite()) {
+        if !(offset.is_finite()
+            && x1.is_finite()
+            && y1.is_finite()
+            && x2.is_finite()
+            && y2.is_finite())
+        {
             return Err(PyValueError::new_err("all inputs must be finite numbers"));
         }
         let text_pos = if horizontal {
@@ -376,7 +392,9 @@ impl PythonEngine {
                 .set_item("cad", cad_obj.clone_ref(py))
                 .map_err(|e| anyhow!("Failed to bind python locals: {e}"))?;
 
-            let builtins = py.import("builtins").map_err(|e| anyhow!(format_python_error(py, e)))?;
+            let builtins = py
+                .import("builtins")
+                .map_err(|e| anyhow!(format_python_error(py, e)))?;
             let exec_fn = builtins
                 .getattr("exec")
                 .map_err(|e| anyhow!(format_python_error(py, e)))?;
