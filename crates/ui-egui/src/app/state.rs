@@ -181,6 +181,19 @@ pub enum HatchPhase {
     PickingPoint,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum BlockPhase {
+    Idle,
+    PickBase { ids: Vec<Guid> },
+    EnterName { ids: Vec<Guid>, base: Vec2 },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum InsertPhase {
+    Idle,
+    PickPoint { name: String },
+}
+
 /// FROM tracking: lets the user pick a base snap point then type an offset from it.
 /// Triggered by typing "from" or "fr" while any point-pick is expected.
 #[derive(Debug, Clone, PartialEq)]
@@ -334,9 +347,9 @@ pub enum DimAngularPhase {
 pub enum TrimResult {
     /// Operation failed; the string is the log message.
     Fail(String),
-    /// Apply: remove `target_id`, add `new_entities`.
+    /// Apply: remove `remove_ids`, add `new_entities`.
     Apply {
-        target_id: Guid,
+        remove_ids: Vec<Guid>,
         new_entities: Vec<Entity>,
     },
 }

@@ -135,12 +135,116 @@ fn build_graph(segments: &[Line], tol: f64) -> (Vec<Node>, Vec<Edge>) {
     (nodes, edges)
 }
 
+/// Bridge tiny endpoint gaps by connecting dangling endpoints that are
+/// within `gap_tol` distance of each other.
+fn heal_small_gaps(segments: &[Line], tol: f64, gap_tol: f64) -> Vec<Line> {
+    if segments.is_empty() || gap_tol <= tol {
+        return segments.to_vec();
+    }
+
+    let tol2 = sqr(tol.max(1e-9));
+    let mut nodes: Vec<Node> = Vec::new();
+    let mut degree: Vec<usize> = Vec::new();
+    let mut endpoint_node_idx: Vec<(usize, usize)> = Vec::with_capacity(segments.len());
+    let mut endpoint_pos: Vec<(Vec3, Vec3)> = Vec::with_capacity(segments.len());
+
+    for s in segments {
+        if s.is_degenerate(tol) {
+            continue;
+        }
+        let a = weld_or_push(&mut nodes, s.start, tol2);
+        if a >= degree.len() {
+            degree.resize(a + 1, 0);
+        }
+        let b = weld_or_push(&mut nodes, s.end, tol2);
+        if b >= degree.len() {
+            degree.resize(b + 1, 0);
+        }
+        degree[a] += 1;
+        degree[b] += 1;
+        endpoint_node_idx.push((a, b));
+        endpoint_pos.push((s.start, s.end));
+    }
+
+    let mut dangling: Vec<(usize, Vec3)> = Vec::new();
+    for ((a, b), (pa, pb)) in endpoint_node_idx.iter().zip(endpoint_pos.iter()) {
+        if degree[*a] == 1 {
+            dangling.push((*a, *pa));
+        }
+        if degree[*b] == 1 {
+            dangling.push((*b, *pb));
+        }
+    }
+    if dangling.len() < 2 {
+        return segments.to_vec();
+    }
+
+    let mut used = vec![false; dangling.len()];
+    let gap2 = sqr(gap_tol);
+    let mut bridges: Vec<Line> = Vec::new();
+
+    loop {
+        let mut best: Option<(usize, usize, f64)> = None;
+        for i in 0..dangling.len() {
+            if used[i] {
+                continue;
+            }
+            for j in (i + 1)..dangling.len() {
+                if used[j] {
+                    continue;
+                }
+                if dangling[i].0 == dangling[j].0 {
+                    continue;
+                }
+                let d2 = dist2(dangling[i].1, dangling[j].1);
+                if d2 > gap2 {
+                    continue;
+                }
+                if best.as_ref().map_or(true, |(_, _, bd2)| d2 < *bd2) {
+                    best = Some((i, j, d2));
+                }
+            }
+        }
+        let Some((i, j, _)) = best else {
+            break;
+        };
+        used[i] = true;
+        used[j] = true;
+        let bridge = Line::new(dangling[i].1, dangling[j].1);
+        if !bridge.is_degenerate(tol) {
+            bridges.push(bridge);
+        }
+    }
+
+    if bridges.is_empty() {
+        return segments.to_vec();
+    }
+
+    let mut out = segments.to_vec();
+    out.extend(bridges);
+    out
+}
+
 /// Detect closed boundaries from line segments.
 ///
 /// Returns one closed polyline per detected loop.
 pub fn detect_closed_boundaries(segments: &[Line], tol: f64) -> Vec<Polyline> {
+    detect_closed_boundaries_with_gap(segments, tol, 0.0)
+}
+
+/// Detect closed boundaries from line segments with optional gap healing.
+///
+/// When `gap_tol > 0`, nearby dangling endpoints can be bridged before region
+/// detection so nearly-closed loops become discoverable.
+pub fn detect_closed_boundaries_with_gap(
+    segments: &[Line],
+    tol: f64,
+    gap_tol: f64,
+) -> Vec<Polyline> {
     let tol = tol.max(1e-9);
     let split = noded_segments(segments, tol);
+    let healed = heal_small_gaps(&split, tol, gap_tol.max(0.0));
+    let split = noded_segments(&healed, tol);
     let (nodes, edges) = build_graph(&split, tol);
     if nodes.is_empty() || edges.is_empty() {
         return Vec::new();
@@ -395,5 +499,20 @@ mod tests {
         ];
         let loops = detect_closed_boundaries(&segs, 1e-6);
         assert_eq!(loops.len(), 2);
+    }
+
+    #[test]
+    fn heals_small_endpoint_gap() {
+        let segs = vec![
+            line(0.0, 0.0, 10.0, 0.0),
+            line(10.0, 0.0, 10.0, 10.0),
+            line(10.0, 10.0, 0.0, 10.0),
+            // tiny gap to the first point
+            line(0.0, 10.0, 0.0, 0.02),
+        ];
+        let no_heal = detect_closed_boundaries_with_gap(&segs, 1e-6, 0.0);
+        assert!(no_heal.is_empty());
+        let healed = detect_closed_boundaries_with_gap(&segs, 1e-6, 0.05);
+        assert_eq!(healed.len(), 1);
     }
 }

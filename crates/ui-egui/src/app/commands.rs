@@ -1,6 +1,6 @@
 use super::state::{
     ActiveTool, CopyPhase, DimAngularPhase, DimLinearPhase, DimPhase, DimRadialPhase, EditDimPhase, EditTextPhase,
-    ArrayMode, ArrayPhase, BoundaryPhase, ChamferPhase, EllipsePhase, ExtendPhase, FilletPhase, FromPhase, HatchPhase, MirrorPhase, MovePhase,
+    ArrayMode, ArrayPhase, BlockPhase, BoundaryPhase, ChamferPhase, EllipsePhase, ExtendPhase, FilletPhase, FromPhase, HatchPhase, InsertPhase, MirrorPhase, MovePhase,
     OffsetPhase, PeditPhase, PolygonPhase, RectanglePhase, RotatePhase, ScalePhase, TextPhase, TrimPhase,
 };
 use super::{create_arc_from_three_points, AiBackendMode, AiModelProfile, CadKitApp};
@@ -16,6 +16,23 @@ impl CadKitApp {
         let cmd = raw_trimmed.to_ascii_lowercase();
         if cmd.is_empty() {
             return false;
+        }
+        if let BlockPhase::EnterName { ids, base } = self.block_phase.clone() {
+            let name = raw_trimmed;
+            if name.eq_ignore_ascii_case("esc") || name.eq_ignore_ascii_case("cancel") {
+                self.exit_block();
+                self.command_log.push("*Cancel*".to_string());
+                return true;
+            }
+            match self.define_block_from_selection(&ids, base, name) {
+                Ok(n) => {
+                    self.command_log
+                        .push(format!("BLOCK: '{}' defined from {} entities", name.trim(), n));
+                }
+                Err(msg) => self.command_log.push(msg),
+            }
+            self.exit_block();
+            return true;
         }
         let mut words = cmd.split_whitespace();
         let head = words.next().unwrap_or("");
@@ -196,6 +213,111 @@ impl CadKitApp {
                 || self.hatch_phase != HatchPhase::Idle;
         if !keeps_hatch_context {
             self.exit_hatch();
+        }
+        let keeps_block_context =
+            matches!(cmd.as_str(), "bmake" | "block" | "insert" | "i" | "bedit" | "be" | "bsave" | "bcancel" | "from" | "fr")
+                || self.block_phase != BlockPhase::Idle;
+        if !keeps_block_context {
+            self.exit_block();
+        }
+        let keeps_insert_context =
+            matches!(cmd.as_str(), "insert" | "i" | "from" | "fr")
+                || self.insert_phase != InsertPhase::Idle;
+        if !keeps_insert_context {
+            self.exit_insert();
+        }
+
+        if head == "insert" || head == "i" {
+            let raw_words: Vec<&str> = raw_trimmed.split_whitespace().collect();
+            let name = if raw_words.len() >= 2 {
+                Some(raw_words[1].trim().to_string())
+            } else {
+                None
+            };
+            match name {
+                Some(name) if !name.is_empty() => {
+                    if self.drawing.get_block(&name).is_none() {
+                        self.command_log
+                            .push(format!("INSERT: Block '{}' not found", name));
+                    } else {
+                        self.insert_phase = InsertPhase::PickPoint { name: name.clone() };
+                        self.command_log
+                            .push(format!("INSERT: Pick insertion point for '{}'", name));
+                    }
+                }
+                _ => {
+                    let names = self.drawing.block_names();
+                    if names.is_empty() {
+                        self.command_log
+                            .push("INSERT: No block definitions. Create one with BLOCK".to_string());
+                    } else {
+                        self.command_log.push(format!(
+                            "INSERT: Specify block name. Available: {}",
+                            names.join(", ")
+                        ));
+                    }
+                }
+            }
+            return true;
+        }
+
+        if head == "bedit" || head == "be" {
+            let raw_words: Vec<&str> = raw_trimmed.split_whitespace().collect();
+            let mut picked_name: Option<String> = if raw_words.len() >= 2 {
+                Some(raw_words[1].trim().to_string())
+            } else {
+                None
+            };
+            if picked_name.as_ref().map(|s| s.is_empty()).unwrap_or(false) {
+                picked_name = None;
+            }
+            if picked_name.is_none() {
+                for id in &self.selected_entities {
+                    if let Some(e) = self.drawing.get_entity(id) {
+                        if let cadkit_2d_core::EntityKind::Insert { name, .. } = &e.kind {
+                            picked_name = Some(name.clone());
+                            break;
+                        }
+                    }
+                }
+            }
+            match picked_name {
+                Some(name) => match self.begin_block_edit(&name) {
+                    Ok(()) => self.command_log.push(format!(
+                        "BEDIT: Editing '{}' (BSAVE to commit, BCANCEL to discard)",
+                        name
+                    )),
+                    Err(msg) => self.command_log.push(msg),
+                },
+                None => {
+                    let names = self.drawing.block_names();
+                    if names.is_empty() {
+                        self.command_log.push("BEDIT: No block definitions.".to_string());
+                    } else {
+                        self.command_log.push(format!(
+                            "BEDIT: Specify block name or select insert first. Available: {}",
+                            names.join(", ")
+                        ));
+                    }
+                }
+            }
+            return true;
+        }
+
+        if head == "bsave" {
+            match self.save_block_edit() {
+                Ok(()) => self.command_log.push("BSAVE: Block definition updated".to_string()),
+                Err(msg) => self.command_log.push(msg),
+            }
+            return true;
+        }
+
+        if head == "bcancel" {
+            match self.cancel_block_edit() {
+                Ok(()) => self.command_log.push("BCANCEL: Block edit canceled".to_string()),
+                Err(msg) => self.command_log.push(msg),
+            }
+            return true;
         }
 
         match cmd.as_str() {
@@ -531,6 +653,36 @@ impl CadKitApp {
                 log::info!("Command: HATCH");
                 true
             }
+            "bmake" | "block" => {
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.exit_scale();
+                self.exit_mirror();
+                self.exit_fillet();
+                self.exit_chamfer();
+                self.exit_polygon();
+                self.exit_ellipse();
+                self.exit_rectangle();
+                self.exit_array();
+                self.exit_pedit();
+                self.exit_boundary();
+                self.exit_hatch();
+                if self.selected_entities.is_empty() {
+                    self.command_log
+                        .push("BLOCK: Select entities first, then run BLOCK".to_string());
+                } else {
+                    let ids: Vec<_> = self.selected_entities.iter().copied().collect();
+                    self.block_phase = BlockPhase::PickBase { ids };
+                    self.command_log
+                        .push("BLOCK: Pick base point".to_string());
+                }
+                true
+            }
             "co" | "copy" => {
                 self.cancel_active_tool();
                 self.exit_trim();
@@ -545,6 +697,19 @@ impl CadKitApp {
                 self.command_log
                     .push("COPY: Select entities to copy, press Enter to continue".to_string());
                 log::info!("Command: COPY");
+                true
+            }
+            "x" | "explode" => {
+                let (arrays, blocks) = self.explode_selected_assoc_groups();
+                if arrays == 0 && blocks == 0 {
+                    self.command_log
+                        .push("EXPLODE: No associative array or block group in selection".to_string());
+                } else {
+                    self.command_log.push(format!(
+                        "EXPLODE: Exploded {} array group(s), {} block group(s)",
+                        arrays, blocks
+                    ));
+                }
                 true
             }
             "o" | "offset" => {

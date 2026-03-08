@@ -253,6 +253,100 @@ impl CadKitApp {
                         stroke,
                     );
                 }
+                EntityKind::Insert {
+                    name,
+                    position,
+                    rotation,
+                    scale_x,
+                    scale_y,
+                } => {
+                    if let Some(def) = self.drawing.get_block(name) {
+                        for be in &def.entities {
+                            let wk = Self::transform_insert_local_kind(
+                                &be.kind,
+                                *position,
+                                *rotation,
+                                *scale_x,
+                                *scale_y,
+                            );
+                            match &wk {
+                                EntityKind::Line { start, end } => {
+                                    let (x1, y1) = world_to_screen(start.x as f32, start.y as f32, viewport);
+                                    let (x2, y2) = world_to_screen(end.x as f32, end.y as f32, viewport);
+                                    painter.line_segment(
+                                        [rect.min + egui::vec2(x1, y1), rect.min + egui::vec2(x2, y2)],
+                                        stroke,
+                                    );
+                                }
+                                EntityKind::Circle { center, radius } => {
+                                    let (cx, cy) = world_to_screen(center.x as f32, center.y as f32, viewport);
+                                    let (rx, _) = world_to_screen((center.x + radius) as f32, center.y as f32, viewport);
+                                    painter.circle_stroke(rect.min + egui::vec2(cx, cy), (rx - cx).abs(), stroke);
+                                }
+                                EntityKind::Arc { center, radius, start_angle, end_angle } => {
+                                    let sweep = *end_angle - *start_angle;
+                                    let steps = ((sweep.abs() * *radius).max(12.0) as usize).clamp(12, 128);
+                                    let mut last: Option<egui::Pos2> = None;
+                                    for i in 0..=steps {
+                                        let t = i as f64 / steps as f64;
+                                        let ang = *start_angle + sweep * t;
+                                        let x = center.x + *radius * ang.cos();
+                                        let y = center.y + *radius * ang.sin();
+                                        let (sx, sy) = world_to_screen(x as f32, y as f32, viewport);
+                                        let pos = rect.min + egui::vec2(sx, sy);
+                                        if let Some(prev) = last {
+                                            painter.line_segment([prev, pos], stroke);
+                                        }
+                                        last = Some(pos);
+                                    }
+                                }
+                                EntityKind::Polyline { vertices, closed } => {
+                                    if vertices.len() >= 2 {
+                                        for seg in vertices.windows(2) {
+                                            let a: Vec2 = seg[0].into();
+                                            let b: Vec2 = seg[1].into();
+                                            let (x1, y1) = world_to_screen(a.x as f32, a.y as f32, viewport);
+                                            let (x2, y2) = world_to_screen(b.x as f32, b.y as f32, viewport);
+                                            painter.line_segment(
+                                                [rect.min + egui::vec2(x1, y1), rect.min + egui::vec2(x2, y2)],
+                                                stroke,
+                                            );
+                                        }
+                                        if *closed {
+                                            let a: Vec2 = vertices.last().unwrap().to_owned().into();
+                                            let b: Vec2 = vertices.first().unwrap().to_owned().into();
+                                            let (x1, y1) = world_to_screen(a.x as f32, a.y as f32, viewport);
+                                            let (x2, y2) = world_to_screen(b.x as f32, b.y as f32, viewport);
+                                            painter.line_segment(
+                                                [rect.min + egui::vec2(x1, y1), rect.min + egui::vec2(x2, y2)],
+                                                stroke,
+                                            );
+                                        }
+                                    }
+                                }
+                                EntityKind::Text { position, .. } => {
+                                    let (sx, sy) = world_to_screen(position.x as f32, position.y as f32, viewport);
+                                    let pos = rect.min + egui::vec2(sx, sy);
+                                    painter.rect_stroke(
+                                        egui::Rect::from_center_size(pos, egui::vec2(12.0, 12.0)),
+                                        2.0,
+                                        stroke,
+                                    );
+                                }
+                                EntityKind::DimAligned { .. }
+                                | EntityKind::DimLinear { .. }
+                                | EntityKind::DimAngular { .. }
+                                | EntityKind::DimRadial { .. }
+                                | EntityKind::Insert { .. } => {}
+                            }
+                        }
+                    }
+                    let (sx, sy) = world_to_screen(position.x as f32, position.y as f32, viewport);
+                    let p = rect.min + egui::vec2(sx, sy);
+                    let r = 7.0_f32;
+                    painter.line_segment([p - egui::vec2(r, 0.0), p + egui::vec2(r, 0.0)], stroke);
+                    painter.line_segment([p - egui::vec2(0.0, r), p + egui::vec2(0.0, r)], stroke);
+                }
             }
         }
     }
@@ -643,6 +737,10 @@ impl CadKitApp {
                 let (sx, sy) = world_to_screen(position.x as f32, position.y as f32, viewport);
                 screen_pos.distance(rect.min + egui::vec2(sx, sy))
             }
+            EntityKind::Insert { position, .. } => {
+                let (sx, sy) = world_to_screen(position.x as f32, position.y as f32, viewport);
+                screen_pos.distance(rect.min + egui::vec2(sx, sy))
+            }
         }
     }
 
@@ -742,7 +840,7 @@ impl CadKitApp {
             EntityKind::Polyline { vertices, closed } => Some(GeomPrim::Polyline(
                 GeomPolyline::new(vertices.clone(), *closed),
             )),
-            EntityKind::DimAligned { .. } | EntityKind::DimLinear { .. } | EntityKind::DimAngular { .. } | EntityKind::DimRadial { .. } | EntityKind::Text { .. } => None,
+            EntityKind::DimAligned { .. } | EntityKind::DimLinear { .. } | EntityKind::DimAngular { .. } | EntityKind::DimRadial { .. } | EntityKind::Text { .. } | EntityKind::Insert { .. } => None,
         }
     }
 

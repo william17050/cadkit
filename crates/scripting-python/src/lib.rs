@@ -408,6 +408,7 @@ fn entity_kind_name(kind: &EntityKind) -> &'static str {
         EntityKind::DimAngular { .. } => "dimangular",
         EntityKind::DimRadial { .. } => "dimradial",
         EntityKind::Text { .. } => "text",
+        EntityKind::Insert { .. } => "insert",
     }
 }
 

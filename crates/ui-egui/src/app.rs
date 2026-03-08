@@ -1,10 +1,12 @@
 //! CadKit - Main application entry point
 
-use cadkit_2d_core::{create_arc, create_circle, create_line, Drawing, Entity, EntityKind};
+use cadkit_2d_core::{create_arc, create_circle, create_line, BlockEntity, Drawing, Entity, EntityKind};
 // create_arc_from_three_points helper lives below in this file (UI layer-specific).
 use cadkit_render_wgpu::{screen_to_world, world_to_screen, Viewport};
 use cadkit_types::{Guid, Vec2, Vec3};
-use cadkit_geometry::{detect_closed_boundaries, Circle as GeomCircle, Line as GeomLine};
+use cadkit_geometry::{
+    detect_closed_boundaries_with_gap, Circle as GeomCircle, Line as GeomLine,
+};
 use eframe::egui;
 use egui_wgpu::wgpu;
 use std::collections::{HashMap, HashSet};
@@ -237,6 +239,7 @@ struct AssocRectArray {
     dy: f64,
 }
 
+
 pub struct CadKitApp {
     drawing: Drawing,
     command_input: String,
@@ -324,6 +327,8 @@ pub struct CadKitApp {
     pedit_phase: PeditPhase,
     boundary_phase: BoundaryPhase,
     hatch_phase: HatchPhase,
+    block_phase: BlockPhase,
+    insert_phase: InsertPhase,
     hatch_dialog_open: bool,
     hatch_pattern: HatchPattern,
     hatch_spacing: f64,
@@ -378,6 +383,13 @@ pub struct CadKitApp {
     ai_lmstudio_endpoint: String,
     ai_lmstudio_model: String,
     ai_phi3_model_path: String,
+    block_palette_selected: String,
+    block_edit_active: bool,
+    block_edit_name: Option<String>,
+    block_edit_base_point: Option<Vec3>,
+    block_edit_snapshot: Option<Drawing>,
+    block_edit_layer_map: HashMap<u32, u32>, // edit layer id -> original layer id
+    block_edit_prev_layer: u32,
     bgcolor_picker_open: bool,
     last_saved_prefs: Option<AppPrefs>,
     autosave_last_at: Instant,
@@ -475,6 +487,8 @@ impl Default for CadKitApp {
             pedit_phase: PeditPhase::Idle,
             boundary_phase: BoundaryPhase::Idle,
             hatch_phase: HatchPhase::Idle,
+            block_phase: BlockPhase::Idle,
+            insert_phase: InsertPhase::Idle,
             hatch_dialog_open: false,
             hatch_pattern: HatchPattern::Ansi31,
             hatch_spacing: 2.0,
@@ -526,6 +540,13 @@ impl Default for CadKitApp {
             ai_lmstudio_endpoint: "http://127.0.0.1:1234/v1/chat/completions".to_string(),
             ai_lmstudio_model: "local-model".to_string(),
             ai_phi3_model_path: "~/.cache/cadkit/models/phi3-mini.gguf".to_string(),
+            block_palette_selected: String::new(),
+            block_edit_active: false,
+            block_edit_name: None,
+            block_edit_base_point: None,
+            block_edit_snapshot: None,
+            block_edit_layer_map: HashMap::new(),
+            block_edit_prev_layer: 0,
             bgcolor_picker_open: false,
             last_saved_prefs: None,
             autosave_last_at: Instant::now(),
@@ -1027,6 +1048,8 @@ impl CadKitApp {
         self.exit_pedit();
         self.exit_boundary();
         self.exit_hatch();
+        self.exit_block();
+        self.exit_insert();
         self.selection = None;
         // Reset tool-specific buffers
         if let ActiveTool::Polyline { .. } = self.active_tool {
@@ -1049,6 +1072,14 @@ impl CadKitApp {
 
     fn exit_hatch(&mut self) {
         self.hatch_phase = HatchPhase::Idle;
+    }
+
+    fn exit_block(&mut self) {
+        self.block_phase = BlockPhase::Idle;
+    }
+
+    fn exit_insert(&mut self) {
+        self.insert_phase = InsertPhase::Idle;
     }
 
     fn exit_chamfer(&mut self) {
@@ -1154,6 +1185,8 @@ impl CadKitApp {
                     )
                     || matches!(self.boundary_phase, BoundaryPhase::PickingPoint)
                     || matches!(self.hatch_phase, HatchPhase::PickingPoint)
+                    || matches!(self.block_phase, BlockPhase::PickBase { .. })
+                    || matches!(self.insert_phase, InsertPhase::PickPoint { .. })
             }
         }
     }
@@ -1358,6 +1391,10 @@ impl CadKitApp {
             self.apply_boundary_pick(world);
         } else if self.hatch_phase == HatchPhase::PickingPoint {
             self.apply_hatch_pick(world);
+        } else if matches!(self.block_phase, BlockPhase::PickBase { .. }) {
+            self.apply_block_base_pick(world);
+        } else if matches!(self.insert_phase, InsertPhase::PickPoint { .. }) {
+            self.apply_insert_pick(world);
         } else if matches!(self.dim_phase, DimPhase::FirstPoint) {
             self.dim_phase = DimPhase::SecondPoint { first: world };
             self.command_log.push(format!("DIMALIGNED: First point ({:.4}, {:.4})", world.x, world.y));
@@ -1518,26 +1555,9 @@ impl CadKitApp {
     }
 
     fn select_entity_id(&mut self, entity: Option<Guid>, additive: bool) {
-        let expand_group = |this: &Self, id: Guid| -> Vec<Guid> {
-            if let Some(aid) = this.assoc_member_to_array.get(&id).copied() {
-                if let Some(arr) = this.assoc_rect_arrays.get(&aid) {
-                    let ids: Vec<Guid> = arr
-                        .members
-                        .iter()
-                        .copied()
-                        .filter(|m| this.drawing.get_entity(m).is_some())
-                        .collect();
-                    if !ids.is_empty() {
-                        return ids;
-                    }
-                }
-            }
-            vec![id]
-        };
-
         match (entity, additive) {
             (Some(id), true) => {
-                let group = expand_group(self, id);
+                let group = self.expand_assoc_group_ids(id);
                 let any_selected = group.iter().any(|gid| self.selected_entities.contains(gid));
                 if any_selected {
                     for gid in group {
@@ -1550,7 +1570,7 @@ impl CadKitApp {
                 }
             }
             (Some(id), false) => {
-                let group = expand_group(self, id);
+                let group = self.expand_assoc_group_ids(id);
                 self.selected_entities.clear();
                 for gid in group {
                     self.selected_entities.insert(gid);
@@ -1559,6 +1579,55 @@ impl CadKitApp {
             (None, false) => self.selected_entities.clear(),
             (None, true) => {}
         }
+    }
+
+    fn explode_selected_assoc_groups(&mut self) -> (usize, usize) {
+        self.cleanup_assoc_rect_arrays();
+        let mut array_ids: HashSet<Guid> = HashSet::new();
+        let mut insert_ids: Vec<Guid> = Vec::new();
+        for id in &self.selected_entities {
+            if let Some(aid) = self.assoc_member_to_array.get(id).copied() {
+                array_ids.insert(aid);
+            }
+            if let Some(e) = self.drawing.get_entity(id) {
+                if matches!(e.kind, EntityKind::Insert { .. }) {
+                    insert_ids.push(*id);
+                }
+            }
+        }
+        let mut arrays = 0usize;
+        let mut inserts = 0usize;
+        for aid in array_ids {
+            if self.explode_assoc_rect_array(aid) {
+                arrays += 1;
+            }
+        }
+        if !insert_ids.is_empty() {
+            self.push_undo();
+            for id in insert_ids {
+                if self.explode_insert_entity(id) {
+                    inserts += 1;
+                }
+            }
+        }
+        (arrays, inserts)
+    }
+
+    fn expand_assoc_group_ids(&self, id: Guid) -> Vec<Guid> {
+        if let Some(aid) = self.assoc_member_to_array.get(&id).copied() {
+            if let Some(arr) = self.assoc_rect_arrays.get(&aid) {
+                let ids: Vec<Guid> = arr
+                    .members
+                    .iter()
+                    .copied()
+                    .filter(|m| self.drawing.get_entity(m).is_some())
+                    .collect();
+                if !ids.is_empty() {
+                    return ids;
+                }
+            }
+        }
+        vec![id]
     }
 
     fn current_prompt(&self) -> String {
@@ -1711,6 +1780,25 @@ impl CadKitApp {
                 );
             }
             HatchPhase::Idle => {}
+        }
+        if self.block_edit_active {
+            let name = self.block_edit_name.as_deref().unwrap_or("<unknown>");
+            return format!("BEDIT  Editing '{name}'  [BSAVE=commit, BCANCEL=discard]:");
+        }
+        match &self.block_phase {
+            BlockPhase::PickBase { .. } => {
+                return "BLOCK  Pick base point:".into();
+            }
+            BlockPhase::EnterName { .. } => {
+                return "BLOCK  Enter block name:".into();
+            }
+            BlockPhase::Idle => {}
+        }
+        match &self.insert_phase {
+            InsertPhase::PickPoint { name } => {
+                return format!("INSERT  Pick insertion point for '{name}':");
+            }
+            InsertPhase::Idle => {}
         }
         match self.chamfer_phase {
             ChamferPhase::EnteringDistance => {
@@ -1972,6 +2060,10 @@ impl CadKitApp {
                         position.x += dx;
                         position.y += dy;
                     }
+                    EntityKind::Insert { position, .. } => {
+                        position.x += dx;
+                        position.y += dy;
+                    }
                 }
             }
         }
@@ -2118,6 +2210,13 @@ impl CadKitApp {
                     painter.line_segment([rect.min + egui::vec2(csx, csy), rect.min + egui::vec2(lsx, lsy)], ghost_stroke);
                 }
                 EntityKind::Text { .. } => {} // text ghost not rendered (position marker only)
+                EntityKind::Insert { position, .. } => {
+                    let (sx, sy) = world_to_screen((position.x + dx) as f32, (position.y + dy) as f32, viewport);
+                    let p = rect.min + egui::vec2(sx, sy);
+                    let r = 4.0_f32;
+                    painter.line_segment([p - egui::vec2(r, 0.0), p + egui::vec2(r, 0.0)], ghost_stroke);
+                    painter.line_segment([p - egui::vec2(0.0, r), p + egui::vec2(0.0, r)], ghost_stroke);
+                }
             }
         }
     }
@@ -2216,6 +2315,13 @@ impl CadKitApp {
                         height: *height,
                         rotation: *rotation,
                         font_name: font_name.clone(),
+                    },
+                    EntityKind::Insert { name, position, rotation, scale_x, scale_y } => EntityKind::Insert {
+                        name: name.clone(),
+                        position: Vec3::xy(position.x + dx, position.y + dy),
+                        rotation: *rotation,
+                        scale_x: *scale_x,
+                        scale_y: *scale_y,
                     },
                 };
                 let layer = entity.layer;
@@ -2348,6 +2454,13 @@ impl CadKitApp {
                 rotation: *rotation,
                 font_name: font_name.clone(),
             },
+            EntityKind::Insert { name, position, rotation, scale_x, scale_y } => EntityKind::Insert {
+                name: name.clone(),
+                position: Vec3::xy(position.x + dx, position.y + dy),
+                rotation: *rotation,
+                scale_x: *scale_x,
+                scale_y: *scale_y,
+            },
         }
     }
 
@@ -2471,6 +2584,13 @@ impl CadKitApp {
                 height: *height,
                 rotation: *rotation + angle_rad,
                 font_name: font_name.clone(),
+            },
+            EntityKind::Insert { name, position, rotation, scale_x, scale_y } => EntityKind::Insert {
+                name: name.clone(),
+                position: rotate_pt(*position),
+                rotation: *rotation + angle_rad,
+                scale_x: *scale_x,
+                scale_y: *scale_y,
             },
         }
     }
@@ -2883,6 +3003,13 @@ impl CadKitApp {
                     painter.line_segment([rect.min + egui::vec2(csx, csy), rect.min + egui::vec2(lsx, lsy)], ghost_stroke);
                 }
                 EntityKind::Text { .. } => {}
+                EntityKind::Insert { position, .. } => {
+                    let (sx, sy) = world_to_screen((position.x + dx) as f32, (position.y + dy) as f32, viewport);
+                    let p = rect.min + egui::vec2(sx, sy);
+                    let r = 4.0_f32;
+                    painter.line_segment([p - egui::vec2(r, 0.0), p + egui::vec2(r, 0.0)], ghost_stroke);
+                    painter.line_segment([p - egui::vec2(0.0, r), p + egui::vec2(0.0, r)], ghost_stroke);
+                }
             }
         }
     }
@@ -2960,6 +3087,10 @@ impl CadKitApp {
                         *text_pos  = rotate_pt(*text_pos,  base.x, base.y, cos_a, sin_a);
                     }
                     EntityKind::Text { position, rotation, .. } => {
+                        *position = rotate_pt(*position, base.x, base.y, cos_a, sin_a);
+                        *rotation += angle_rad;
+                    }
+                    EntityKind::Insert { position, rotation, .. } => {
                         *position = rotate_pt(*position, base.x, base.y, cos_a, sin_a);
                         *rotation += angle_rad;
                     }
@@ -3127,6 +3258,13 @@ impl CadKitApp {
                     painter.line_segment([rect.min + egui::vec2(rcx, rcy), rect.min + egui::vec2(rlx, rly)], ghost_stroke);
                 }
                 EntityKind::Text { .. } => {}
+                EntityKind::Insert { position, .. } => {
+                    let (sx, sy) = rot(*position);
+                    let p = rect.min + egui::vec2(sx, sy);
+                    let r = 4.0_f32;
+                    painter.line_segment([p - egui::vec2(r, 0.0), p + egui::vec2(r, 0.0)], ghost_stroke);
+                    painter.line_segment([p - egui::vec2(0.0, r), p + egui::vec2(0.0, r)], ghost_stroke);
+                }
             }
         }
     }
@@ -3232,6 +3370,11 @@ impl CadKitApp {
                     EntityKind::Text { position, height, .. } => {
                         *position = scale_pt(*position);
                         *height *= factor;
+                    }
+                    EntityKind::Insert { position, scale_x, scale_y, .. } => {
+                        *position = scale_pt(*position);
+                        *scale_x *= factor;
+                        *scale_y *= factor;
                     }
                 }
             }
@@ -3425,6 +3568,14 @@ impl CadKitApp {
                         ghost_stroke,
                     );
                 }
+                EntityKind::Insert { position, .. } => {
+                    let p = scale_pt(*position);
+                    let (sx, sy) = world_to_screen(p.x as f32, p.y as f32, viewport);
+                    let pos = rect.min + egui::vec2(sx, sy);
+                    let r = 4.0_f32;
+                    painter.line_segment([pos - egui::vec2(r, 0.0), pos + egui::vec2(r, 0.0)], ghost_stroke);
+                    painter.line_segment([pos - egui::vec2(0.0, r), pos + egui::vec2(0.0, r)], ghost_stroke);
+                }
             }
         }
     }
@@ -3575,6 +3726,15 @@ impl CadKitApp {
                         *text_pos = reflect_pt(*text_pos);
                     }
                     EntityKind::Text { position, rotation, .. } => {
+                        *position = reflect_pt(*position);
+                        let vx = rotation.cos();
+                        let vy = rotation.sin();
+                        let dot = vx * ux + vy * uy;
+                        let rvx = 2.0 * dot * ux - vx;
+                        let rvy = 2.0 * dot * uy - vy;
+                        *rotation = rvy.atan2(rvx);
+                    }
+                    EntityKind::Insert { position, rotation, .. } => {
                         *position = reflect_pt(*position);
                         let vx = rotation.cos();
                         let vy = rotation.sin();
@@ -3750,6 +3910,14 @@ impl CadKitApp {
                         2.0,
                         ghost_stroke,
                     );
+                }
+                EntityKind::Insert { position, .. } => {
+                    let p = reflect_pt(*position);
+                    let (sx, sy) = world_to_screen(p.x as f32, p.y as f32, viewport);
+                    let pos = rect.min + egui::vec2(sx, sy);
+                    let r = 4.0_f32;
+                    painter.line_segment([pos - egui::vec2(r, 0.0), pos + egui::vec2(r, 0.0)], ghost_stroke);
+                    painter.line_segment([pos - egui::vec2(0.0, r), pos + egui::vec2(0.0, r)], ghost_stroke);
                 }
             }
         }
@@ -5121,61 +5289,20 @@ impl CadKitApp {
         viewport: &Viewport,
         rect: egui::Rect,
     ) -> Result<ExtendResult, String> {
-        // Tag for what kind of endpoint was found.
-        enum EpKind { Line { is_start: bool }, Arc { is_start: bool } }
-
-        // 1. Find the nearest line OR arc endpoint within PICK_RADIUS.
-        let mut best: Option<(f32, Guid, EpKind)> = None;
-        for entity in self.drawing.visible_entities() {
-            match &entity.kind {
-                EntityKind::Line { start, end } => {
-                    for (pt, is_start) in [(*start, true), (*end, false)] {
-                        let (sx, sy) = world_to_screen(pt.x as f32, pt.y as f32, viewport);
-                        let sp = rect.min + egui::vec2(sx, sy);
-                        let d = screen_pos.distance(sp);
-                        if d <= Self::PICK_RADIUS && best.as_ref().map_or(true, |(bd, _, _)| d < *bd) {
-                            best = Some((d, entity.id, EpKind::Line { is_start }));
-                        }
-                    }
-                }
-                EntityKind::Arc { center, radius, start_angle, end_angle } => {
-                    for (pt, is_start) in [
-                        (cadkit_types::Vec3::xy(
-                            center.x + radius * start_angle.cos(),
-                            center.y + radius * start_angle.sin(),
-                        ), true),
-                        (cadkit_types::Vec3::xy(
-                            center.x + radius * end_angle.cos(),
-                            center.y + radius * end_angle.sin(),
-                        ), false),
-                    ] {
-                        let (sx, sy) = world_to_screen(pt.x as f32, pt.y as f32, viewport);
-                        let sp = rect.min + egui::vec2(sx, sy);
-                        let d = screen_pos.distance(sp);
-                        if d <= Self::PICK_RADIUS && best.as_ref().map_or(true, |(bd, _, _)| d < *bd) {
-                            best = Some((d, entity.id, EpKind::Arc { is_start }));
-                        }
-                    }
-                }
-                _ => {}
-            }
+        enum EpTarget {
+            Line { entity_id: Guid, is_start: bool },
+            Arc { entity_id: Guid, is_start: bool },
         }
-        let (_, eid, ep_kind) = best
-            .ok_or_else(|| "EXTEND: Click near a line or arc endpoint".to_string())?;
 
-        let entity = self.drawing.get_entity(&eid)
-            .ok_or_else(|| "EXTEND: Entity not found".to_string())?;
-
-        // Build the boundary prim: lines → treat as infinite; others → as-is.
-        // Line boundaries are infinite so that extending to the LINE (not just its
-        // segment extent) matches AutoCAD behaviour.
         let inf_boundary = |kind: &EntityKind| -> Option<GeomPrim> {
             match kind {
                 EntityKind::Line { start, end } => {
                     let bdx = end.x - start.x;
                     let bdy = end.y - start.y;
                     let blen = (bdx * bdx + bdy * bdy).sqrt();
-                    if blen < 1e-9 { return None; }
+                    if blen < 1e-9 {
+                        return None;
+                    }
                     let bux = bdx / blen;
                     let buy = bdy / blen;
                     const INF: f64 = 1_000_000.0;
@@ -5187,108 +5314,164 @@ impl CadKitApp {
             }
         };
 
-        match ep_kind {
-            EpKind::Line { is_start } => {
-                // clicked end of the line; extend in the line's direction.
-                let (clicked_pt, other_pt) = match &entity.kind {
-                    EntityKind::Line { start, end } => {
-                        if is_start { (*start, *end) } else { (*end, *start) }
-                    }
-                    _ => return Err("EXTEND: Not a line".to_string()),
-                };
-                let dx = clicked_pt.x - other_pt.x;
-                let dy = clicked_pt.y - other_pt.y;
-                let seg_len = (dx * dx + dy * dy).sqrt();
-                if seg_len < 1e-9 {
-                    return Err("EXTEND: Degenerate line".to_string());
+        let collect_boundary_prims = |exclude_entity_id: Guid| -> Vec<GeomPrim> {
+            let mut out = Vec::new();
+            for bid in &self.extend_boundary_edges {
+                if *bid == exclude_entity_id {
+                    continue;
                 }
-                let dir_x = dx / seg_len;
-                let dir_y = dy / seg_len;
-
-                const FAR: f64 = 1_000_000.0;
-                let ray = GeomLine::new(
-                    other_pt,
-                    cadkit_types::Vec3::xy(other_pt.x + dir_x * FAR, other_pt.y + dir_y * FAR),
-                );
-
-                let mut best_pt: Option<Vec2> = None;
-                let mut best_dot = f64::INFINITY;
-                for &bid in &self.extend_boundary_edges {
-                    if bid == eid { continue; }
-                    let Some(b) = self.drawing.get_entity(&bid) else { continue };
-                    let Some(bprim) = inf_boundary(&b.kind) else { continue };
-                    for pt in Self::intersect_geom_prims(&GeomPrim::Line(ray), &bprim, Self::GEOM_TOL).points() {
-                        let dot = (pt.x - clicked_pt.x) * dir_x + (pt.y - clicked_pt.y) * dir_y;
-                        if dot > 1e-6 && dot < best_dot {
-                            best_dot = dot;
-                            best_pt = Some(Vec2::new(pt.x, pt.y));
+                let Some(b) = self.drawing.get_entity(bid) else {
+                    continue;
+                };
+                match &b.kind {
+                    EntityKind::Insert {
+                        name,
+                        position,
+                        rotation,
+                        scale_x,
+                        scale_y,
+                    } => {
+                        if let Some(def) = self.drawing.get_block(name) {
+                            for be in &def.entities {
+                                let wk = Self::transform_insert_local_kind(
+                                    &be.kind,
+                                    *position,
+                                    *rotation,
+                                    *scale_x,
+                                    *scale_y,
+                                );
+                                if let Some(p) = inf_boundary(&wk) {
+                                    out.push(p);
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        if let Some(p) = inf_boundary(&b.kind) {
+                            out.push(p);
                         }
                     }
                 }
-                best_pt
-                    .map(|p| ExtendResult::Line { id: eid, is_start, new_pt: p })
-                    .ok_or_else(|| "EXTEND: No intersection found beyond endpoint".to_string())
             }
+            out
+        };
 
-            EpKind::Arc { is_start } => {
-                // clicked end of an arc; extend by rotating the angle to the boundary.
-                let (center, radius, start_angle, end_angle) = match &entity.kind {
-                    EntityKind::Arc { center, radius, start_angle, end_angle } => {
-                        (*center, *radius, *start_angle, *end_angle)
+        let solve_line_extend = |clicked_pt: Vec3, other_pt: Vec3, boundaries: &[GeomPrim]| -> Result<Vec2, String> {
+            let dx = clicked_pt.x - other_pt.x;
+            let dy = clicked_pt.y - other_pt.y;
+            let seg_len = (dx * dx + dy * dy).sqrt();
+            if seg_len < 1e-9 {
+                return Err("EXTEND: Degenerate line".to_string());
+            }
+            let dir_x = dx / seg_len;
+            let dir_y = dy / seg_len;
+            const FAR: f64 = 1_000_000.0;
+            let ray = GeomLine::new(
+                other_pt,
+                cadkit_types::Vec3::xy(other_pt.x + dir_x * FAR, other_pt.y + dir_y * FAR),
+            );
+
+            let mut best_pt: Option<Vec2> = None;
+            let mut best_dot = f64::INFINITY;
+            for bprim in boundaries {
+                for pt in Self::intersect_geom_prims(&GeomPrim::Line(ray), bprim, Self::GEOM_TOL).points() {
+                    let dot = (pt.x - clicked_pt.x) * dir_x + (pt.y - clicked_pt.y) * dir_y;
+                    if dot > 1e-6 && dot < best_dot {
+                        best_dot = dot;
+                        best_pt = Some(Vec2::new(pt.x, pt.y));
                     }
+                }
+            }
+            best_pt.ok_or_else(|| "EXTEND: No intersection found beyond endpoint".to_string())
+        };
+
+        let solve_arc_extend = |center: Vec3, radius: f64, start_angle: f64, end_angle: f64, is_start: bool, boundaries: &[GeomPrim]| -> Result<f64, String> {
+            let arc_circle = GeomCircle::new(center, radius);
+            let twopi = std::f64::consts::TAU;
+            let mut candidates: Vec<f64> = Vec::new();
+            for bprim in boundaries {
+                for pt in Self::intersect_geom_prims(&GeomPrim::Circle(arc_circle), bprim, Self::GEOM_TOL).points() {
+                    candidates.push((pt.y - center.y).atan2(pt.x - center.x));
+                }
+            }
+            if candidates.is_empty() {
+                return Err("EXTEND: No boundary intersection found for arc".to_string());
+            }
+            let arc_span = Self::ccw_from(start_angle, end_angle);
+            let gap_span = twopi - arc_span;
+            if is_start {
+                candidates.iter()
+                    .filter_map(|&a| {
+                        let gap = Self::ccw_from(a, start_angle);
+                        if gap > 1e-6 && gap < gap_span - 1e-6 { Some((gap, a)) } else { None }
+                    })
+                    .min_by(|x, y| x.0.partial_cmp(&y.0).unwrap())
+                    .map(|(_, a)| a)
+                    .ok_or_else(|| "EXTEND: No intersection before arc start".to_string())
+            } else {
+                candidates.iter()
+                    .filter_map(|&a| {
+                        let gap = Self::ccw_from(end_angle, a);
+                        if gap > 1e-6 && gap < gap_span - 1e-6 { Some((gap, a)) } else { None }
+                    })
+                    .min_by(|x, y| x.0.partial_cmp(&y.0).unwrap())
+                    .map(|(_, a)| a)
+                    .ok_or_else(|| "EXTEND: No intersection beyond arc end".to_string())
+            }
+        };
+
+        // 1. Find nearest extendable endpoint (includes insert member geometry).
+        let mut best: Option<(f32, EpTarget)> = None;
+        for entity in self.drawing.visible_entities() {
+            match &entity.kind {
+                EntityKind::Line { start, end } => {
+                    for (pt, is_start) in [(*start, true), (*end, false)] {
+                        let (sx, sy) = world_to_screen(pt.x as f32, pt.y as f32, viewport);
+                        let d = screen_pos.distance(rect.min + egui::vec2(sx, sy));
+                        if d <= Self::PICK_RADIUS && best.as_ref().map_or(true, |(bd, _)| d < *bd) {
+                            best = Some((d, EpTarget::Line { entity_id: entity.id, is_start }));
+                        }
+                    }
+                }
+                EntityKind::Arc { center, radius, start_angle, end_angle } => {
+                    for (pt, is_start) in [
+                        (cadkit_types::Vec3::xy(center.x + radius * start_angle.cos(), center.y + radius * start_angle.sin()), true),
+                        (cadkit_types::Vec3::xy(center.x + radius * end_angle.cos(), center.y + radius * end_angle.sin()), false),
+                    ] {
+                        let (sx, sy) = world_to_screen(pt.x as f32, pt.y as f32, viewport);
+                        let d = screen_pos.distance(rect.min + egui::vec2(sx, sy));
+                        if d <= Self::PICK_RADIUS && best.as_ref().map_or(true, |(bd, _)| d < *bd) {
+                            best = Some((d, EpTarget::Arc { entity_id: entity.id, is_start }));
+                        }
+                    }
+                }
+                EntityKind::Insert { .. } => {}
+                _ => {}
+            }
+        }
+
+        let (_, target) = best.ok_or_else(|| "EXTEND: Click near a line or arc endpoint".to_string())?;
+
+        match target {
+            EpTarget::Line { entity_id, is_start } => {
+                let entity = self.drawing.get_entity(&entity_id).ok_or_else(|| "EXTEND: Entity not found".to_string())?;
+                let (clicked_pt, other_pt) = match &entity.kind {
+                    EntityKind::Line { start, end } => if is_start { (*start, *end) } else { (*end, *start) },
+                    _ => return Err("EXTEND: Not a line".to_string()),
+                };
+                let boundaries = collect_boundary_prims(entity_id);
+                let new_pt = solve_line_extend(clicked_pt, other_pt, &boundaries)?;
+                Ok(ExtendResult::Line { id: entity_id, is_start, new_pt })
+            }
+            EpTarget::Arc { entity_id, is_start } => {
+                let entity = self.drawing.get_entity(&entity_id).ok_or_else(|| "EXTEND: Entity not found".to_string())?;
+                let (center, radius, start_angle, end_angle) = match &entity.kind {
+                    EntityKind::Arc { center, radius, start_angle, end_angle } => (*center, *radius, *start_angle, *end_angle),
                     _ => return Err("EXTEND: Not an arc".to_string()),
                 };
-                let arc_circle = GeomCircle::new(center, radius);
-                let twopi = std::f64::consts::TAU;
-
-                // Intersect the arc's full circle with every boundary edge.
-                let mut candidates: Vec<f64> = Vec::new();
-                for &bid in &self.extend_boundary_edges {
-                    if bid == eid { continue; }
-                    let Some(b) = self.drawing.get_entity(&bid) else { continue };
-                    let Some(bprim) = inf_boundary(&b.kind) else { continue };
-                    for pt in Self::intersect_geom_prims(
-                        &GeomPrim::Circle(arc_circle),
-                        &bprim,
-                        Self::GEOM_TOL,
-                    ).points() {
-                        candidates.push((pt.y - center.y).atan2(pt.x - center.x));
-                    }
-                }
-                if candidates.is_empty() {
-                    return Err("EXTEND: No boundary intersection found for arc".to_string());
-                }
-
-                // Span of the existing arc (CCW, always > 0 after normalisation).
-                let arc_span = Self::ccw_from(start_angle, end_angle);
-                // Gap region is twopi - arc_span.  A valid extension target must lie
-                // strictly inside that gap (not on the arc itself).
-                let gap_span = twopi - arc_span;
-
-                let new_angle = if is_start {
-                    // Extend START: find the angle in the gap that is nearest (CW) to
-                    // start_angle, i.e. smallest CCW distance from a → start_angle.
-                    candidates.iter()
-                        .filter_map(|&a| {
-                            let gap = Self::ccw_from(a, start_angle);
-                            if gap > 1e-6 && gap < gap_span - 1e-6 { Some((gap, a)) } else { None }
-                        })
-                        .min_by(|x, y| x.0.partial_cmp(&y.0).unwrap())
-                        .map(|(_, a)| a)
-                        .ok_or_else(|| "EXTEND: No intersection before arc start".to_string())?
-                } else {
-                    // Extend END: find the angle in the gap that is nearest (CCW) past
-                    // end_angle, i.e. smallest CCW distance from end_angle → a.
-                    candidates.iter()
-                        .filter_map(|&a| {
-                            let gap = Self::ccw_from(end_angle, a);
-                            if gap > 1e-6 && gap < gap_span - 1e-6 { Some((gap, a)) } else { None }
-                        })
-                        .min_by(|x, y| x.0.partial_cmp(&y.0).unwrap())
-                        .map(|(_, a)| a)
-                        .ok_or_else(|| "EXTEND: No intersection beyond arc end".to_string())?
-                };
-                Ok(ExtendResult::Arc { id: eid, is_start, new_angle })
+                let boundaries = collect_boundary_prims(entity_id);
+                let new_angle = solve_arc_extend(center, radius, start_angle, end_angle, is_start, &boundaries)?;
+                Ok(ExtendResult::Arc { id: entity_id, is_start, new_angle })
             }
         }
     }
@@ -6022,6 +6205,13 @@ impl CadKitApp {
                     painter.line_segment([p - egui::vec2(r, r), p + egui::vec2(r, r)], stroke);
                     painter.line_segment([p - egui::vec2(r, -r), p + egui::vec2(r, -r)], stroke);
                 }
+                EntityKind::Insert { position, .. } => {
+                    let (sx, sy) = world_to_screen(position.x as f32, position.y as f32, viewport);
+                    let p = rect.min + egui::vec2(sx, sy);
+                    let r = 4.0_f32;
+                    painter.line_segment([p - egui::vec2(r, 0.0), p + egui::vec2(r, 0.0)], stroke);
+                    painter.line_segment([p - egui::vec2(0.0, r), p + egui::vec2(0.0, r)], stroke);
+                }
             }
         };
 
@@ -6186,6 +6376,165 @@ impl CadKitApp {
         }
     }
 
+    fn draw_insert_preview(
+        &self,
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        viewport: &Viewport,
+        world_cursor: Vec2,
+    ) {
+        let InsertPhase::PickPoint { name } = &self.insert_phase else {
+            return;
+        };
+        let Some(def) = self.drawing.get_block(name) else {
+            return;
+        };
+
+        let painter = ui.painter_at(rect);
+        let ghost_stroke =
+            egui::Stroke::new(1.6, egui::Color32::from_rgba_premultiplied(120, 210, 255, 170));
+        let guide_stroke =
+            egui::Stroke::new(1.2, egui::Color32::from_rgba_premultiplied(250, 235, 120, 190));
+
+        let draw_kind = |kind: &EntityKind, stroke: egui::Stroke| {
+            match kind {
+                EntityKind::Line { start, end } => {
+                    let (x1, y1) = world_to_screen(start.x as f32, start.y as f32, viewport);
+                    let (x2, y2) = world_to_screen(end.x as f32, end.y as f32, viewport);
+                    painter.line_segment(
+                        [rect.min + egui::vec2(x1, y1), rect.min + egui::vec2(x2, y2)],
+                        stroke,
+                    );
+                }
+                EntityKind::Circle { center, radius } => {
+                    let (cx, cy) = world_to_screen(center.x as f32, center.y as f32, viewport);
+                    let (rx, _) =
+                        world_to_screen((center.x + radius) as f32, center.y as f32, viewport);
+                    painter.circle_stroke(rect.min + egui::vec2(cx, cy), (rx - cx).abs(), stroke);
+                }
+                EntityKind::Arc {
+                    center,
+                    radius,
+                    start_angle,
+                    end_angle,
+                } => {
+                    let sweep = *end_angle - *start_angle;
+                    let steps = ((sweep.abs() * *radius).max(12.0) as usize).clamp(12, 128);
+                    let mut last: Option<egui::Pos2> = None;
+                    for i in 0..=steps {
+                        let t = i as f64 / steps as f64;
+                        let ang = *start_angle + sweep * t;
+                        let x = center.x + *radius * ang.cos();
+                        let y = center.y + *radius * ang.sin();
+                        let (sx, sy) = world_to_screen(x as f32, y as f32, viewport);
+                        let pos = rect.min + egui::vec2(sx, sy);
+                        if let Some(prev) = last {
+                            painter.line_segment([prev, pos], stroke);
+                        }
+                        last = Some(pos);
+                    }
+                }
+                EntityKind::Polyline { vertices, closed } => {
+                    if vertices.len() < 2 {
+                        return;
+                    }
+                    let pts: Vec<egui::Pos2> = vertices
+                        .iter()
+                        .map(|v| {
+                            let (sx, sy) = world_to_screen(v.x as f32, v.y as f32, viewport);
+                            rect.min + egui::vec2(sx, sy)
+                        })
+                        .collect();
+                    for w in pts.windows(2) {
+                        painter.line_segment([w[0], w[1]], stroke);
+                    }
+                    if *closed && pts.len() >= 2 {
+                        painter.line_segment([*pts.last().unwrap(), pts[0]], stroke);
+                    }
+                }
+                EntityKind::DimAligned { start, end, .. }
+                | EntityKind::DimLinear { start, end, .. } => {
+                    let (x1, y1) = world_to_screen(start.x as f32, start.y as f32, viewport);
+                    let (x2, y2) = world_to_screen(end.x as f32, end.y as f32, viewport);
+                    painter.line_segment(
+                        [rect.min + egui::vec2(x1, y1), rect.min + egui::vec2(x2, y2)],
+                        stroke,
+                    );
+                }
+                EntityKind::DimAngular {
+                    vertex,
+                    line1_pt,
+                    line2_pt,
+                    ..
+                } => {
+                    let (vx, vy) = world_to_screen(vertex.x as f32, vertex.y as f32, viewport);
+                    let (x1, y1) =
+                        world_to_screen(line1_pt.x as f32, line1_pt.y as f32, viewport);
+                    let (x2, y2) =
+                        world_to_screen(line2_pt.x as f32, line2_pt.y as f32, viewport);
+                    painter.line_segment(
+                        [rect.min + egui::vec2(vx, vy), rect.min + egui::vec2(x1, y1)],
+                        stroke,
+                    );
+                    painter.line_segment(
+                        [rect.min + egui::vec2(vx, vy), rect.min + egui::vec2(x2, y2)],
+                        stroke,
+                    );
+                }
+                EntityKind::DimRadial {
+                    center,
+                    leader_pt,
+                    radius,
+                    ..
+                } => {
+                    let (cx, cy) = world_to_screen(center.x as f32, center.y as f32, viewport);
+                    let (lx, ly) =
+                        world_to_screen(leader_pt.x as f32, leader_pt.y as f32, viewport);
+                    let (rx, _) =
+                        world_to_screen((center.x + radius) as f32, center.y as f32, viewport);
+                    painter.circle_stroke(rect.min + egui::vec2(cx, cy), (rx - cx).abs(), stroke);
+                    painter.line_segment(
+                        [rect.min + egui::vec2(cx, cy), rect.min + egui::vec2(lx, ly)],
+                        stroke,
+                    );
+                }
+                EntityKind::Text { position, .. } => {
+                    let (sx, sy) = world_to_screen(position.x as f32, position.y as f32, viewport);
+                    let p = rect.min + egui::vec2(sx, sy);
+                    let r = 3.0_f32;
+                    painter.line_segment([p - egui::vec2(r, r), p + egui::vec2(r, r)], stroke);
+                    painter.line_segment([p - egui::vec2(r, -r), p + egui::vec2(r, -r)], stroke);
+                }
+                EntityKind::Insert { position, .. } => {
+                    let (sx, sy) = world_to_screen(position.x as f32, position.y as f32, viewport);
+                    let p = rect.min + egui::vec2(sx, sy);
+                    let r = 4.0_f32;
+                    painter.line_segment([p - egui::vec2(r, 0.0), p + egui::vec2(r, 0.0)], stroke);
+                    painter.line_segment([p - egui::vec2(0.0, r), p + egui::vec2(0.0, r)], stroke);
+                }
+            }
+        };
+
+        for src in &def.entities {
+            let shifted = Self::clone_kind_translated(&src.kind, world_cursor.x, world_cursor.y);
+            draw_kind(&shifted, ghost_stroke);
+        }
+
+        // Insertion base marker and name near cursor.
+        let (sx, sy) = world_to_screen(world_cursor.x as f32, world_cursor.y as f32, viewport);
+        let c = rect.min + egui::vec2(sx, sy);
+        let r = 6.0_f32;
+        painter.line_segment([c - egui::vec2(r, 0.0), c + egui::vec2(r, 0.0)], guide_stroke);
+        painter.line_segment([c - egui::vec2(0.0, r), c + egui::vec2(0.0, r)], guide_stroke);
+        painter.text(
+            c + egui::vec2(8.0, -8.0),
+            egui::Align2::LEFT_TOP,
+            format!("INSERT {}", def.name),
+            egui::FontId::proportional(12.0),
+            egui::Color32::from_rgb(230, 235, 245),
+        );
+    }
+
     /// Draw green highlight overlay for EXTEND boundary edges.
     fn draw_extend_overlay(&self, ui: &egui::Ui, rect: egui::Rect, viewport: &Viewport) {
         if matches!(self.extend_phase, ExtendPhase::Idle) {
@@ -6249,7 +6598,7 @@ impl CadKitApp {
                         );
                     }
                 }
-                EntityKind::DimAligned { .. } | EntityKind::DimLinear { .. } | EntityKind::DimAngular { .. } | EntityKind::DimRadial { .. } | EntityKind::Text { .. } => {}
+                EntityKind::DimAligned { .. } | EntityKind::DimLinear { .. } | EntityKind::DimAngular { .. } | EntityKind::DimRadial { .. } | EntityKind::Text { .. } | EntityKind::Insert { .. } => {}
             }
         }
     }
@@ -6327,6 +6676,9 @@ impl CadKitApp {
             EntityKind::Text { .. } => {
                 Err("OFFSET: Cannot offset text entities".to_string())
             }
+            EntityKind::Insert { .. } => {
+                Err("OFFSET: Cannot offset block insert entities".to_string())
+            }
         }
     }
 
@@ -6397,7 +6749,7 @@ impl CadKitApp {
                         );
                     }
                 }
-                EntityKind::DimAligned { .. } | EntityKind::DimLinear { .. } | EntityKind::DimAngular { .. } | EntityKind::DimRadial { .. } | EntityKind::Text { .. } => {}
+                EntityKind::DimAligned { .. } | EntityKind::DimLinear { .. } | EntityKind::DimAngular { .. } | EntityKind::DimRadial { .. } | EntityKind::Text { .. } | EntityKind::Insert { .. } => {}
             }
         }
     }
@@ -6467,7 +6819,7 @@ impl CadKitApp {
                     );
                 }
             }
-            EntityKind::DimAligned { .. } | EntityKind::DimLinear { .. } | EntityKind::DimAngular { .. } | EntityKind::DimRadial { .. } | EntityKind::Text { .. } => {}
+            EntityKind::DimAligned { .. } | EntityKind::DimLinear { .. } | EntityKind::DimAngular { .. } | EntityKind::DimRadial { .. } | EntityKind::Text { .. } | EntityKind::Insert { .. } => {}
         }
     }
 
@@ -6480,7 +6832,7 @@ impl CadKitApp {
     ) -> Option<Guid> {
         let mut best: Option<(f32, Guid)> = None;
         for entity in self.drawing.visible_entities() {
-            let d = Self::screen_dist_to_entity(&entity.kind, viewport, rect, screen_pos);
+            let d = self.screen_dist_to_entity_instance(entity, viewport, rect, screen_pos);
             if d <= Self::PICK_RADIUS {
                 if best.as_ref().map_or(true, |(bd, _)| d < *bd) {
                     best = Some((d, entity.id));
@@ -6589,6 +6941,12 @@ impl eframe::App for CadKitApp {
                 self.command_log.push("*Cancel*".to_string());
             } else if !matches!(self.hatch_phase, HatchPhase::Idle) {
                 self.exit_hatch();
+                self.command_log.push("*Cancel*".to_string());
+            } else if !matches!(self.block_phase, BlockPhase::Idle) {
+                self.exit_block();
+                self.command_log.push("*Cancel*".to_string());
+            } else if !matches!(self.insert_phase, InsertPhase::Idle) {
+                self.exit_insert();
                 self.command_log.push("*Cancel*".to_string());
             } else if !matches!(self.extend_phase, ExtendPhase::Idle) {
                 self.exit_extend();
@@ -7151,6 +7509,12 @@ impl eframe::App for CadKitApp {
                                 ("J / JOIN",       "",          "Join touching lines/polylines into selected polyline"),
                                 ("PE / PEDIT",     "",          "Select polyline, then join touching line/arc"),
                                 ("HA / HATCH",     "",          "Pick inside closed area to create hatch lines"),
+                                ("BLOCK / BMAKE",  "",          "Create named block definition from selected entities"),
+                                ("BE / BEDIT",     "",          "Edit block definition by name or selected insert"),
+                                ("BSAVE",          "",          "Save block edits and update all inserts"),
+                                ("BCANCEL",        "",          "Cancel block edits and restore drawing"),
+                                ("I / INSERT",     "",          "Insert block by name (example: INSERT name)"),
+                                ("X / EXPLODE",    "",          "Break array/block grouping links in current selection"),
                                 ("ET / EDITTEXT",  "",          "Edit a text entity via dialog"),
                                 ("U / UNDO",       "",          "Undo last change"),
                                 ("R / REDO",       "",          "Redo undone change"),
@@ -7958,16 +8322,18 @@ impl eframe::App for CadKitApp {
                                                 TrimResult::Fail(msg) => {
                                                     self.command_log.push(msg);
                                                 }
-                                                TrimResult::Apply { target_id, new_entities } => {
-                                                    if self.is_entity_on_locked_layer(&target_id) {
+                                                TrimResult::Apply { remove_ids, new_entities } => {
+                                                    let any_locked = remove_ids.iter().any(|id| self.is_entity_on_locked_layer(id));
+                                                    if any_locked {
                                                         self.command_log.push(
                                                             "TRIM: Target entity is on a locked layer".to_string(),
                                                         );
                                                     } else {
                                                         self.push_undo();
-                                                        let _ = self.drawing.remove_entity(&target_id);
-                                                        self.trim_cutting_edges
-                                                            .retain(|&id| id != target_id);
+                                                        for id in &remove_ids {
+                                                            let _ = self.drawing.remove_entity(id);
+                                                        }
+                                                        self.trim_cutting_edges.retain(|id| !remove_ids.contains(id));
                                                         for entity in new_entities {
                                                             self.drawing.add_entity(entity);
                                                         }
@@ -8560,6 +8926,40 @@ impl eframe::App for CadKitApp {
                                             }
                                         }
                                         self.apply_hatch_pick(world);
+                                    } else if matches!(self.block_phase, BlockPhase::PickBase { .. }) {
+                                        let local = click_pos - response.rect.min;
+                                        let raw_world = screen_to_world(local.x, local.y, viewport);
+                                        let pick = self.pick_entity_point(viewport, response.rect, click_pos);
+                                        let mut world = pick.as_ref().map(|(s, _)| s.world).unwrap_or_else(|| {
+                                            if self.snap_enabled && self.grid_visible { self.snap_to_grid(raw_world) } else { raw_world }
+                                        });
+                                        if pick.is_none() {
+                                            if let Some(snap_pt) = self.snap_intersection_point {
+                                                world = snap_pt;
+                                            } else if self.hover_snap_kind.is_some() {
+                                                if let Some(hw) = self.hover_world_pos {
+                                                    world = hw;
+                                                }
+                                            }
+                                        }
+                                        self.apply_block_base_pick(world);
+                                    } else if matches!(self.insert_phase, InsertPhase::PickPoint { .. }) {
+                                        let local = click_pos - response.rect.min;
+                                        let raw_world = screen_to_world(local.x, local.y, viewport);
+                                        let pick = self.pick_entity_point(viewport, response.rect, click_pos);
+                                        let mut world = pick.as_ref().map(|(s, _)| s.world).unwrap_or_else(|| {
+                                            if self.snap_enabled && self.grid_visible { self.snap_to_grid(raw_world) } else { raw_world }
+                                        });
+                                        if pick.is_none() {
+                                            if let Some(snap_pt) = self.snap_intersection_point {
+                                                world = snap_pt;
+                                            } else if self.hover_snap_kind.is_some() {
+                                                if let Some(hw) = self.hover_world_pos {
+                                                    world = hw;
+                                                }
+                                            }
+                                        }
+                                        self.apply_insert_pick(world);
                                     } else if !matches!(self.dim_phase, DimPhase::Idle) {
                                         // DIMALIGNED point pick — same snap logic as MOVE/COPY/ROTATE.
                                         let local = click_pos - response.rect.min;
@@ -8944,6 +9344,12 @@ impl eframe::App for CadKitApp {
                             } else if !matches!(self.hatch_phase, HatchPhase::Idle) {
                                 self.exit_hatch();
                                 self.command_log.push("*Cancel*".to_string());
+                            } else if !matches!(self.block_phase, BlockPhase::Idle) {
+                                self.exit_block();
+                                self.command_log.push("*Cancel*".to_string());
+                            } else if !matches!(self.insert_phase, InsertPhase::Idle) {
+                                self.exit_insert();
+                                self.command_log.push("*Cancel*".to_string());
                             } else if !matches!(self.extend_phase, ExtendPhase::Idle) {
                                 self.exit_extend();
                                 self.command_log.push("*Cancel*".to_string());
@@ -9028,10 +9434,18 @@ impl eframe::App for CadKitApp {
                                                 self.selected_entities.clear();
                                             }
                                             for id in hits {
-                                                if shift && self.selected_entities.contains(&id) {
-                                                    self.selected_entities.remove(&id);
+                                                let group = self.expand_assoc_group_ids(id);
+                                                let any_selected = group
+                                                    .iter()
+                                                    .any(|gid| self.selected_entities.contains(gid));
+                                                if shift && any_selected {
+                                                    for gid in group {
+                                                        self.selected_entities.remove(&gid);
+                                                    }
                                                 } else {
-                                                    self.selected_entities.insert(id);
+                                                    for gid in group {
+                                                        self.selected_entities.insert(gid);
+                                                    }
                                                 }
                                             }
                                         }
@@ -9360,6 +9774,7 @@ impl eframe::App for CadKitApp {
                             self.draw_ellipse_preview(ui, response.rect, viewport, world);
                             self.draw_rectangle_preview(ui, response.rect, viewport, world);
                             self.draw_array_preview(ui, response.rect, viewport, world);
+                            self.draw_insert_preview(ui, response.rect, viewport, world);
 
                             // Grid-snap dot (suppress when any entity/intersection/nearest/perp/tangent snap active).
                             if self.snap_enabled
@@ -9762,6 +10177,12 @@ impl eframe::App for CadKitApp {
                             } else if !matches!(self.hatch_phase, HatchPhase::Idle) {
                                 self.exit_hatch();
                                 self.command_log.push("*Cancel*".to_string());
+                            } else if !matches!(self.block_phase, BlockPhase::Idle) {
+                                self.exit_block();
+                                self.command_log.push("*Cancel*".to_string());
+                            } else if !matches!(self.insert_phase, InsertPhase::Idle) {
+                                self.exit_insert();
+                                self.command_log.push("*Cancel*".to_string());
                             } else if self.has_active_dimension_command() {
                                 self.exit_dim();
                                 self.command_log.push("*Cancel*".to_string());
@@ -9926,6 +10347,87 @@ impl CadKitApp {
             EntityKind::Text { position, .. } => {
                 Some((position.x, position.y, position.x, position.y))
             }
+            EntityKind::Insert { position, .. } => {
+                Some((position.x, position.y, position.x, position.y))
+            }
+        }
+    }
+
+    fn entity_bounds_world_for_entity(&self, entity: &Entity) -> Option<(f64, f64, f64, f64)> {
+        match &entity.kind {
+            EntityKind::Insert {
+                name,
+                position,
+                rotation,
+                scale_x,
+                scale_y,
+            } => {
+                let def = self.drawing.get_block(name)?;
+                let mut min_x = f64::INFINITY;
+                let mut min_y = f64::INFINITY;
+                let mut max_x = f64::NEG_INFINITY;
+                let mut max_y = f64::NEG_INFINITY;
+                let mut found = false;
+                for be in &def.entities {
+                    let wk = Self::transform_insert_local_kind(
+                        &be.kind,
+                        *position,
+                        *rotation,
+                        *scale_x,
+                        *scale_y,
+                    );
+                    if let Some((x0, y0, x1, y1)) = Self::entity_bounds_world(&wk) {
+                        min_x = min_x.min(x0);
+                        min_y = min_y.min(y0);
+                        max_x = max_x.max(x1);
+                        max_y = max_y.max(y1);
+                        found = true;
+                    }
+                }
+                if found {
+                    Some((min_x, min_y, max_x, max_y))
+                } else {
+                    Some((position.x, position.y, position.x, position.y))
+                }
+            }
+            _ => Self::entity_bounds_world(&entity.kind),
+        }
+    }
+
+    fn screen_dist_to_entity_instance(
+        &self,
+        entity: &Entity,
+        viewport: &Viewport,
+        rect: egui::Rect,
+        screen_pos: egui::Pos2,
+    ) -> f32 {
+        match &entity.kind {
+            EntityKind::Insert {
+                name,
+                position,
+                rotation,
+                scale_x,
+                scale_y,
+            } => {
+                let mut best = Self::screen_dist_to_entity(&entity.kind, viewport, rect, screen_pos);
+                if let Some(def) = self.drawing.get_block(name) {
+                    for be in &def.entities {
+                        let wk = Self::transform_insert_local_kind(
+                            &be.kind,
+                            *position,
+                            *rotation,
+                            *scale_x,
+                            *scale_y,
+                        );
+                        let d = Self::screen_dist_to_entity(&wk, viewport, rect, screen_pos);
+                        if d < best {
+                            best = d;
+                        }
+                    }
+                }
+                best
+            }
+            _ => Self::screen_dist_to_entity(&entity.kind, viewport, rect, screen_pos),
         }
     }
 
@@ -9939,7 +10441,7 @@ impl CadKitApp {
     ) -> Vec<Guid> {
         let mut hits = Vec::new();
         for e in self.drawing.visible_entities() {
-            let Some((ex0, ey0, ex1, ey1)) = Self::entity_bounds_world(&e.kind) else {
+            let Some((ex0, ey0, ex1, ey1)) = self.entity_bounds_world_for_entity(e) else {
                 continue;
             };
 
@@ -10138,6 +10640,148 @@ impl CadKitApp {
                         &mut best, viewport, rect, screen_pos, entity.id,
                         &[("text origin", p)],
                     );
+                }
+                EntityKind::Insert { name, position, rotation, scale_x, scale_y } => {
+                    let p: Vec2 = (*position).into();
+                    self.push_pick_candidates(
+                        &mut best, viewport, rect, screen_pos, entity.id,
+                        &[("insert origin", p)],
+                    );
+                    if let Some(def) = self.drawing.get_block(name) {
+                        for be in &def.entities {
+                            let world_kind = Self::transform_insert_local_kind(
+                                &be.kind,
+                                *position,
+                                *rotation,
+                                *scale_x,
+                                *scale_y,
+                            );
+                            match &world_kind {
+                                EntityKind::Line { start, end } => {
+                                    let s: Vec2 = (*start).into();
+                                    let e: Vec2 = (*end).into();
+                                    let mid = Vec2::new((s.x + e.x) * 0.5, (s.y + e.y) * 0.5);
+                                    self.push_pick_candidates(
+                                        &mut best,
+                                        viewport,
+                                        rect,
+                                        screen_pos,
+                                        entity.id,
+                                        &[("line start", s), ("line end", e), ("line mid", mid)],
+                                    );
+                                }
+                                EntityKind::Arc { center, radius, start_angle, end_angle } => {
+                                    let c: Vec2 = (*center).into();
+                                    let r = *radius;
+                                    let sa = *start_angle;
+                                    let ea = *end_angle;
+                                    let mid_ang = sa + (ea - sa) * 0.5;
+                                    let pts = [
+                                        ("arc start", Vec2::new(c.x + r * sa.cos(), c.y + r * sa.sin())),
+                                        ("arc mid", Vec2::new(c.x + r * mid_ang.cos(), c.y + r * mid_ang.sin())),
+                                        ("arc end", Vec2::new(c.x + r * ea.cos(), c.y + r * ea.sin())),
+                                    ];
+                                    self.push_pick_candidates(&mut best, viewport, rect, screen_pos, entity.id, &pts);
+                                }
+                                EntityKind::Circle { center, radius } => {
+                                    let c: Vec2 = (*center).into();
+                                    let r = *radius;
+                                    let pts = [
+                                        ("circle center", c),
+                                        ("circle east", Vec2::new(c.x + r, c.y)),
+                                        ("circle west", Vec2::new(c.x - r, c.y)),
+                                        ("circle north", Vec2::new(c.x, c.y + r)),
+                                        ("circle south", Vec2::new(c.x, c.y - r)),
+                                    ];
+                                    self.push_pick_candidates(&mut best, viewport, rect, screen_pos, entity.id, &pts);
+                                }
+                                EntityKind::Polyline { vertices, closed } => {
+                                    if vertices.is_empty() {
+                                        continue;
+                                    }
+                                    for (i, v) in vertices.iter().enumerate() {
+                                        let p: Vec2 = (*v).into();
+                                        let label = if i == 0 {
+                                            "poly start"
+                                        } else if i + 1 == vertices.len() && !*closed {
+                                            "poly end"
+                                        } else {
+                                            "poly vertex"
+                                        };
+                                        self.push_pick_candidates(
+                                            &mut best,
+                                            viewport,
+                                            rect,
+                                            screen_pos,
+                                            entity.id,
+                                            &[(label, p)],
+                                        );
+                                    }
+                                    for seg in vertices.windows(2) {
+                                        let a: Vec2 = seg[0].into();
+                                        let b: Vec2 = seg[1].into();
+                                        let mid = Vec2::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5);
+                                        self.push_pick_candidates(
+                                            &mut best,
+                                            viewport,
+                                            rect,
+                                            screen_pos,
+                                            entity.id,
+                                            &[("poly mid", mid)],
+                                        );
+                                    }
+                                    if *closed && vertices.len() >= 2 {
+                                        let a: Vec2 = vertices.last().unwrap().to_owned().into();
+                                        let b: Vec2 = vertices.first().unwrap().to_owned().into();
+                                        let mid = Vec2::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5);
+                                        self.push_pick_candidates(
+                                            &mut best,
+                                            viewport,
+                                            rect,
+                                            screen_pos,
+                                            entity.id,
+                                            &[("poly mid", mid)],
+                                        );
+                                    }
+                                }
+                                EntityKind::DimAligned { start, end, .. }
+                                | EntityKind::DimLinear { start, end, .. } => {
+                                    let s: Vec2 = (*start).into();
+                                    let e: Vec2 = (*end).into();
+                                    let mid = Vec2::new((s.x + e.x) * 0.5, (s.y + e.y) * 0.5);
+                                    self.push_pick_candidates(
+                                        &mut best, viewport, rect, screen_pos, entity.id,
+                                        &[("dim start", s), ("dim end", e), ("dim mid", mid)],
+                                    );
+                                }
+                                EntityKind::DimAngular { vertex, line1_pt, line2_pt, .. } => {
+                                    let v: Vec2 = (*vertex).into();
+                                    let p1: Vec2 = (*line1_pt).into();
+                                    let p2: Vec2 = (*line2_pt).into();
+                                    self.push_pick_candidates(
+                                        &mut best, viewport, rect, screen_pos, entity.id,
+                                        &[("center", v), ("dim start", p1), ("dim end", p2)],
+                                    );
+                                }
+                                EntityKind::DimRadial { center, leader_pt, .. } => {
+                                    let c: Vec2 = (*center).into();
+                                    let l: Vec2 = (*leader_pt).into();
+                                    self.push_pick_candidates(
+                                        &mut best, viewport, rect, screen_pos, entity.id,
+                                        &[("center", c), ("dim end", l)],
+                                    );
+                                }
+                                EntityKind::Text { position, .. } => {
+                                    let p: Vec2 = (*position).into();
+                                    self.push_pick_candidates(
+                                        &mut best, viewport, rect, screen_pos, entity.id,
+                                        &[("text origin", p)],
+                                    );
+                                }
+                                EntityKind::Insert { .. } => {}
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -10577,7 +11221,22 @@ impl CadKitApp {
             return Err("No line/polyline geometry available".to_string());
         }
 
-        let loops = detect_closed_boundaries(&segments, 1e-6);
+        let mut min_x = f64::INFINITY;
+        let mut min_y = f64::INFINITY;
+        let mut max_x = f64::NEG_INFINITY;
+        let mut max_y = f64::NEG_INFINITY;
+        for s in &segments {
+            min_x = min_x.min(s.start.x).min(s.end.x);
+            min_y = min_y.min(s.start.y).min(s.end.y);
+            max_x = max_x.max(s.start.x).max(s.end.x);
+            max_y = max_y.max(s.start.y).max(s.end.y);
+        }
+        let diag = ((max_x - min_x).powi(2) + (max_y - min_y).powi(2)).sqrt();
+        // Conservative auto-heal: enough for tiny drafting gaps, small enough
+        // to avoid closing intended openings.
+        let gap_tol = (diag * 1e-4).clamp(1e-5, 0.25);
+
+        let loops = detect_closed_boundaries_with_gap(&segments, 1e-6, gap_tol);
         if loops.is_empty() {
             return Err("No closed loops detected".to_string());
         }
@@ -10732,6 +11391,451 @@ impl CadKitApp {
         }
     }
 
+    fn apply_block_base_pick(&mut self, base: Vec2) {
+        let ids = match &self.block_phase {
+            BlockPhase::PickBase { ids } => ids.clone(),
+            _ => return,
+        };
+        self.block_phase = BlockPhase::EnterName { ids, base };
+        self.command_log
+            .push("BLOCK: Enter block name".to_string());
+    }
+
+    fn define_block_from_selection(
+        &mut self,
+        ids: &[Guid],
+        base: Vec2,
+        name: &str,
+    ) -> Result<usize, String> {
+        let block_name = name.trim();
+        if block_name.is_empty() {
+            return Err("BLOCK: Name cannot be empty".to_string());
+        }
+        let mut payload: Vec<BlockEntity> = Vec::new();
+        for id in ids {
+            if let Some(src) = self.drawing.get_entity(id) {
+                payload.push(BlockEntity {
+                    kind: Self::clone_kind_translated(&src.kind, -base.x, -base.y),
+                    layer: src.layer,
+                    color: src.color,
+                    linetype: src.linetype,
+                    linetype_by_layer: src.linetype_by_layer,
+                    linetype_scale: src.linetype_scale,
+                });
+            }
+        }
+        if payload.is_empty() {
+            return Err("BLOCK: No source entities selected".to_string());
+        }
+        if !self
+            .drawing
+            .define_block(block_name.to_string(), Vec3::xy(base.x, base.y), payload)
+        {
+            return Err("BLOCK: Failed to define block".to_string());
+        }
+        Ok(ids.len())
+    }
+
+    fn begin_block_edit(&mut self, name: &str) -> Result<(), String> {
+        if self.block_edit_active {
+            return Err("BEDIT: Already editing a block (use BSAVE or BCANCEL)".to_string());
+        }
+        let Some(def) = self.drawing.get_block(name).cloned() else {
+            return Err(format!("BEDIT: Block '{}' not found", name.trim()));
+        };
+
+        let snapshot = self.drawing.clone();
+        let prev_layer = self.current_layer;
+
+        let mut edit = Drawing::new(format!("Block Edit: {}", def.name));
+        let mut src_layers: Vec<_> = snapshot.layers().cloned().collect();
+        src_layers.sort_by_key(|l| l.id);
+        let mut src_to_edit: HashMap<u32, u32> = HashMap::new();
+        let mut edit_to_src: HashMap<u32, u32> = HashMap::new();
+        src_to_edit.insert(0, 0);
+        edit_to_src.insert(0, 0);
+        if let Some(base_layer) = edit.get_layer_mut(0) {
+            if let Some(src0) = snapshot.get_layer(0) {
+                base_layer.name = src0.name.clone();
+                base_layer.visible = src0.visible;
+                base_layer.locked = src0.locked;
+                base_layer.frozen = src0.frozen;
+                base_layer.color = src0.color;
+                base_layer.linetype = src0.linetype;
+                base_layer.linetype_scale = src0.linetype_scale;
+            }
+        }
+        for l in src_layers.into_iter().filter(|l| l.id != 0) {
+            let eid = edit.add_layer_with_color(l.name.clone(), l.color);
+            if let Some(el) = edit.get_layer_mut(eid) {
+                el.visible = l.visible;
+                el.locked = l.locked;
+                el.frozen = l.frozen;
+                el.linetype = l.linetype;
+                el.linetype_scale = l.linetype_scale;
+            }
+            src_to_edit.insert(l.id, eid);
+            edit_to_src.insert(eid, l.id);
+        }
+
+        for be in &def.entities {
+            let mut e = Entity::new(
+                be.kind.clone(),
+                src_to_edit.get(&be.layer).copied().unwrap_or(0),
+            );
+            e.color = be.color;
+            e.linetype = be.linetype;
+            e.linetype_by_layer = be.linetype_by_layer;
+            e.linetype_scale = be.linetype_scale;
+            edit.add_entity(e);
+        }
+
+        self.cancel_active_tool();
+        self.exit_trim();
+        self.exit_offset();
+        self.exit_move();
+        self.exit_extend();
+        self.exit_copy();
+        self.exit_rotate();
+        self.exit_scale();
+        self.exit_mirror();
+        self.exit_fillet();
+        self.exit_chamfer();
+        self.exit_polygon();
+        self.exit_ellipse();
+        self.exit_rectangle();
+        self.exit_array();
+        self.exit_pedit();
+        self.exit_boundary();
+        self.exit_hatch();
+        self.exit_block();
+        self.exit_insert();
+
+        self.drawing = edit;
+        self.current_layer = src_to_edit.get(&prev_layer).copied().unwrap_or(0);
+        self.selected_entities.clear();
+        self.selection = None;
+
+        self.block_edit_active = true;
+        self.block_edit_name = Some(def.name.clone());
+        self.block_edit_base_point = Some(def.base_point);
+        self.block_edit_snapshot = Some(snapshot);
+        self.block_edit_layer_map = edit_to_src;
+        self.block_edit_prev_layer = prev_layer;
+        Ok(())
+    }
+
+    fn save_block_edit(&mut self) -> Result<(), String> {
+        if !self.block_edit_active {
+            return Err("BSAVE: Not in block edit mode".to_string());
+        }
+        let name = self
+            .block_edit_name
+            .clone()
+            .ok_or_else(|| "BSAVE: Missing block edit name".to_string())?;
+        let base = self
+            .block_edit_base_point
+            .ok_or_else(|| "BSAVE: Missing block base point".to_string())?;
+        let snapshot = self
+            .block_edit_snapshot
+            .take()
+            .ok_or_else(|| "BSAVE: Missing block edit snapshot".to_string())?;
+
+        let mut payload: Vec<BlockEntity> = Vec::new();
+        for src in self.drawing.entities() {
+            payload.push(BlockEntity {
+                kind: src.kind.clone(),
+                layer: self
+                    .block_edit_layer_map
+                    .get(&src.layer)
+                    .copied()
+                    .unwrap_or(0),
+                color: src.color,
+                linetype: src.linetype,
+                linetype_by_layer: src.linetype_by_layer,
+                linetype_scale: src.linetype_scale,
+            });
+        }
+        if payload.is_empty() {
+            return Err("BSAVE: Block cannot be empty".to_string());
+        }
+
+        self.drawing = snapshot;
+        self.current_layer = self.block_edit_prev_layer;
+        self.selected_entities.clear();
+        self.selection = None;
+        self.push_undo();
+        if !self.drawing.define_block(name.clone(), base, payload) {
+            return Err("BSAVE: Failed to update block definition".to_string());
+        }
+
+        self.block_edit_active = false;
+        self.block_edit_name = None;
+        self.block_edit_base_point = None;
+        self.block_edit_layer_map.clear();
+        Ok(())
+    }
+
+    fn cancel_block_edit(&mut self) -> Result<(), String> {
+        if !self.block_edit_active {
+            return Err("BCANCEL: Not in block edit mode".to_string());
+        }
+        let snapshot = self
+            .block_edit_snapshot
+            .take()
+            .ok_or_else(|| "BCANCEL: Missing block edit snapshot".to_string())?;
+        self.drawing = snapshot;
+        self.current_layer = self.block_edit_prev_layer;
+        self.selected_entities.clear();
+        self.selection = None;
+        self.block_edit_active = false;
+        self.block_edit_name = None;
+        self.block_edit_base_point = None;
+        self.block_edit_layer_map.clear();
+        Ok(())
+    }
+
+    fn insert_block_named(&mut self, name: &str, point: Vec2) -> Result<usize, String> {
+        if self.drawing.get_block(name).is_none() {
+            return Err(format!("INSERT: Block '{}' not found", name.trim()));
+        }
+        self.push_undo();
+        let mut e = Entity::new(
+            EntityKind::Insert {
+                name: name.trim().to_string(),
+                position: Vec3::xy(point.x, point.y),
+                rotation: 0.0,
+                scale_x: 1.0,
+                scale_y: 1.0,
+            },
+            self.current_layer,
+        );
+        e.layer = self.current_layer;
+        self.drawing.add_entity(e);
+        Ok(1)
+    }
+
+    fn apply_insert_pick(&mut self, point: Vec2) {
+        let name = match &self.insert_phase {
+            InsertPhase::PickPoint { name } => name.clone(),
+            InsertPhase::Idle => return,
+        };
+        match self.insert_block_named(&name, point) {
+            Ok(count) => {
+                self.command_log
+                    .push(format!("INSERT: Placed '{}' ({} entities, grouped)", name, count));
+                self.insert_phase = InsertPhase::PickPoint { name };
+            }
+            Err(msg) => {
+                self.command_log.push(msg);
+                self.exit_insert();
+            }
+        }
+    }
+
+    fn transform_point_local_to_world(
+        p: Vec3,
+        ins_pos: Vec3,
+        ins_rot: f64,
+        sx: f64,
+        sy: f64,
+    ) -> Vec3 {
+        let x = p.x * sx;
+        let y = p.y * sy;
+        let ca = ins_rot.cos();
+        let sa = ins_rot.sin();
+        Vec3::xy(ins_pos.x + x * ca - y * sa, ins_pos.y + x * sa + y * ca)
+    }
+
+    fn transform_insert_local_kind(
+        kind: &EntityKind,
+        ins_pos: Vec3,
+        ins_rot: f64,
+        sx: f64,
+        sy: f64,
+    ) -> EntityKind {
+        let tp = |p: Vec3| Self::transform_point_local_to_world(p, ins_pos, ins_rot, sx, sy);
+        match kind {
+            EntityKind::Line { start, end } => EntityKind::Line {
+                start: tp(*start),
+                end: tp(*end),
+            },
+            EntityKind::Circle { center, radius } => {
+                let scale = ((sx.abs() + sy.abs()) * 0.5).max(1e-9);
+                EntityKind::Circle {
+                    center: tp(*center),
+                    radius: *radius * scale,
+                }
+            }
+            EntityKind::Arc {
+                center,
+                radius,
+                start_angle,
+                end_angle,
+            } => {
+                let scale = ((sx.abs() + sy.abs()) * 0.5).max(1e-9);
+                EntityKind::Arc {
+                    center: tp(*center),
+                    radius: *radius * scale,
+                    start_angle: *start_angle + ins_rot,
+                    end_angle: *end_angle + ins_rot,
+                }
+            }
+            EntityKind::Polyline { vertices, closed } => EntityKind::Polyline {
+                vertices: vertices.iter().map(|v| tp(*v)).collect(),
+                closed: *closed,
+            },
+            EntityKind::Text {
+                position,
+                content,
+                height,
+                rotation,
+                font_name,
+            } => {
+                let scale = ((sx.abs() + sy.abs()) * 0.5).max(1e-9);
+                EntityKind::Text {
+                    position: tp(*position),
+                    content: content.clone(),
+                    height: *height * scale,
+                    rotation: *rotation + ins_rot,
+                    font_name: font_name.clone(),
+                }
+            }
+            EntityKind::DimAligned {
+                start,
+                end,
+                offset,
+                text_override,
+                text_pos,
+                arrow_length,
+                arrow_half_width,
+            } => {
+                let scale = ((sx.abs() + sy.abs()) * 0.5).max(1e-9);
+                EntityKind::DimAligned {
+                    start: tp(*start),
+                    end: tp(*end),
+                    offset: *offset * scale,
+                    text_override: text_override.clone(),
+                    text_pos: tp(*text_pos),
+                    arrow_length: *arrow_length * scale,
+                    arrow_half_width: *arrow_half_width * scale,
+                }
+            }
+            EntityKind::DimLinear {
+                start,
+                end,
+                offset,
+                text_override,
+                text_pos,
+                horizontal,
+                arrow_length,
+                arrow_half_width,
+            } => {
+                let scale = ((sx.abs() + sy.abs()) * 0.5).max(1e-9);
+                EntityKind::DimLinear {
+                    start: tp(*start),
+                    end: tp(*end),
+                    offset: *offset * scale,
+                    text_override: text_override.clone(),
+                    text_pos: tp(*text_pos),
+                    horizontal: *horizontal,
+                    arrow_length: *arrow_length * scale,
+                    arrow_half_width: *arrow_half_width * scale,
+                }
+            }
+            EntityKind::DimAngular {
+                vertex,
+                line1_pt,
+                line2_pt,
+                radius,
+                text_override,
+                text_pos,
+                arrow_length,
+                arrow_half_width,
+            } => {
+                let scale = ((sx.abs() + sy.abs()) * 0.5).max(1e-9);
+                EntityKind::DimAngular {
+                    vertex: tp(*vertex),
+                    line1_pt: tp(*line1_pt),
+                    line2_pt: tp(*line2_pt),
+                    radius: *radius * scale,
+                    text_override: text_override.clone(),
+                    text_pos: tp(*text_pos),
+                    arrow_length: *arrow_length * scale,
+                    arrow_half_width: *arrow_half_width * scale,
+                }
+            }
+            EntityKind::DimRadial {
+                center,
+                radius,
+                leader_pt,
+                is_diameter,
+                text_override,
+                text_pos,
+                arrow_length,
+                arrow_half_width,
+            } => {
+                let scale = ((sx.abs() + sy.abs()) * 0.5).max(1e-9);
+                EntityKind::DimRadial {
+                    center: tp(*center),
+                    radius: *radius * scale,
+                    leader_pt: tp(*leader_pt),
+                    is_diameter: *is_diameter,
+                    text_override: text_override.clone(),
+                    text_pos: tp(*text_pos),
+                    arrow_length: *arrow_length * scale,
+                    arrow_half_width: *arrow_half_width * scale,
+                }
+            }
+            EntityKind::Insert {
+                name,
+                position,
+                rotation,
+                scale_x,
+                scale_y,
+            } => EntityKind::Insert {
+                name: name.clone(),
+                position: tp(*position),
+                rotation: *rotation + ins_rot,
+                scale_x: *scale_x * sx,
+                scale_y: *scale_y * sy,
+            },
+        }
+    }
+
+    fn explode_insert_entity(&mut self, id: Guid) -> bool {
+        let Some(src) = self.drawing.get_entity(&id).cloned() else {
+            return false;
+        };
+        let EntityKind::Insert {
+            name,
+            position,
+            rotation,
+            scale_x,
+            scale_y,
+        } = src.kind
+        else {
+            return false;
+        };
+        let Some(def) = self.drawing.get_block(&name).cloned() else {
+            return false;
+        };
+
+        let _ = self.drawing.remove_entity(&id);
+        for b in &def.entities {
+            let mut e = Entity::new(
+                Self::transform_insert_local_kind(&b.kind, position, rotation, scale_x, scale_y),
+                b.layer,
+            );
+            e.color = b.color;
+            e.linetype = b.linetype;
+            e.linetype_by_layer = b.linetype_by_layer;
+            e.linetype_scale = b.linetype_scale;
+            self.drawing.add_entity(e);
+        }
+        true
+    }
+
     fn apply_boundary_pick(&mut self, pick: Vec2) {
         if self.is_layer_locked(self.current_layer) {
             self.command_log
@@ -10872,12 +11976,12 @@ impl CadKitApp {
     ) -> TrimResult {
         // 1. Find entity nearest click.
         let target_id = {
-            let mut best: Option<(f32, Guid)> = None;
-            for entity in self.drawing.visible_entities() {
-                let d = Self::screen_dist_to_entity(&entity.kind, viewport, rect, screen_pos);
-                if d <= Self::PICK_RADIUS {
-                    if best.as_ref().map_or(true, |(bd, _)| d < *bd) {
-                        best = Some((d, entity.id));
+        let mut best: Option<(f32, Guid)> = None;
+        for entity in self.drawing.visible_entities() {
+            let d = self.screen_dist_to_entity_instance(entity, viewport, rect, screen_pos);
+            if d <= Self::PICK_RADIUS {
+                if best.as_ref().map_or(true, |(bd, _)| d < *bd) {
+                    best = Some((d, entity.id));
                     }
                 }
             }
@@ -10888,75 +11992,138 @@ impl CadKitApp {
         };
 
         // 2. Clone target data.
-        let (target_kind, target_layer) = match self.drawing.get_entity(&target_id) {
-            Some(e) => (e.kind.clone(), e.layer),
+        let target_entity = match self.drawing.get_entity(&target_id) {
+            Some(e) => e.clone(),
             None => return TrimResult::Fail("TRIM: Entity not found".to_string()),
         };
+        let target_kind = target_entity.kind.clone();
+        let target_layer = target_entity.layer;
 
         // 3. Cutting edge prims — skip if prim is target itself.
-        let cutting_prims: Vec<GeomPrim> = self
-            .trim_cutting_edges
-            .iter()
-            .filter(|&&id| id != target_id)
-            .filter_map(|id| self.drawing.get_entity(id))
-            .filter_map(|e| Self::entity_to_geom_prim(&e.kind))
-            .collect();
-
-        // 4. Target prim.
-        let target_prim = match Self::entity_to_geom_prim(&target_kind) {
-            Some(p) => p,
-            None => return TrimResult::Fail("TRIM: Unsupported entity type".to_string()),
-        };
-
-        // 5. Collect all intersection points.
-        let mut isect_pts: Vec<Vec3> = Vec::new();
-        for cut_prim in &cutting_prims {
-            let result = Self::intersect_geom_prims(&target_prim, cut_prim, Self::GEOM_TOL);
-            isect_pts.extend(result.points());
+        // Expand INSERT cutters into transformed member primitives so block geometry
+        // can be used as trim boundaries.
+        let mut cutting_prims: Vec<GeomPrim> = Vec::new();
+        for id in &self.trim_cutting_edges {
+            if *id == target_id {
+                continue;
+            }
+            let Some(e) = self.drawing.get_entity(id) else {
+                continue;
+            };
+            match &e.kind {
+                EntityKind::Insert {
+                    name,
+                    position,
+                    rotation,
+                    scale_x,
+                    scale_y,
+                } => {
+                    if let Some(def) = self.drawing.get_block(name) {
+                        for be in &def.entities {
+                            let wk = Self::transform_insert_local_kind(
+                                &be.kind,
+                                *position,
+                                *rotation,
+                                *scale_x,
+                                *scale_y,
+                            );
+                            if let Some(p) = Self::entity_to_geom_prim(&wk) {
+                                cutting_prims.push(p);
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    if let Some(p) = Self::entity_to_geom_prim(&e.kind) {
+                        cutting_prims.push(p);
+                    }
+                }
+            }
         }
-        if isect_pts.is_empty() {
-            return TrimResult::Fail("TRIM: No intersection with cutting edges".to_string());
-        }
 
-        // 6. Click world position.
+        // 4. Click world position.
         let local = screen_pos - rect.min;
         let click_world = screen_to_world(local.x, local.y, viewport);
 
-        // 7. Compute new entities.
-        let new_entities: Vec<cadkit_2d_core::Entity> = match &target_kind {
-            EntityKind::Line { start, end } => {
-                Self::trim_line(*start, *end, &isect_pts, click_world, target_layer)
-            }
-            EntityKind::Arc { center, radius, start_angle, end_angle } => Self::trim_arc(
-                *center,
-                *radius,
-                *start_angle,
-                *end_angle,
-                &isect_pts,
-                click_world,
-                target_layer,
-            ),
-            EntityKind::Circle { center, radius } => {
-                Self::trim_circle(*center, *radius, &isect_pts, click_world, target_layer)
-            }
-            EntityKind::Polyline { .. } => {
-                return TrimResult::Fail(
-                    "TRIM: Polyline trim not yet supported".to_string(),
-                );
-            }
-            EntityKind::DimAligned { .. } | EntityKind::DimLinear { .. } | EntityKind::DimAngular { .. } | EntityKind::DimRadial { .. } => {
-                return TrimResult::Fail(
-                    "TRIM: Cannot trim dimension entities".to_string(),
-                );
-            }
-            EntityKind::Text { .. } => {
-                return TrimResult::Fail(
-                    "TRIM: Cannot trim text entities".to_string(),
-                );
-            }
+        // 5. Compute new entities.
+        let trim_against_kind = |kind: &EntityKind, layer: u32, isect_pts: &[Vec3], click_world: Vec2| -> Result<Vec<cadkit_2d_core::Entity>, String> {
+            Ok(match kind {
+                EntityKind::Line { start, end } => {
+                    Self::trim_line(*start, *end, isect_pts, click_world, layer)
+                }
+                EntityKind::Arc { center, radius, start_angle, end_angle } => Self::trim_arc(
+                    *center,
+                    *radius,
+                    *start_angle,
+                    *end_angle,
+                    isect_pts,
+                    click_world,
+                    layer,
+                ),
+                EntityKind::Circle { center, radius } => {
+                    Self::trim_circle(*center, *radius, isect_pts, click_world, layer)
+                }
+                EntityKind::Polyline { .. } => {
+                    return Err("TRIM: Polyline trim not yet supported".to_string());
+                }
+                EntityKind::DimAligned { .. } | EntityKind::DimLinear { .. } | EntityKind::DimAngular { .. } | EntityKind::DimRadial { .. } => {
+                    return Err("TRIM: Cannot trim dimension entities".to_string());
+                }
+                EntityKind::Text { .. } => {
+                    return Err("TRIM: Cannot trim text entities".to_string());
+                }
+                EntityKind::Insert { .. } => {
+                    return Err("TRIM: Nested block insert trim not supported".to_string());
+                }
+            })
         };
 
-        TrimResult::Apply { target_id, new_entities }
+        match &target_kind {
+            EntityKind::Line { .. } => {
+                let target_prim = match Self::entity_to_geom_prim(&target_kind) {
+                    Some(p) => p,
+                    None => return TrimResult::Fail("TRIM: Unsupported entity type".to_string()),
+                };
+                let mut isect_pts: Vec<Vec3> = Vec::new();
+                for cut_prim in &cutting_prims {
+                    let result = Self::intersect_geom_prims(&target_prim, cut_prim, Self::GEOM_TOL);
+                    isect_pts.extend(result.points());
+                }
+                if isect_pts.is_empty() {
+                    return TrimResult::Fail("TRIM: No intersection with cutting edges".to_string());
+                }
+                match trim_against_kind(&target_kind, target_layer, &isect_pts, click_world) {
+                    Ok(new_entities) => TrimResult::Apply { remove_ids: vec![target_id], new_entities },
+                    Err(msg) => TrimResult::Fail(msg),
+                }
+            }
+            EntityKind::Arc { .. } | EntityKind::Circle { .. } => {
+                let target_prim = match Self::entity_to_geom_prim(&target_kind) {
+                    Some(p) => p,
+                    None => return TrimResult::Fail("TRIM: Unsupported entity type".to_string()),
+                };
+                let mut isect_pts: Vec<Vec3> = Vec::new();
+                for cut_prim in &cutting_prims {
+                    let result = Self::intersect_geom_prims(&target_prim, cut_prim, Self::GEOM_TOL);
+                    isect_pts.extend(result.points());
+                }
+                if isect_pts.is_empty() {
+                    return TrimResult::Fail("TRIM: No intersection with cutting edges".to_string());
+                }
+                match trim_against_kind(&target_kind, target_layer, &isect_pts, click_world) {
+                    Ok(new_entities) => TrimResult::Apply { remove_ids: vec![target_id], new_entities },
+                    Err(msg) => TrimResult::Fail(msg),
+                }
+            }
+            EntityKind::Insert { .. } => {
+                TrimResult::Fail("TRIM: Explode block first to trim its geometry".to_string())
+            }
+            EntityKind::Polyline { .. } => TrimResult::Fail("TRIM: Polyline trim not yet supported".to_string()),
+            EntityKind::DimAligned { .. } | EntityKind::DimLinear { .. } | EntityKind::DimAngular { .. } | EntityKind::DimRadial { .. } => {
+                TrimResult::Fail("TRIM: Cannot trim dimension entities".to_string())
+            }
+            EntityKind::Text { .. } => TrimResult::Fail("TRIM: Cannot trim text entities".to_string()),
+        }
     }
 
     fn finalize_polyline(&mut self, closed: bool) {
@@ -11843,6 +13010,189 @@ impl CadKitApp {
                             Self::add_ranked_ortho_candidate(
                                 &mut best, viewport, rect, screen_pos, 0, p, SnapKind::Endpoint,
                             );
+                        }
+                    }
+                }
+                EntityKind::Insert { name, position, rotation, scale_x, scale_y } => {
+                    if self.snap_endpoint {
+                        let p: Vec2 = (*position).into();
+                        if Self::point_on_ortho_axis(base, axis, p, tol) {
+                            Self::add_ranked_ortho_candidate(
+                                &mut best, viewport, rect, screen_pos, 0, p, SnapKind::Endpoint,
+                            );
+                        }
+                    }
+                    if let Some(def) = self.drawing.get_block(name) {
+                        for be in &def.entities {
+                            let world_kind = Self::transform_insert_local_kind(
+                                &be.kind,
+                                *position,
+                                *rotation,
+                                *scale_x,
+                                *scale_y,
+                            );
+                            match &world_kind {
+                                EntityKind::Line { start, end } => {
+                                    if self.snap_endpoint {
+                                        let s: Vec2 = (*start).into();
+                                        let e: Vec2 = (*end).into();
+                                        if Self::point_on_ortho_axis(base, axis, s, tol) {
+                                            Self::add_ranked_ortho_candidate(
+                                                &mut best, viewport, rect, screen_pos, 0, s, SnapKind::Endpoint,
+                                            );
+                                        }
+                                        if Self::point_on_ortho_axis(base, axis, e, tol) {
+                                            Self::add_ranked_ortho_candidate(
+                                                &mut best, viewport, rect, screen_pos, 0, e, SnapKind::Endpoint,
+                                            );
+                                        }
+                                    }
+                                    if self.snap_midpoint {
+                                        let s: Vec2 = (*start).into();
+                                        let e: Vec2 = (*end).into();
+                                        let m = Vec2::new((s.x + e.x) * 0.5, (s.y + e.y) * 0.5);
+                                        if Self::point_on_ortho_axis(base, axis, m, tol) {
+                                            Self::add_ranked_ortho_candidate(
+                                                &mut best, viewport, rect, screen_pos, 2, m, SnapKind::Midpoint,
+                                            );
+                                        }
+                                    }
+                                }
+                                EntityKind::Arc { center, radius, start_angle, end_angle } => {
+                                    let c: Vec2 = (*center).into();
+                                    if self.snap_endpoint {
+                                        let ps = Vec2::new(c.x + radius * start_angle.cos(), c.y + radius * start_angle.sin());
+                                        let pe = Vec2::new(c.x + radius * end_angle.cos(), c.y + radius * end_angle.sin());
+                                        if Self::point_on_ortho_axis(base, axis, ps, tol) {
+                                            Self::add_ranked_ortho_candidate(
+                                                &mut best, viewport, rect, screen_pos, 0, ps, SnapKind::Endpoint,
+                                            );
+                                        }
+                                        if Self::point_on_ortho_axis(base, axis, pe, tol) {
+                                            Self::add_ranked_ortho_candidate(
+                                                &mut best, viewport, rect, screen_pos, 0, pe, SnapKind::Endpoint,
+                                            );
+                                        }
+                                    }
+                                    if self.snap_midpoint {
+                                        let a = start_angle + (end_angle - start_angle) * 0.5;
+                                        let pm = Vec2::new(c.x + radius * a.cos(), c.y + radius * a.sin());
+                                        if Self::point_on_ortho_axis(base, axis, pm, tol) {
+                                            Self::add_ranked_ortho_candidate(
+                                                &mut best, viewport, rect, screen_pos, 2, pm, SnapKind::Midpoint,
+                                            );
+                                        }
+                                    }
+                                    if self.snap_center && Self::point_on_ortho_axis(base, axis, c, tol) {
+                                        Self::add_ranked_ortho_candidate(
+                                            &mut best, viewport, rect, screen_pos, 3, c, SnapKind::Center,
+                                        );
+                                    }
+                                }
+                                EntityKind::Circle { center, .. } => {
+                                    let c: Vec2 = (*center).into();
+                                    if self.snap_center && Self::point_on_ortho_axis(base, axis, c, tol) {
+                                        Self::add_ranked_ortho_candidate(
+                                            &mut best, viewport, rect, screen_pos, 3, c, SnapKind::Center,
+                                        );
+                                    }
+                                }
+                                EntityKind::Polyline { vertices, closed } => {
+                                    if vertices.is_empty() {
+                                        continue;
+                                    }
+                                    if self.snap_endpoint {
+                                        for v in vertices.iter() {
+                                            let p: Vec2 = (*v).into();
+                                            if Self::point_on_ortho_axis(base, axis, p, tol) {
+                                                Self::add_ranked_ortho_candidate(
+                                                    &mut best, viewport, rect, screen_pos, 0, p, SnapKind::Endpoint,
+                                                );
+                                            }
+                                        }
+                                    }
+                                    if self.snap_midpoint {
+                                        for seg in vertices.windows(2) {
+                                            let a: Vec2 = seg[0].into();
+                                            let b: Vec2 = seg[1].into();
+                                            let m = Vec2::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5);
+                                            if Self::point_on_ortho_axis(base, axis, m, tol) {
+                                                Self::add_ranked_ortho_candidate(
+                                                    &mut best, viewport, rect, screen_pos, 2, m, SnapKind::Midpoint,
+                                                );
+                                            }
+                                        }
+                                        if *closed && vertices.len() >= 2 {
+                                            let a: Vec2 = vertices[vertices.len() - 1].into();
+                                            let b: Vec2 = vertices[0].into();
+                                            let m = Vec2::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5);
+                                            if Self::point_on_ortho_axis(base, axis, m, tol) {
+                                                Self::add_ranked_ortho_candidate(
+                                                    &mut best, viewport, rect, screen_pos, 2, m, SnapKind::Midpoint,
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                                EntityKind::DimAligned { start, end, .. }
+                                | EntityKind::DimLinear { start, end, .. } => {
+                                    if self.snap_endpoint {
+                                        let s: Vec2 = (*start).into();
+                                        let e: Vec2 = (*end).into();
+                                        if Self::point_on_ortho_axis(base, axis, s, tol) {
+                                            Self::add_ranked_ortho_candidate(
+                                                &mut best, viewport, rect, screen_pos, 0, s, SnapKind::Endpoint,
+                                            );
+                                        }
+                                        if Self::point_on_ortho_axis(base, axis, e, tol) {
+                                            Self::add_ranked_ortho_candidate(
+                                                &mut best, viewport, rect, screen_pos, 0, e, SnapKind::Endpoint,
+                                            );
+                                        }
+                                    }
+                                    if self.snap_midpoint {
+                                        let s: Vec2 = (*start).into();
+                                        let e: Vec2 = (*end).into();
+                                        let m = Vec2::new((s.x + e.x) * 0.5, (s.y + e.y) * 0.5);
+                                        if Self::point_on_ortho_axis(base, axis, m, tol) {
+                                            Self::add_ranked_ortho_candidate(
+                                                &mut best, viewport, rect, screen_pos, 2, m, SnapKind::Midpoint,
+                                            );
+                                        }
+                                    }
+                                }
+                                EntityKind::DimAngular { vertex, .. } => {
+                                    if self.snap_center {
+                                        let c: Vec2 = (*vertex).into();
+                                        if Self::point_on_ortho_axis(base, axis, c, tol) {
+                                            Self::add_ranked_ortho_candidate(
+                                                &mut best, viewport, rect, screen_pos, 3, c, SnapKind::Center,
+                                            );
+                                        }
+                                    }
+                                }
+                                EntityKind::DimRadial { center, .. } => {
+                                    if self.snap_center {
+                                        let c: Vec2 = (*center).into();
+                                        if Self::point_on_ortho_axis(base, axis, c, tol) {
+                                            Self::add_ranked_ortho_candidate(
+                                                &mut best, viewport, rect, screen_pos, 3, c, SnapKind::Center,
+                                            );
+                                        }
+                                    }
+                                }
+                                EntityKind::Text { position, .. } => {
+                                    if self.snap_endpoint {
+                                        let p: Vec2 = (*position).into();
+                                        if Self::point_on_ortho_axis(base, axis, p, tol) {
+                                            Self::add_ranked_ortho_candidate(
+                                                &mut best, viewport, rect, screen_pos, 0, p, SnapKind::Endpoint,
+                                            );
+                                        }
+                                    }
+                                }
+                                EntityKind::Insert { .. } => {}
+                            }
                         }
                     }
                 }

@@ -37,6 +37,7 @@ fn default_linetype() -> Linetype { Linetype::Continuous }
 fn default_entity_linetype_by_layer() -> bool { false }
 fn default_layer_linetype() -> Linetype { Linetype::Continuous }
 fn default_linetype_scale() -> f64 { 1.0 }
+fn default_blocks() -> HashMap<String, BlockDefinition> { HashMap::new() }
 
 // =============================================================================
 // Entities
@@ -174,6 +175,18 @@ pub enum EntityKind {
         #[serde(default = "default_text_font_name")]
         font_name: String,
     },
+
+    /// Block reference instance (true INSERT-style entity).
+    Insert {
+        name: String,
+        position: Vec3,
+        #[serde(default)]
+        rotation: f64,
+        #[serde(default = "default_linetype_scale")]
+        scale_x: f64,
+        #[serde(default = "default_linetype_scale")]
+        scale_y: f64,
+    },
 }
 
 impl EntityKind {
@@ -202,6 +215,7 @@ impl EntityKind {
                 center.z.abs() < f64::EPSILON && text_pos.z.abs() < f64::EPSILON
             }
             EntityKind::Text { position, .. } => position.z.abs() < f64::EPSILON,
+            EntityKind::Insert { position, .. } => position.z.abs() < f64::EPSILON,
         }
     }
 }
@@ -238,6 +252,29 @@ impl Entity {
             linetype_scale: None,
         }
     }
+}
+
+/// Stored entity payload inside a block definition.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BlockEntity {
+    pub kind: EntityKind,
+    pub layer: u32,
+    #[serde(default)]
+    pub color: Option<[u8; 3]>,
+    #[serde(default = "default_linetype")]
+    pub linetype: Linetype,
+    #[serde(default = "default_entity_linetype_by_layer")]
+    pub linetype_by_layer: bool,
+    #[serde(default)]
+    pub linetype_scale: Option<f64>,
+}
+
+/// Named reusable block definition.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BlockDefinition {
+    pub name: String,
+    pub base_point: Vec3,
+    pub entities: Vec<BlockEntity>,
 }
 
 // =============================================================================
@@ -291,6 +328,8 @@ pub struct Drawing {
     #[serde(default = "default_linetype_scale")]
     pub linetype_scale: f64,
     entities: HashMap<Guid, Entity>,
+    #[serde(default = "default_blocks")]
+    blocks: HashMap<String, BlockDefinition>,
     layers: HashMap<u32, Layer>,
     next_layer_id: u32,
     // TODO: Add units, limits, view settings
@@ -307,6 +346,7 @@ impl Drawing {
             name,
             linetype_scale: 1.0,
             entities: HashMap::new(),
+            blocks: HashMap::new(),
             layers,
             next_layer_id: 1,
         }
@@ -340,6 +380,37 @@ impl Drawing {
     
     pub fn entity_count(&self) -> usize {
         self.entities.len()
+    }
+
+    pub fn define_block(
+        &mut self,
+        name: String,
+        base_point: Vec3,
+        entities: Vec<BlockEntity>,
+    ) -> bool {
+        if name.trim().is_empty() || entities.is_empty() {
+            return false;
+        }
+        let key = name.trim().to_ascii_lowercase();
+        self.blocks.insert(
+            key,
+            BlockDefinition {
+                name: name.trim().to_string(),
+                base_point,
+                entities,
+            },
+        );
+        true
+    }
+
+    pub fn get_block(&self, name: &str) -> Option<&BlockDefinition> {
+        self.blocks.get(&name.trim().to_ascii_lowercase())
+    }
+
+    pub fn block_names(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.blocks.values().map(|b| b.name.clone()).collect();
+        out.sort();
+        out
     }
     
     // -------------------------------------------------------------------------

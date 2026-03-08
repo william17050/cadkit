@@ -43,6 +43,9 @@ Modular Rust workspace with clear separation of concerns:
 - **Precision input**: absolute/relative (@x,y) and polar (@dist<angle); direct distance entry with live rubber-band; FROM offset workflow; ortho lock (F8); snap toggle (F3).
 - **Snaps**: endpoint, midpoint, center, intersection (radius search).
 - **Editing**: move, copy, rotate, offset, trim, extend — all with ghosted rubber-band previews; cancel via Esc or right-click; undo/redo stack.
+- **Blocks**: block definitions (`BLOCK`/`BMAKE`), true block inserts (`INSERT`), explode (`X/EXPLODE`), and first-pass block editing workflow (`BEDIT`, `BSAVE`, `BCANCEL`).
+- **Block snapping/selection**: insert geometry is selectable/snappable from transformed block geometry (not just insert origin); selected insert highlights full block geometry.
+- **Trim/Extend policy**: non-block entities can trim/extend against block geometry; direct trim/extend of insert internals requires explode or block edit workflow.
 - **Dimensions**: DIMLINEAR command (`dli`) — 3-click placement (first point, second point, line location); live preview with stroke text; readable text regardless of pick direction.
 - **Layers**: create, color, rename, set current, toggle visibility; selection highlights by layer.
 - **IO**: JSON save/load; DXF import/export with per-entity warnings; SVG/PDF export (paths-only/vector); auto-save recovery snapshots with startup restore prompt; file dialogs; window title reflects current file.
@@ -57,7 +60,7 @@ Modular Rust workspace with clear separation of concerns:
 - Preference persistence (grid spacing, last file, snap/ortho state).
 
 ## Longer-Term (high level)
-- Hatch patterns, leaders/callouts, multi-line text, blocks/references.
+- Hatch patterns, leaders/callouts, multi-line text, dynamic/parametric blocks.
 - Python bridge and AI command line.
 - Push/pull 3D prototype, then CAM and cabinet workflows.
 
@@ -123,6 +126,14 @@ cargo test -p cadkit-types
 - **Per-entity linetype**: In Properties, set `Linetype` to `ByLayer` or a direct value (`Continuous`, `Hidden`, `Center`).
 - **Per-entity LT scale**: In Properties, set `LTScale` to `ByLayer` or type a numeric override.
 - Effective dash size is: `global LTSCALE * (entity LTScale override or layer LT scale)`.
+
+## Block Commands
+- `BLOCK` / `BMAKE`: create block definition from selected entities.
+- `INSERT <name>`: place block reference by pick point.
+- `X` / `EXPLODE`: explode selected inserts/associative arrays into regular entities.
+- `BEDIT <name>` or `BEDIT` with an insert selected: open block edit workspace.
+- `BSAVE`: commit block edits back to definition.
+- `BCANCEL`: discard block edits and restore drawing state.
 
 ## Project Status
 **Current**: Interactive 2D drafting MVP — command-line tools, snaps, layers, undo/redo, DXF IO, linear dimensions.

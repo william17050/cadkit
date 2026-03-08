@@ -32,7 +32,7 @@ Cargo: `~/.cargo/bin/cargo` (not on PATH)
 
 ## Current Entity Kinds
 ```
-Line, Circle, Arc, Polyline, Text, DimAligned, DimLinear, DimAngular, DimRadial
+Line, Circle, Arc, Polyline, Text, DimAligned, DimLinear, DimAngular, DimRadial, Insert
 ```
 
 ## Gotchas
@@ -44,7 +44,7 @@ Line, Circle, Arc, Polyline, Text, DimAligned, DimLinear, DimAngular, DimRadial
 - `execute_command_alias` calls `exit_dim()` for any unrecognised input — guard with `|| self.from_phase != FromPhase::Idle` to preserve dim context during FROM offset entry
 
 ## Next Tasks (priority order)
-1. **Blocks & references** — block definition/insert/edit pipeline
+1. **Dynamic/parametric blocks** — parameter schema + per-insert overrides + evaluator
 2. **Gap healing for boundary** — close near-miss loops under tolerance for boundary/hatch
 3. **Polyline interior-join improvements** (PEDIT/JOIN currently endpoint-driven)
 4. **Array persistence polish** — preserve associative arrays robustly across save/load/edit cycles
@@ -108,3 +108,14 @@ Phase 8: Cabinet designer (target market)
   - ACI 1-255 color picker window for hatch color override
   - island detection with explicit `Detect Islands` toggle
   - circle/arc boundaries participate in island detection
+- Blocks/references first pass
+  - true `Insert` entity support in core model + render + properties
+  - `INSERT` places persistent references (not auto-exploded)
+  - insert explode path via `X/EXPLODE`
+  - insert snap/selection/highlight through transformed block geometry
+  - `TRIM`/`EXTEND` use insert geometry as cutting/boundary references
+  - `TRIM`/`EXTEND` do not directly edit inserts (`explode` or `BEDIT` required)
+- Block edit workflow first pass
+  - `BEDIT` opens isolated block editing context
+  - `BSAVE` commits definition updates
+  - `BCANCEL` discards edits/restores drawing

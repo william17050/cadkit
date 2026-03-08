@@ -422,6 +422,10 @@ impl Drawing {
                     };
                     Some(e)
                 }
+                EntityKind::Insert { .. } => {
+                    // First-pass: native Insert export is not wired yet.
+                    None
+                }
             };
 
             if let Some(e) = opt {

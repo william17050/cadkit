@@ -1,6 +1,6 @@
 use super::state::{
     ActiveTool, CopyPhase, DimAngularPhase, DimLinearPhase, DimPhase, DimRadialPhase, EditDimPhase, EditTextPhase,
-    ArrayMode, ArrayPhase, BoundaryPhase, ChamferPhase, EllipsePhase, ExtendPhase, FilletPhase, FromPhase, HatchPhase, MirrorPhase, MovePhase,
+    ArrayMode, ArrayPhase, BlockPhase, BoundaryPhase, ChamferPhase, EllipsePhase, ExtendPhase, FilletPhase, FromPhase, HatchPhase, InsertPhase, MirrorPhase, MovePhase,
     OffsetPhase, PeditPhase, PolygonPhase, RectanglePhase, RotatePhase, ScalePhase, TextPhase, TrimPhase,
 };
 use super::CadKitApp;
@@ -262,6 +262,44 @@ impl CadKitApp {
                 self.edit_text_phase = EditTextPhase::SelectingEntity;
                 self.text_edit_dialog = None;
                 self.command_log.push("EDITTEXT: Click a text entity to edit".to_string());
+            }
+
+            ui.add_space(20.0);
+            ui.heading("Blocks");
+            ui.separator();
+
+            if ui.button("🧱 BMake").clicked() {
+                let _ = self.execute_command_alias("bmake");
+            }
+
+            let block_names = self.drawing.block_names();
+            if !block_names.is_empty()
+                && (self.block_palette_selected.is_empty()
+                    || !block_names.iter().any(|n| n == &self.block_palette_selected))
+            {
+                self.block_palette_selected = block_names[0].clone();
+            }
+            if block_names.is_empty() {
+                ui.label(egui::RichText::new("No blocks defined yet").italics());
+            } else {
+                if ui.button("⬇ Insert Selected").clicked() {
+                    let cmd = format!("insert {}", self.block_palette_selected);
+                    let _ = self.execute_command_alias(&cmd);
+                }
+
+                egui::CollapsingHeader::new("Block Palette")
+                    .id_source("left_blocks_palette")
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        for name in &block_names {
+                            if ui
+                                .selectable_label(self.block_palette_selected == *name, name)
+                                .clicked()
+                            {
+                                self.block_palette_selected = name.clone();
+                            }
+                        }
+                    });
             }
 
             ui.add_space(20.0);
@@ -810,6 +848,7 @@ impl CadKitApp {
                                     EntityKind::DimAngular { .. } => "DimAngular",
                                     EntityKind::DimRadial { is_diameter, .. } => if *is_diameter { "DimDiameter" } else { "DimRadius" },
                                     EntityKind::Text { .. } => "Text",
+                                    EntityKind::Insert { .. } => "Insert",
                                 };
                                 ui.label(egui::RichText::new(type_name).strong());
                                 egui::Grid::new("entity_geom")
@@ -914,6 +953,14 @@ impl CadKitApp {
                                                 ui.label("Height:"); ui.label(format!("{:.4}", height)); ui.end_row();
                                                 ui.label("Rotation:"); ui.label(format!("{:.2}°", rotation.to_degrees())); ui.end_row();
                                                 ui.label("Font:"); ui.label(font_name.as_str()); ui.end_row();
+                                            }
+                                            EntityKind::Insert { name, position, rotation, scale_x, scale_y } => {
+                                                ui.label("Block:"); ui.label(name.as_str()); ui.end_row();
+                                                ui.label("X:"); ui.label(format!("{:.4}", position.x)); ui.end_row();
+                                                ui.label("Y:"); ui.label(format!("{:.4}", position.y)); ui.end_row();
+                                                ui.label("Rotation:"); ui.label(format!("{:.2}°", rotation.to_degrees())); ui.end_row();
+                                                ui.label("Scale X:"); ui.label(format!("{:.4}", scale_x)); ui.end_row();
+                                                ui.label("Scale Y:"); ui.label(format!("{:.4}", scale_y)); ui.end_row();
                                             }
                                         }
                                     });
@@ -1801,6 +1848,19 @@ impl CadKitApp {
                                     self.exit_hatch();
                                     self.command_log.push("HATCH cancelled.".to_string());
                                 }
+                            } else if matches!(self.block_phase, BlockPhase::PickBase { .. }) {
+                                if let Some(world) = self.hover_world_pos {
+                                    self.apply_block_base_pick(world);
+                                } else {
+                                    self.exit_block();
+                                    self.command_log.push("BLOCK cancelled.".to_string());
+                                }
+                            } else if matches!(self.block_phase, BlockPhase::EnterName { .. }) {
+                                self.command_log
+                                    .push("BLOCK: Enter a block name".to_string());
+                            } else if matches!(self.insert_phase, InsertPhase::PickPoint { .. }) {
+                                self.exit_insert();
+                                self.command_log.push("INSERT done.".to_string());
                             } else if !matches!(self.dim_phase, DimPhase::Idle) {
                                 if matches!(self.dim_phase, DimPhase::FirstPoint) {
                                     self.exit_dim();
@@ -1984,6 +2044,30 @@ impl CadKitApp {
                                     self.command_log.push(
                                         "HATCH: Enter point x,y or spacing,angle".to_string(),
                                     );
+                                }
+                                handled = true;
+                            } else if matches!(self.block_phase, BlockPhase::PickBase { .. }) {
+                                if let Some(world) = Self::resolve_typed_point(&cmd, None) {
+                                    self.apply_block_base_pick(world);
+                                } else {
+                                    self.command_log
+                                        .push("BLOCK: Enter base point as x,y or click".to_string());
+                                }
+                                handled = true;
+                            } else if matches!(self.block_phase, BlockPhase::EnterName { .. }) {
+                                if cmd.trim().is_empty() {
+                                    self.command_log
+                                        .push("BLOCK: Name cannot be empty".to_string());
+                                } else {
+                                    let _ = self.execute_command_alias(&cmd);
+                                }
+                                handled = true;
+                            } else if matches!(self.insert_phase, InsertPhase::PickPoint { .. }) {
+                                if let Some(world) = Self::resolve_typed_point(&cmd, None) {
+                                    self.apply_insert_pick(world);
+                                } else {
+                                    self.command_log
+                                        .push("INSERT: Enter insertion point as x,y or click".to_string());
                                 }
                                 handled = true;
                             } else if self.fillet_phase == FilletPhase::EnteringRadius {

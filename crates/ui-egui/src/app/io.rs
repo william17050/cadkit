@@ -505,7 +505,8 @@ impl CadKitApp {
                 | EntityKind::DimLinear { .. }
                 | EntityKind::DimAngular { .. }
                 | EntityKind::DimRadial { .. }
-                | EntityKind::Text { .. } => {}
+                | EntityKind::Text { .. }
+                | EntityKind::Insert { .. } => {}
             }
         }
 
@@ -623,7 +624,8 @@ impl CadKitApp {
                 | EntityKind::DimLinear { .. }
                 | EntityKind::DimAngular { .. }
                 | EntityKind::DimRadial { .. }
-                | EntityKind::Text { .. } => {}
+                | EntityKind::Text { .. }
+                | EntityKind::Insert { .. } => {}
             }
         }
 

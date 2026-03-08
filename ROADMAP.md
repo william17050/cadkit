@@ -164,11 +164,11 @@
 - [x] Hatch dialog polish (pattern dropdown, sample tiles, ACI color picker 1-255, layer color inherit/override)
 
 ### Milestone 5.2: Blocks & References
-- [ ] Block definition
-- [ ] Insert block reference
-- [ ] Block editor
+- [x] Block definition
+- [x] Insert block reference (true `Insert` entity, non-exploded by default)
+- [x] Block editor (first pass: `BEDIT` / `BSAVE` / `BCANCEL`)
 - [ ] Nested blocks
-- [ ] Block library / palette
+- [~] Block library / palette (name list + insert flow; thumbnails pending)
 
 ### Milestone 5.3: Leaders & Callouts
 - [ ] Leader entity (line + arrowhead + text)

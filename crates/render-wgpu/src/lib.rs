@@ -802,6 +802,119 @@ impl Viewport {
                     // Text entities are rendered by the egui overlay (painter.text),
                     // not by the wgpu vertex buffer.  Nothing to emit here.
                 }
+                EntityKind::Insert {
+                    name,
+                    position,
+                    rotation,
+                    scale_x,
+                    scale_y,
+                } => {
+                    let Some(def) = drawing.get_block(name) else {
+                        continue;
+                    };
+                    let sx = *scale_x;
+                    let sy = *scale_y;
+                    let ca = rotation.cos();
+                    let sa = rotation.sin();
+                    let tp = |x: f64, y: f64| -> Vec2 {
+                        let lx = x * sx;
+                        let ly = y * sy;
+                        Vec2::new(
+                            position.x + lx * ca - ly * sa,
+                            position.y + lx * sa + ly * ca,
+                        )
+                    };
+                    for be in &def.entities {
+                        let blayer = drawing.get_layer(be.layer);
+                        let bc = if let Some(ec) = be.color {
+                            [ec[0] as f32 / 255.0, ec[1] as f32 / 255.0, ec[2] as f32 / 255.0]
+                        } else {
+                            blayer
+                                .map(|l| {
+                                    [
+                                        l.color[0] as f32 / 255.0,
+                                        l.color[1] as f32 / 255.0,
+                                        l.color[2] as f32 / 255.0,
+                                    ]
+                                })
+                                .unwrap_or(c)
+                        };
+                        let blt = if be.linetype_by_layer {
+                            blayer.map(|l| l.linetype).unwrap_or(Linetype::Continuous)
+                        } else {
+                            be.linetype
+                        };
+                        let blts = be
+                            .linetype_scale
+                            .unwrap_or_else(|| blayer.map(|l| l.linetype_scale).unwrap_or(1.0));
+                        let beff_scale = (linetype_scale * blts).max(1e-6);
+                        match &be.kind {
+                            EntityKind::Line { start, end } => {
+                                let a = tp(start.x, start.y);
+                                let b = tp(end.x, end.y);
+                                Self::push_linetype_path(
+                                    &mut vertices,
+                                    &[a, b],
+                                    false,
+                                    bc,
+                                    blt,
+                                    beff_scale,
+                                );
+                            }
+                            EntityKind::Circle { center, radius } => {
+                                let cc = tp(center.x, center.y);
+                                let rr = *radius * ((sx.abs() + sy.abs()) * 0.5).max(1e-9);
+                                let pts = Self::sample_circle_points(cc, rr);
+                                Self::push_linetype_path(
+                                    &mut vertices,
+                                    &pts,
+                                    true,
+                                    bc,
+                                    blt,
+                                    beff_scale,
+                                );
+                            }
+                            EntityKind::Arc {
+                                center,
+                                radius,
+                                start_angle,
+                                end_angle,
+                            } => {
+                                let cc = tp(center.x, center.y);
+                                let rr = *radius * ((sx.abs() + sy.abs()) * 0.5).max(1e-9);
+                                let pts = Self::sample_arc_points(
+                                    cc,
+                                    rr,
+                                    *start_angle + *rotation,
+                                    *end_angle + *rotation,
+                                );
+                                Self::push_linetype_path(
+                                    &mut vertices,
+                                    &pts,
+                                    false,
+                                    bc,
+                                    blt,
+                                    beff_scale,
+                                );
+                            }
+                            EntityKind::Polyline { vertices: verts, closed } => {
+                                if verts.len() < 2 {
+                                    continue;
+                                }
+                                let pts: Vec<Vec2> = verts.iter().map(|v| tp(v.x, v.y)).collect();
+                                Self::push_linetype_path(
+                                    &mut vertices,
+                                    &pts,
+                                    *closed,
+                                    bc,
+                                    blt,
+                                    beff_scale,
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
+                }
             }
         }
 
