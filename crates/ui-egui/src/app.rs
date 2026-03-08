@@ -4,7 +4,7 @@ use cadkit_2d_core::{create_arc, create_circle, create_line, Drawing, Entity, En
 // create_arc_from_three_points helper lives below in this file (UI layer-specific).
 use cadkit_render_wgpu::{screen_to_world, world_to_screen, Viewport};
 use cadkit_types::{Guid, Vec2, Vec3};
-use cadkit_geometry::{Circle as GeomCircle, Line as GeomLine};
+use cadkit_geometry::{detect_closed_boundaries, Circle as GeomCircle, Line as GeomLine};
 use eframe::egui;
 use egui_wgpu::wgpu;
 use std::collections::{HashMap, HashSet};
@@ -193,6 +193,27 @@ impl AiModelProfile {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HatchPattern {
+    Ansi31,
+    Ansi32,
+    Ansi37,
+    Cross,
+    Grid,
+}
+
+impl HatchPattern {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Ansi31 => "ANSI31",
+            Self::Ansi32 => "ANSI32",
+            Self::Ansi37 => "ANSI37",
+            Self::Cross => "Cross",
+            Self::Grid => "Grid",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct AssocArraySource {
     kind: EntityKind,
@@ -301,6 +322,16 @@ pub struct CadKitApp {
     assoc_member_to_array: HashMap<Guid, Guid>,
     array_edit_assoc: Option<Guid>,
     pedit_phase: PeditPhase,
+    boundary_phase: BoundaryPhase,
+    hatch_phase: HatchPhase,
+    hatch_dialog_open: bool,
+    hatch_pattern: HatchPattern,
+    hatch_spacing: f64,
+    hatch_angle_deg: f64,
+    hatch_ltscale: f64,
+    hatch_detect_islands: bool,
+    hatch_color_by_layer: bool,
+    hatch_color: [u8; 3],
     from_phase: FromPhase,
     from_base: Option<Vec2>,
     dim_phase: DimPhase,
@@ -329,6 +360,7 @@ pub struct CadKitApp {
     // Properties panel
     properties_split: f32,      // fraction of right-panel height given to layers list
     entity_color_picker_open: bool,
+    hatch_color_picker_open: bool,
     // Deferred DXF import (needs ctx, triggered by command alias)
     pending_dxf_import: bool,
     undo_stack: Vec<Drawing>,
@@ -441,6 +473,16 @@ impl Default for CadKitApp {
             assoc_member_to_array: HashMap::new(),
             array_edit_assoc: None,
             pedit_phase: PeditPhase::Idle,
+            boundary_phase: BoundaryPhase::Idle,
+            hatch_phase: HatchPhase::Idle,
+            hatch_dialog_open: false,
+            hatch_pattern: HatchPattern::Ansi31,
+            hatch_spacing: 2.0,
+            hatch_angle_deg: 45.0,
+            hatch_ltscale: 1.0,
+            hatch_detect_islands: true,
+            hatch_color_by_layer: true,
+            hatch_color: [255, 255, 255],
             from_phase: FromPhase::Idle,
             from_base: None,
             dim_phase: DimPhase::Idle,
@@ -467,6 +509,7 @@ impl Default for CadKitApp {
             layer_editing_original: String::new(),
             properties_split: 0.55,
             entity_color_picker_open: false,
+            hatch_color_picker_open: false,
             pending_dxf_import: false,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
@@ -982,6 +1025,8 @@ impl CadKitApp {
         self.exit_rectangle();
         self.exit_array();
         self.exit_pedit();
+        self.exit_boundary();
+        self.exit_hatch();
         self.selection = None;
         // Reset tool-specific buffers
         if let ActiveTool::Polyline { .. } = self.active_tool {
@@ -996,6 +1041,14 @@ impl CadKitApp {
 
     fn exit_pedit(&mut self) {
         self.pedit_phase = PeditPhase::Idle;
+    }
+
+    fn exit_boundary(&mut self) {
+        self.boundary_phase = BoundaryPhase::Idle;
+    }
+
+    fn exit_hatch(&mut self) {
+        self.hatch_phase = HatchPhase::Idle;
     }
 
     fn exit_chamfer(&mut self) {
@@ -1099,6 +1152,8 @@ impl CadKitApp {
                             | ArrayPhase::PolarCenter
                             | ArrayPhase::PolarBasePoint
                     )
+                    || matches!(self.boundary_phase, BoundaryPhase::PickingPoint)
+                    || matches!(self.hatch_phase, HatchPhase::PickingPoint)
             }
         }
     }
@@ -1299,6 +1354,10 @@ impl CadKitApp {
                     self.exit_array();
                 }
             }
+        } else if self.boundary_phase == BoundaryPhase::PickingPoint {
+            self.apply_boundary_pick(world);
+        } else if self.hatch_phase == HatchPhase::PickingPoint {
+            self.apply_hatch_pick(world);
         } else if matches!(self.dim_phase, DimPhase::FirstPoint) {
             self.dim_phase = DimPhase::SecondPoint { first: world };
             self.command_log.push(format!("DIMALIGNED: First point ({:.4}, {:.4})", world.x, world.y));
@@ -1637,6 +1696,21 @@ impl CadKitApp {
                 return "PEDIT  Select line or arc to join (Enter to finish):".into();
             }
             PeditPhase::Idle => {}
+        }
+        match self.boundary_phase {
+            BoundaryPhase::PickingPoint => {
+                return "BOUNDARY  Click an internal point (or type x,y):".into();
+            }
+            BoundaryPhase::Idle => {}
+        }
+        match self.hatch_phase {
+            HatchPhase::PickingPoint => {
+                return format!(
+                    "HATCH  Click internal point  [spacing,angle] <{:.4},{:.1}>:",
+                    self.hatch_spacing, self.hatch_angle_deg
+                );
+            }
+            HatchPhase::Idle => {}
         }
         match self.chamfer_phase {
             ChamferPhase::EnteringDistance => {
@@ -6510,6 +6584,12 @@ impl eframe::App for CadKitApp {
             } else if !matches!(self.pedit_phase, PeditPhase::Idle) {
                 self.exit_pedit();
                 self.command_log.push("*Cancel*".to_string());
+            } else if !matches!(self.boundary_phase, BoundaryPhase::Idle) {
+                self.exit_boundary();
+                self.command_log.push("*Cancel*".to_string());
+            } else if !matches!(self.hatch_phase, HatchPhase::Idle) {
+                self.exit_hatch();
+                self.command_log.push("*Cancel*".to_string());
             } else if !matches!(self.extend_phase, ExtendPhase::Idle) {
                 self.exit_extend();
                 self.command_log.push("*Cancel*".to_string());
@@ -6851,6 +6931,178 @@ impl eframe::App for CadKitApp {
             }
         }
 
+        if self.hatch_dialog_open {
+            let mut open = self.hatch_dialog_open;
+            let mut arm_pick = false;
+            egui::Window::new("Hatch")
+                .open(&mut open)
+                .resizable(true)
+                .default_width(520.0)
+                .default_height(360.0)
+                .show(ctx, |ui| {
+                    ui.label("Create hatch by picking inside a closed region.");
+                    ui.horizontal(|ui| {
+                        ui.label("Pattern:");
+                        egui::ComboBox::from_id_source("hatch_pattern_combo")
+                            .selected_text(self.hatch_pattern.label())
+                            .show_ui(ui, |ui| {
+                                for p in [
+                                    HatchPattern::Ansi31,
+                                    HatchPattern::Ansi32,
+                                    HatchPattern::Ansi37,
+                                    HatchPattern::Cross,
+                                    HatchPattern::Grid,
+                                ] {
+                                    ui.selectable_value(&mut self.hatch_pattern, p, p.label());
+                                }
+                            });
+                        if ui.button("Pick Point").clicked() {
+                            arm_pick = true;
+                        }
+                    });
+
+                    ui.separator();
+                    ui.label("Samples:");
+                    ui.horizontal_wrapped(|ui| {
+                        for p in [
+                            HatchPattern::Ansi31,
+                            HatchPattern::Ansi32,
+                            HatchPattern::Ansi37,
+                            HatchPattern::Cross,
+                            HatchPattern::Grid,
+                        ] {
+                            let selected = self.hatch_pattern == p;
+                            let desired = egui::vec2(90.0, 64.0);
+                            let (rect, resp) = ui.allocate_exact_size(desired, egui::Sense::click());
+                            let bg = if selected {
+                                egui::Color32::from_rgb(56, 76, 98)
+                            } else {
+                                egui::Color32::from_gray(30)
+                            };
+                            ui.painter().rect_filled(rect, 4.0, bg);
+                            ui.painter().rect_stroke(
+                                rect,
+                                4.0,
+                                egui::Stroke::new(
+                                    if selected { 2.0 } else { 1.0 },
+                                    if selected {
+                                        egui::Color32::from_rgb(120, 210, 255)
+                                    } else {
+                                        egui::Color32::from_gray(90)
+                                    },
+                                ),
+                            );
+                            let sample_in = rect.shrink2(egui::vec2(6.0, 18.0));
+                            let stroke = egui::Stroke::new(1.0, egui::Color32::from_gray(220));
+                            let clipped = ui.painter().with_clip_rect(sample_in.expand2(egui::vec2(1.0, 1.0)));
+                            let angles = Self::hatch_pattern_angles(p, 45.0);
+                            for a in angles {
+                                let t = a.to_radians();
+                                let d = egui::vec2(t.cos() as f32, t.sin() as f32);
+                                let n = egui::vec2(-d.y, d.x);
+                                let c = sample_in.center();
+                                let extent = sample_in.width().max(sample_in.height()) * 0.7;
+                                let steps = 4;
+                                for i in -steps..=steps {
+                                    let off = i as f32 * 6.0;
+                                    let p0 = c + n * off - d * extent;
+                                    let p1 = c + n * off + d * extent;
+                                    clipped.line_segment([p0, p1], stroke);
+                                }
+                            }
+                            ui.painter().text(
+                                rect.center_bottom() - egui::vec2(0.0, 4.0),
+                                egui::Align2::CENTER_BOTTOM,
+                                p.label(),
+                                egui::FontId::proportional(11.0),
+                                egui::Color32::from_gray(210),
+                            );
+                            if resp.clicked() {
+                                self.hatch_pattern = p;
+                            }
+                        }
+                    });
+
+                    ui.separator();
+                    egui::Grid::new("hatch_dialog_grid")
+                        .num_columns(2)
+                        .spacing([8.0, 6.0])
+                        .show(ui, |ui| {
+                            ui.label("Spacing:");
+                            ui.add(
+                                egui::DragValue::new(&mut self.hatch_spacing)
+                                    .clamp_range(0.05..=10_000.0)
+                                    .speed(0.1),
+                            );
+                            ui.end_row();
+
+                            ui.label("Angle (deg):");
+                            ui.add(
+                                egui::DragValue::new(&mut self.hatch_angle_deg)
+                                    .clamp_range(-360.0..=360.0)
+                                    .speed(0.5),
+                            );
+                            ui.end_row();
+
+                            ui.label("LTScale:");
+                            ui.add(
+                                egui::DragValue::new(&mut self.hatch_ltscale)
+                                    .clamp_range(0.01..=1000.0)
+                                    .speed(0.1),
+                            );
+                            ui.end_row();
+
+                            ui.label("Islands:");
+                            ui.checkbox(&mut self.hatch_detect_islands, "Detect Islands");
+                            ui.end_row();
+
+                            ui.label("Color:");
+                            ui.horizontal(|ui| {
+                                let swatch = egui::Color32::from_rgb(
+                                    self.hatch_color[0],
+                                    self.hatch_color[1],
+                                    self.hatch_color[2],
+                                );
+                                let (rect, resp) = ui.allocate_exact_size(
+                                    egui::vec2(28.0, 18.0),
+                                    egui::Sense::click(),
+                                );
+                                ui.painter().rect_filled(rect, 2.0, swatch);
+                                ui.painter().rect_stroke(
+                                    rect,
+                                    2.0,
+                                    egui::Stroke::new(1.0, egui::Color32::from_gray(90)),
+                                );
+                                if resp.on_hover_text("Pick ACI 1-255 colour").clicked() {
+                                    self.hatch_color_picker_open = true;
+                                    self.hatch_color_by_layer = false;
+                                }
+                                if ui.button("Pick 255").clicked() {
+                                    self.hatch_color_picker_open = true;
+                                    self.hatch_color_by_layer = false;
+                                }
+                                if ui.button("Inherit Layer").clicked() {
+                                    self.hatch_color_by_layer = true;
+                                }
+                                if ui
+                                    .selectable_label(!self.hatch_color_by_layer, "Override")
+                                    .clicked()
+                                {
+                                    self.hatch_color_by_layer = false;
+                                }
+                            });
+                            ui.end_row();
+                        });
+                    ui.separator();
+                    ui.label("Type `x,y` while command line is active for exact pick point.");
+                });
+            self.hatch_dialog_open = open;
+            if arm_pick {
+                self.hatch_phase = HatchPhase::PickingPoint;
+                self.command_log.push("HATCH: Click internal point".to_string());
+            }
+        }
+
         if self.help_open {
             egui::Window::new("CadKit — Command Reference")
                 .open(&mut self.help_open)
@@ -6886,6 +7138,7 @@ impl eframe::App for CadKitApp {
                             for (alias, full, desc) in [
                                 ("TR / TRIM",      "",          "Trim entity at cutting edges"),
                                 ("EX / EXTEND",    "",          "Extend entity to boundary"),
+                                ("BO / BOUNDARY",  "",          "Pick inside closed area to generate boundary polyline"),
                                 ("O / OFFSET",     "",          "Offset entity by distance"),
                                 ("M / MOVE",       "",          "Move entities"),
                                 ("CO / COPY",      "",          "Copy entities"),
@@ -6897,6 +7150,7 @@ impl eframe::App for CadKitApp {
                                 ("CHA / CHAMFER",  "",          "Bevel two lines/segments; use d or d1,d2 (0 allowed)"),
                                 ("J / JOIN",       "",          "Join touching lines/polylines into selected polyline"),
                                 ("PE / PEDIT",     "",          "Select polyline, then join touching line/arc"),
+                                ("HA / HATCH",     "",          "Pick inside closed area to create hatch lines"),
                                 ("ET / EDITTEXT",  "",          "Edit a text entity via dialog"),
                                 ("U / UNDO",       "",          "Undo last change"),
                                 ("R / REDO",       "",          "Redo undone change"),
@@ -7488,6 +7742,90 @@ impl eframe::App for CadKitApp {
             }
             if !still_open {
                 self.entity_color_picker_open = false;
+            }
+        }
+
+        if self.hatch_color_picker_open {
+            let mut still_open = true;
+            let mut picked_color: Option<[u8; 3]> = None;
+            let current_color = self.hatch_color;
+
+            egui::Window::new("Hatch Colour")
+                .open(&mut still_open)
+                .resizable(false)
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    ui.label(egui::RichText::new("Standard").small().color(egui::Color32::from_gray(150)));
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        for i in 1u8..=9 {
+                            let rgb = aci_color(i);
+                            let c = egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+                            let (rect, resp) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::click());
+                            ui.painter().rect_filled(rect, 2.0, c);
+                            let (sw, sc) = if current_color == rgb {
+                                (2.0, egui::Color32::WHITE)
+                            } else {
+                                (0.5, egui::Color32::from_gray(70))
+                            };
+                            ui.painter().rect_stroke(rect, 2.0, egui::Stroke::new(sw, sc));
+                            if resp.on_hover_text(format!("ACI {i}")).clicked() {
+                                picked_color = Some(rgb);
+                            }
+                        }
+                    });
+
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new("Index colours").small().color(egui::Color32::from_gray(150)));
+                    ui.spacing_mut().item_spacing.y = 1.0;
+                    for row in 0u8..10 {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 1.0;
+                            for col in 0u8..24 {
+                                let idx: u8 = 10 + col * 10 + row;
+                                let rgb = aci_color(idx);
+                                let c = egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+                                let (rect, resp) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::click());
+                                ui.painter().rect_filled(rect, 1.0, c);
+                                if current_color == rgb {
+                                    ui.painter().rect_stroke(rect, 1.0, egui::Stroke::new(1.5, egui::Color32::WHITE));
+                                }
+                                if resp.on_hover_text(format!("ACI {idx}")).clicked() {
+                                    picked_color = Some(rgb);
+                                }
+                            }
+                        });
+                    }
+
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new("Grayscale").small().color(egui::Color32::from_gray(150)));
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        for i in 250u8..=255 {
+                            let rgb = aci_color(i);
+                            let c = egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+                            let (rect, resp) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::click());
+                            ui.painter().rect_filled(rect, 2.0, c);
+                            let (sw, sc) = if current_color == rgb {
+                                (2.0, egui::Color32::WHITE)
+                            } else {
+                                (0.5, egui::Color32::from_gray(70))
+                            };
+                            ui.painter().rect_stroke(rect, 2.0, egui::Stroke::new(sw, sc));
+                            if resp.on_hover_text(format!("ACI {i}")).clicked() {
+                                picked_color = Some(rgb);
+                            }
+                        }
+                    });
+                });
+
+            if let Some(rgb) = picked_color {
+                self.hatch_color = rgb;
+                self.hatch_color_by_layer = false;
+                self.hatch_color_picker_open = false;
+            }
+            if !still_open {
+                self.hatch_color_picker_open = false;
             }
         }
 
@@ -8188,6 +8526,40 @@ impl eframe::App for CadKitApp {
                                             self.command_log
                                                 .push("PEDIT: Select line or arc to join".to_string());
                                         }
+                                    } else if self.boundary_phase == BoundaryPhase::PickingPoint {
+                                        let local = click_pos - response.rect.min;
+                                        let raw_world = screen_to_world(local.x, local.y, viewport);
+                                        let pick = self.pick_entity_point(viewport, response.rect, click_pos);
+                                        let mut world = pick.as_ref().map(|(s, _)| s.world).unwrap_or_else(|| {
+                                            if self.snap_enabled && self.grid_visible { self.snap_to_grid(raw_world) } else { raw_world }
+                                        });
+                                        if pick.is_none() {
+                                            if let Some(snap_pt) = self.snap_intersection_point {
+                                                world = snap_pt;
+                                            } else if self.hover_snap_kind.is_some() {
+                                                if let Some(hw) = self.hover_world_pos {
+                                                    world = hw;
+                                                }
+                                            }
+                                        }
+                                        self.apply_boundary_pick(world);
+                                    } else if self.hatch_phase == HatchPhase::PickingPoint {
+                                        let local = click_pos - response.rect.min;
+                                        let raw_world = screen_to_world(local.x, local.y, viewport);
+                                        let pick = self.pick_entity_point(viewport, response.rect, click_pos);
+                                        let mut world = pick.as_ref().map(|(s, _)| s.world).unwrap_or_else(|| {
+                                            if self.snap_enabled && self.grid_visible { self.snap_to_grid(raw_world) } else { raw_world }
+                                        });
+                                        if pick.is_none() {
+                                            if let Some(snap_pt) = self.snap_intersection_point {
+                                                world = snap_pt;
+                                            } else if self.hover_snap_kind.is_some() {
+                                                if let Some(hw) = self.hover_world_pos {
+                                                    world = hw;
+                                                }
+                                            }
+                                        }
+                                        self.apply_hatch_pick(world);
                                     } else if !matches!(self.dim_phase, DimPhase::Idle) {
                                         // DIMALIGNED point pick — same snap logic as MOVE/COPY/ROTATE.
                                         let local = click_pos - response.rect.min;
@@ -8565,6 +8937,12 @@ impl eframe::App for CadKitApp {
                                 self.command_log.push("*Cancel*".to_string());
                             } else if !matches!(self.pedit_phase, PeditPhase::Idle) {
                                 self.exit_pedit();
+                                self.command_log.push("*Cancel*".to_string());
+                            } else if !matches!(self.boundary_phase, BoundaryPhase::Idle) {
+                                self.exit_boundary();
+                                self.command_log.push("*Cancel*".to_string());
+                            } else if !matches!(self.hatch_phase, HatchPhase::Idle) {
+                                self.exit_hatch();
                                 self.command_log.push("*Cancel*".to_string());
                             } else if !matches!(self.extend_phase, ExtendPhase::Idle) {
                                 self.exit_extend();
@@ -9378,6 +9756,12 @@ impl eframe::App for CadKitApp {
                             } else if !matches!(self.pedit_phase, PeditPhase::Idle) {
                                 self.exit_pedit();
                                 self.command_log.push("*Cancel*".to_string());
+                            } else if !matches!(self.boundary_phase, BoundaryPhase::Idle) {
+                                self.exit_boundary();
+                                self.command_log.push("*Cancel*".to_string());
+                            } else if !matches!(self.hatch_phase, HatchPhase::Idle) {
+                                self.exit_hatch();
+                                self.command_log.push("*Cancel*".to_string());
                             } else if self.has_active_dimension_command() {
                                 self.exit_dim();
                                 self.command_log.push("*Cancel*".to_string());
@@ -10051,6 +10435,427 @@ impl CadKitApp {
             result.push(e);
         }
         result
+    }
+
+    fn collect_boundary_segments(&self) -> Vec<GeomLine> {
+        let mut out: Vec<GeomLine> = Vec::new();
+        for entity in self.drawing.visible_entities() {
+            match &entity.kind {
+                EntityKind::Line { start, end } => {
+                    out.push(GeomLine::new(*start, *end));
+                }
+                EntityKind::Polyline { vertices, closed } if vertices.len() >= 2 => {
+                    for seg in vertices.windows(2) {
+                        out.push(GeomLine::new(seg[0], seg[1]));
+                    }
+                    if *closed {
+                        out.push(GeomLine::new(
+                            *vertices.last().unwrap_or(&vertices[0]),
+                            vertices[0],
+                        ));
+                    }
+                }
+                EntityKind::Circle { center, radius } => {
+                    if *radius > 1e-9 {
+                        let steps = ((*radius * 8.0).round() as usize).clamp(32, 192);
+                        let mut prev = Vec3::xy(center.x + *radius, center.y);
+                        for i in 1..=steps {
+                            let t = (i as f64 / steps as f64) * std::f64::consts::TAU;
+                            let p = Vec3::xy(
+                                center.x + *radius * t.cos(),
+                                center.y + *radius * t.sin(),
+                            );
+                            out.push(GeomLine::new(prev, p));
+                            prev = p;
+                        }
+                    }
+                }
+                EntityKind::Arc {
+                    center,
+                    radius,
+                    start_angle,
+                    end_angle,
+                } => {
+                    if *radius > 1e-9 {
+                        let mut span = end_angle - start_angle;
+                        if span <= 0.0 {
+                            span += std::f64::consts::TAU;
+                        }
+                        let steps = ((span.abs() * *radius * 4.0).round() as usize).clamp(8, 192);
+                        let mut prev = Vec3::xy(
+                            center.x + *radius * start_angle.cos(),
+                            center.y + *radius * start_angle.sin(),
+                        );
+                        for i in 1..=steps {
+                            let t = *start_angle + span * (i as f64 / steps as f64);
+                            let p = Vec3::xy(
+                                center.x + *radius * t.cos(),
+                                center.y + *radius * t.sin(),
+                            );
+                            out.push(GeomLine::new(prev, p));
+                            prev = p;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    fn polygon_area_abs(vertices: &[Vec3]) -> f64 {
+        if vertices.len() < 3 {
+            return 0.0;
+        }
+        let mut twice_area = 0.0_f64;
+        for i in 0..vertices.len() {
+            let a = vertices[i];
+            let b = vertices[(i + 1) % vertices.len()];
+            twice_area += a.x * b.y - b.x * a.y;
+        }
+        (twice_area * 0.5).abs()
+    }
+
+    fn point_in_polygon(vertices: &[Vec3], p: Vec2) -> bool {
+        if vertices.len() < 3 {
+            return false;
+        }
+        let mut inside = false;
+        let mut j = vertices.len() - 1;
+        for i in 0..vertices.len() {
+            let xi = vertices[i].x;
+            let yi = vertices[i].y;
+            let xj = vertices[j].x;
+            let yj = vertices[j].y;
+            let crosses = ((yi > p.y) != (yj > p.y))
+                && (p.x < (xj - xi) * (p.y - yi) / ((yj - yi) + 1e-12) + xi);
+            if crosses {
+                inside = !inside;
+            }
+            j = i;
+        }
+        inside
+    }
+
+    fn point_seg_dist2_world(p: Vec2, a: Vec3, b: Vec3) -> f64 {
+        let ax = a.x;
+        let ay = a.y;
+        let bx = b.x;
+        let by = b.y;
+        let dx = bx - ax;
+        let dy = by - ay;
+        let len2 = dx * dx + dy * dy;
+        if len2 <= 1e-18 {
+            let ex = p.x - ax;
+            let ey = p.y - ay;
+            return ex * ex + ey * ey;
+        }
+        let t = (((p.x - ax) * dx + (p.y - ay) * dy) / len2).clamp(0.0, 1.0);
+        let cx = ax + t * dx;
+        let cy = ay + t * dy;
+        let ex = p.x - cx;
+        let ey = p.y - cy;
+        ex * ex + ey * ey
+    }
+
+    fn min_dist_to_polygon_edges(vertices: &[Vec3], p: Vec2) -> f64 {
+        if vertices.len() < 2 {
+            return f64::INFINITY;
+        }
+        let mut best = f64::INFINITY;
+        for i in 0..vertices.len() {
+            let a = vertices[i];
+            let b = vertices[(i + 1) % vertices.len()];
+            best = best.min(Self::point_seg_dist2_world(p, a, b));
+        }
+        best.sqrt()
+    }
+
+    fn collect_detected_loops(&self) -> Result<Vec<Vec<Vec3>>, String> {
+        let segments = self.collect_boundary_segments();
+        if segments.is_empty() {
+            return Err("No line/polyline geometry available".to_string());
+        }
+
+        let loops = detect_closed_boundaries(&segments, 1e-6);
+        if loops.is_empty() {
+            return Err("No closed loops detected".to_string());
+        }
+        Ok(loops.into_iter().map(|p| p.vertices).collect())
+    }
+
+    fn detect_boundary_loop_at_pick(
+        &self,
+        pick: Vec2,
+        loops: &[Vec<Vec3>],
+    ) -> Result<Vec<Vec3>, String> {
+        let mut best: Option<(f64, Vec<Vec3>)> = None;
+        for vertices in loops {
+            if vertices.len() < 3 {
+                continue;
+            }
+            if !Self::point_in_polygon(vertices, pick) {
+                continue;
+            }
+            let area = Self::polygon_area_abs(vertices);
+            if area <= 1e-9 {
+                continue;
+            }
+            if best.as_ref().map_or(true, |(a, _)| area < *a) {
+                best = Some((area, vertices.clone()));
+            }
+        }
+        best.map(|(_, v)| v)
+            .ok_or_else(|| "Pick point is not inside a detected closed loop".to_string())
+    }
+
+    fn hatch_intervals_for_polygon(vertices: &[Vec3], v: f64, d: Vec2, n: Vec2) -> Vec<(f64, f64)> {
+        if vertices.len() < 3 {
+            return Vec::new();
+        }
+        let mut us: Vec<f64> = Vec::new();
+        for i in 0..vertices.len() {
+            let a = vertices[i];
+            let b = vertices[(i + 1) % vertices.len()];
+            let va = a.x * n.x + a.y * n.y;
+            let vb = b.x * n.x + b.y * n.y;
+            let crosses = (va <= v && vb > v) || (vb <= v && va > v);
+            if !crosses {
+                continue;
+            }
+            let t = (v - va) / (vb - va);
+            let x = a.x + (b.x - a.x) * t;
+            let y = a.y + (b.y - a.y) * t;
+            us.push(x * d.x + y * d.y);
+        }
+        if us.len() < 2 {
+            return Vec::new();
+        }
+        us.sort_by(|a, b| a.total_cmp(b));
+        let mut out = Vec::new();
+        for pair in us.chunks(2) {
+            if pair.len() == 2 && (pair[1] - pair[0]).abs() > 1e-9 {
+                out.push((pair[0], pair[1]));
+            }
+        }
+        out
+    }
+
+    fn subtract_intervals(base: &[(f64, f64)], cut: &[(f64, f64)]) -> Vec<(f64, f64)> {
+        if base.is_empty() || cut.is_empty() {
+            return base.to_vec();
+        }
+        let mut out = Vec::new();
+        for &(b0, b1) in base {
+            let mut cur = vec![(b0, b1)];
+            for &(c0, c1) in cut {
+                let mut next = Vec::new();
+                for &(x0, x1) in &cur {
+                    if c1 <= x0 || c0 >= x1 {
+                        next.push((x0, x1));
+                        continue;
+                    }
+                    if c0 > x0 {
+                        next.push((x0, c0));
+                    }
+                    if c1 < x1 {
+                        next.push((c1, x1));
+                    }
+                }
+                cur = next;
+                if cur.is_empty() {
+                    break;
+                }
+            }
+            out.extend(cur.into_iter().filter(|(x0, x1)| (x1 - x0).abs() > 1e-9));
+        }
+        out
+    }
+
+    fn hatch_segments_for_polygon_with_islands(
+        outer: &[Vec3],
+        islands: &[Vec<Vec3>],
+        spacing: f64,
+        angle_deg: f64,
+    ) -> Vec<(Vec2, Vec2)> {
+        if outer.len() < 3 || spacing <= 1e-9 {
+            return Vec::new();
+        }
+        let theta = angle_deg.to_radians();
+        let d = Vec2::new(theta.cos(), theta.sin());
+        let n = Vec2::new(-d.y, d.x);
+        let mut min_v = f64::INFINITY;
+        let mut max_v = f64::NEG_INFINITY;
+        for p in outer {
+            let pv = p.x * n.x + p.y * n.y;
+            min_v = min_v.min(pv);
+            max_v = max_v.max(pv);
+        }
+        if !min_v.is_finite() || !max_v.is_finite() {
+            return Vec::new();
+        }
+        let start_k = (min_v / spacing).floor() as i64 - 1;
+        let end_k = (max_v / spacing).ceil() as i64 + 1;
+        let mut out = Vec::new();
+        for k in start_k..=end_k {
+            let v = k as f64 * spacing;
+            let mut intervals = Self::hatch_intervals_for_polygon(outer, v, d, n);
+            if intervals.is_empty() {
+                continue;
+            }
+            for hole in islands {
+                let cut = Self::hatch_intervals_for_polygon(hole, v, d, n);
+                intervals = Self::subtract_intervals(&intervals, &cut);
+                if intervals.is_empty() {
+                    break;
+                }
+            }
+            for (u0, u1) in intervals {
+                let p0 = Vec2::new(d.x * u0 + n.x * v, d.y * u0 + n.y * v);
+                let p1 = Vec2::new(d.x * u1 + n.x * v, d.y * u1 + n.y * v);
+                out.push((p0, p1));
+                if out.len() >= 10_000 {
+                    return out;
+                }
+            }
+        }
+        out
+    }
+
+    fn hatch_pattern_angles(pattern: HatchPattern, base_angle_deg: f64) -> Vec<f64> {
+        match pattern {
+            HatchPattern::Ansi31 => vec![base_angle_deg],
+            HatchPattern::Ansi32 => vec![base_angle_deg, base_angle_deg + 90.0],
+            HatchPattern::Ansi37 => vec![base_angle_deg + 22.5, base_angle_deg - 22.5],
+            HatchPattern::Cross => vec![base_angle_deg, base_angle_deg + 90.0],
+            HatchPattern::Grid => vec![0.0, 90.0],
+        }
+    }
+
+    fn apply_boundary_pick(&mut self, pick: Vec2) {
+        if self.is_layer_locked(self.current_layer) {
+            self.command_log
+                .push("BOUNDARY: Current layer is locked/frozen".to_string());
+            return;
+        }
+
+        let loops = match self.collect_detected_loops() {
+            Ok(v) => v,
+            Err(msg) => {
+                self.command_log.push(format!("BOUNDARY: {msg}"));
+                return;
+            }
+        };
+        let vertices = match self.detect_boundary_loop_at_pick(pick, &loops) {
+            Ok(v) => v,
+            Err(msg) => {
+                self.command_log.push(format!("BOUNDARY: {msg}"));
+                return;
+            }
+        };
+
+        self.push_undo();
+        let mut ent = Entity::new(
+            EntityKind::Polyline {
+                vertices,
+                closed: true,
+            },
+            self.current_layer,
+        );
+        ent.layer = self.current_layer;
+        let new_id = self.drawing.add_entity(ent);
+        self.selected_entities.clear();
+        self.selected_entities.insert(new_id);
+        self.boundary_phase = BoundaryPhase::Idle;
+        self.command_log
+            .push("BOUNDARY: Closed polyline created".to_string());
+    }
+
+    fn apply_hatch_pick(&mut self, pick: Vec2) {
+        if self.is_layer_locked(self.current_layer) {
+            self.command_log
+                .push("HATCH: Current layer is locked/frozen".to_string());
+            return;
+        }
+        let loops = match self.collect_detected_loops() {
+            Ok(v) => v,
+            Err(msg) => {
+                self.command_log.push(format!("HATCH: {msg}"));
+                return;
+            }
+        };
+        let vertices = match self.detect_boundary_loop_at_pick(pick, &loops) {
+            Ok(v) => v,
+            Err(msg) => {
+                self.command_log.push(format!("HATCH: {msg}"));
+                return;
+            }
+        };
+        let mut islands: Vec<Vec<Vec3>> = Vec::new();
+        if self.hatch_detect_islands {
+            let outer_area = Self::polygon_area_abs(&vertices);
+            let edge_tol = 1e-6;
+            for loop_vertices in loops {
+                if loop_vertices.len() < 3 {
+                    continue;
+                }
+                let area = Self::polygon_area_abs(&loop_vertices);
+                if area <= 1e-9 || area >= outer_area - 1e-9 {
+                    continue;
+                }
+                let mut strict_inside = true;
+                for v in &loop_vertices {
+                    let p = Vec2::new(v.x, v.y);
+                    if !Self::point_in_polygon(&vertices, p)
+                        || Self::min_dist_to_polygon_edges(&vertices, p) <= edge_tol
+                    {
+                        strict_inside = false;
+                        break;
+                    }
+                }
+                if strict_inside && !Self::point_in_polygon(&loop_vertices, pick) {
+                    islands.push(loop_vertices);
+                }
+            }
+        }
+        let spacing = self.hatch_spacing.clamp(0.05, 10_000.0);
+        let mut segs: Vec<(Vec2, Vec2)> = Vec::new();
+        for angle in Self::hatch_pattern_angles(self.hatch_pattern, self.hatch_angle_deg) {
+            segs.extend(Self::hatch_segments_for_polygon_with_islands(
+                &vertices,
+                &islands,
+                spacing,
+                angle,
+            ));
+        }
+        if segs.is_empty() {
+            self.command_log.push("HATCH: No hatch lines generated".to_string());
+            return;
+        }
+        self.push_undo();
+        let mut count = 0usize;
+        for (a, b) in segs {
+            let mut e = create_line(a, b);
+            e.layer = self.current_layer;
+            e.linetype_scale = Some(self.hatch_ltscale.clamp(0.01, 1000.0));
+            e.color = if self.hatch_color_by_layer {
+                None
+            } else {
+                Some(self.hatch_color)
+            };
+            self.drawing.add_entity(e);
+            count += 1;
+        }
+        self.hatch_phase = HatchPhase::Idle;
+        self.command_log.push(format!(
+            "HATCH: Created {} line segments ({}, spacing {:.4}, angle {:.1}deg, islands {} [{}])",
+            count,
+            self.hatch_pattern.label(),
+            spacing,
+            self.hatch_angle_deg,
+            islands.len(),
+            if self.hatch_detect_islands { "on" } else { "off" }
+        ));
     }
 
     /// Compute a trim operation (read-only).  Returns a `TrimResult` describing

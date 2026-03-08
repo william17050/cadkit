@@ -169,6 +169,18 @@ pub enum PeditPhase {
     Joining { base: Guid },
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum BoundaryPhase {
+    Idle,
+    PickingPoint,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum HatchPhase {
+    Idle,
+    PickingPoint,
+}
+
 /// FROM tracking: lets the user pick a base snap point then type an offset from it.
 /// Triggered by typing "from" or "fr" while any point-pick is expected.
 #[derive(Debug, Clone, PartialEq)]

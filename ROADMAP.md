@@ -155,11 +155,13 @@
 ## Phase 5: Advanced 2D (Q1 2027)
 
 ### Milestone 5.1: Hatch & Regions
-- [ ] Boundary detection algorithm (region-find crate)
+- [x] Boundary detection algorithm (first pass in geometry crate + `BOUNDARY` point-pick command)
 - [ ] Gap healing under tolerance
-- [ ] Island detection (holes)
-- [ ] Hatch patterns (ANSI, ISO, custom)
-- [ ] Use region detection for hatch fill
+- [x] Island detection (holes) with dialog toggle (`Detect Islands` on/off)
+- [x] First-pass `HATCH` command (pick point + line hatch generation with spacing/angle/LTScale/color)
+- [x] Hatch patterns (initial built-ins: ANSI31 / ANSI32 / ANSI37 / Cross / Grid)
+- [x] Use region detection for hatch fill (line + polyline + circle/arc boundaries)
+- [x] Hatch dialog polish (pattern dropdown, sample tiles, ACI color picker 1-255, layer color inherit/override)
 
 ### Milestone 5.2: Blocks & References
 - [ ] Block definition

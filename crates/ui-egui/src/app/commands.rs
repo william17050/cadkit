@@ -1,6 +1,6 @@
 use super::state::{
     ActiveTool, CopyPhase, DimAngularPhase, DimLinearPhase, DimPhase, DimRadialPhase, EditDimPhase, EditTextPhase,
-    ArrayMode, ArrayPhase, ChamferPhase, EllipsePhase, ExtendPhase, FilletPhase, FromPhase, MirrorPhase, MovePhase,
+    ArrayMode, ArrayPhase, BoundaryPhase, ChamferPhase, EllipsePhase, ExtendPhase, FilletPhase, FromPhase, HatchPhase, MirrorPhase, MovePhase,
     OffsetPhase, PeditPhase, PolygonPhase, RectanglePhase, RotatePhase, ScalePhase, TextPhase, TrimPhase,
 };
 use super::{create_arc_from_three_points, AiBackendMode, AiModelProfile, CadKitApp};
@@ -184,6 +184,18 @@ impl CadKitApp {
                 || self.pedit_phase != PeditPhase::Idle;
         if !keeps_pedit_context {
             self.exit_pedit();
+        }
+        let keeps_boundary_context =
+            matches!(cmd.as_str(), "bo" | "boundary" | "from" | "fr")
+                || self.boundary_phase != BoundaryPhase::Idle;
+        if !keeps_boundary_context {
+            self.exit_boundary();
+        }
+        let keeps_hatch_context =
+            matches!(cmd.as_str(), "ha" | "hatch" | "from" | "fr")
+                || self.hatch_phase != HatchPhase::Idle;
+        if !keeps_hatch_context {
+            self.exit_hatch();
         }
 
         match cmd.as_str() {
@@ -468,6 +480,55 @@ impl CadKitApp {
                 self.exit_mirror();
                 let _ = self.join_selected_into_polyline();
                 log::info!("Command: JOIN");
+                true
+            }
+            "bo" | "boundary" => {
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.exit_scale();
+                self.exit_mirror();
+                self.exit_fillet();
+                self.exit_chamfer();
+                self.exit_polygon();
+                self.exit_ellipse();
+                self.exit_rectangle();
+                self.exit_array();
+                self.exit_pedit();
+                self.boundary_phase = BoundaryPhase::PickingPoint;
+                self.command_log
+                    .push("BOUNDARY: Click an internal point".to_string());
+                log::info!("Command: BOUNDARY");
+                true
+            }
+            "ha" | "hatch" => {
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.exit_scale();
+                self.exit_mirror();
+                self.exit_fillet();
+                self.exit_chamfer();
+                self.exit_polygon();
+                self.exit_ellipse();
+                self.exit_rectangle();
+                self.exit_array();
+                self.exit_pedit();
+                self.exit_boundary();
+                self.hatch_dialog_open = true;
+                self.hatch_phase = HatchPhase::PickingPoint;
+                self.command_log.push(format!(
+                    "HATCH: Dialog open. Click internal point or adjust settings first"
+                ));
+                log::info!("Command: HATCH");
                 true
             }
             "co" | "copy" => {

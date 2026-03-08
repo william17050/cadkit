@@ -44,11 +44,11 @@ Line, Circle, Arc, Polyline, Text, DimAligned, DimLinear, DimAngular, DimRadial
 - `execute_command_alias` calls `exit_dim()` for any unrecognised input — guard with `|| self.from_phase != FromPhase::Idle` to preserve dim context during FROM offset entry
 
 ## Next Tasks (priority order)
-1. **Hatch command/entity** — interactive hatch creation (not just DXF fallback boundary import)
-2. **Blocks & references** — block definition/insert/edit pipeline
+1. **Blocks & references** — block definition/insert/edit pipeline
+2. **Gap healing for boundary** — close near-miss loops under tolerance for boundary/hatch
 3. **Polyline interior-join improvements** (PEDIT/JOIN currently endpoint-driven)
 4. **Array persistence polish** — preserve associative arrays robustly across save/load/edit cycles
-5. **Linetype roadmap follow-up** — ByLayer/override is live; next is linetype table + custom patterns + DXF LT scale table mapping
+5. **Linetype roadmap follow-up** — linetype table + custom patterns + DXF LT table mapping
 
 ## Adding a New Command — Checklist
 1. Add Phase enum variant(s) to `state.rs`
@@ -70,6 +70,10 @@ Phase 7: CNC/CAM G-code
 Phase 8: Cabinet designer (target market)
 
 ## Recently Completed
+- BOUNDARY command/region work
+  - planar half-edge region detection in geometry crate
+  - robust segment noding/intersection splitting for mixed line/polyline regions
+  - shared-edge/compartment behavior fixes for interior picks
 - RECTANGLE command (`REC` / `RECTANGLE`) with diagonal-corners mode and dimensions mode (`w,h` + direction), with live rubber-band preview
 - ELLIPSE command (`EL` / `ELLIPSE`) with center → radius → height workflow, rubber-band preview, ortho support
 - POLYGON command (`POL` / `POLYGON`) with center/radius rubber-band and ortho-aware radius pick
@@ -97,3 +101,10 @@ Phase 8: Cabinet designer (target market)
   - layer style now includes linetype + LT scale
   - entities support `ByLayer` linetype and per-entity override
   - entities support `ByLayer` LT scale and per-entity numeric override
+- HATCH command + dialog expansion
+  - pick-point hatch creation using region/boundary detection
+  - built-in patterns: `ANSI31`, `ANSI32`, `ANSI37`, `Cross`, `Grid`
+  - hatch controls: spacing, angle, LTScale, color inherit/override
+  - ACI 1-255 color picker window for hatch color override
+  - island detection with explicit `Detect Islands` toggle
+  - circle/arc boundaries participate in island detection

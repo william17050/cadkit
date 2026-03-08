@@ -1,6 +1,6 @@
 use super::state::{
     ActiveTool, CopyPhase, DimAngularPhase, DimLinearPhase, DimPhase, DimRadialPhase, EditDimPhase, EditTextPhase,
-    ArrayMode, ArrayPhase, ChamferPhase, EllipsePhase, ExtendPhase, FilletPhase, FromPhase, MirrorPhase, MovePhase,
+    ArrayMode, ArrayPhase, BoundaryPhase, ChamferPhase, EllipsePhase, ExtendPhase, FilletPhase, FromPhase, HatchPhase, MirrorPhase, MovePhase,
     OffsetPhase, PeditPhase, PolygonPhase, RectanglePhase, RotatePhase, ScalePhase, TextPhase, TrimPhase,
 };
 use super::CadKitApp;
@@ -368,6 +368,51 @@ impl CadKitApp {
                 self.extend_phase = ExtendPhase::SelectingBoundaries;
                 self.extend_boundary_edges.clear();
                 self.command_log.push("EXTEND: Select boundary edges, press Enter to continue".to_string());
+            }
+            if ui.button("⬚ Boundary").clicked() {
+                self.exit_dim();
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.exit_scale();
+                self.exit_mirror();
+                self.exit_fillet();
+                self.exit_chamfer();
+                self.exit_polygon();
+                self.exit_ellipse();
+                self.exit_rectangle();
+                self.exit_array();
+                self.exit_pedit();
+                self.boundary_phase = BoundaryPhase::PickingPoint;
+                self.command_log.push("BOUNDARY: Click an internal point".to_string());
+            }
+            if ui.button("//// Hatch").clicked() {
+                self.exit_dim();
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.exit_scale();
+                self.exit_mirror();
+                self.exit_fillet();
+                self.exit_chamfer();
+                self.exit_polygon();
+                self.exit_ellipse();
+                self.exit_rectangle();
+                self.exit_array();
+                self.exit_pedit();
+                self.exit_boundary();
+                self.hatch_dialog_open = true;
+                self.hatch_phase = HatchPhase::PickingPoint;
+                self.command_log
+                    .push("HATCH: Dialog open. Click internal point or adjust settings first".to_string());
             }
             if ui.button("⊙ Offset").clicked() {
                 self.exit_dim();
@@ -1742,6 +1787,20 @@ impl CadKitApp {
                             } else if matches!(self.pedit_phase, PeditPhase::Joining { .. }) {
                                 self.exit_pedit();
                                 self.command_log.push("PEDIT done.".to_string());
+                            } else if self.boundary_phase == BoundaryPhase::PickingPoint {
+                                if let Some(world) = self.hover_world_pos {
+                                    self.apply_boundary_pick(world);
+                                } else {
+                                    self.exit_boundary();
+                                    self.command_log.push("BOUNDARY cancelled.".to_string());
+                                }
+                            } else if self.hatch_phase == HatchPhase::PickingPoint {
+                                if let Some(world) = self.hover_world_pos {
+                                    self.apply_hatch_pick(world);
+                                } else {
+                                    self.exit_hatch();
+                                    self.command_log.push("HATCH cancelled.".to_string());
+                                }
                             } else if !matches!(self.dim_phase, DimPhase::Idle) {
                                 if matches!(self.dim_phase, DimPhase::FirstPoint) {
                                     self.exit_dim();
@@ -1888,6 +1947,43 @@ impl CadKitApp {
                                 } else {
                                     self.command_log
                                         .push("  *FROM: enter @dx,dy or @dist<angle*".to_string());
+                                }
+                                handled = true;
+                            } else if self.boundary_phase == BoundaryPhase::PickingPoint {
+                                if let Some(world) = Self::resolve_typed_point(&cmd, None) {
+                                    self.apply_boundary_pick(world);
+                                } else {
+                                    self.command_log
+                                        .push("BOUNDARY: Enter point as x,y or @x,y".to_string());
+                                }
+                                handled = true;
+                            } else if self.hatch_phase == HatchPhase::PickingPoint {
+                                let raw = cmd.trim();
+                                if let Some(world) = Self::resolve_typed_point(raw, None) {
+                                    self.apply_hatch_pick(world);
+                                } else if let Some((a, b)) = raw.split_once(',') {
+                                    let s = a.trim().parse::<f64>().ok();
+                                    let ang = b.trim().parse::<f64>().ok();
+                                    if let (Some(spacing), Some(angle)) = (s, ang) {
+                                        if spacing > 1e-9 {
+                                            self.hatch_spacing = spacing;
+                                            self.hatch_angle_deg = angle;
+                                            self.command_log.push(format!(
+                                                "HATCH: Spacing {:.4}, angle {:.1}deg",
+                                                self.hatch_spacing, self.hatch_angle_deg
+                                            ));
+                                        } else {
+                                            self.command_log.push("HATCH: Spacing must be > 0".to_string());
+                                        }
+                                    } else {
+                                        self.command_log.push(
+                                            "HATCH: Enter point x,y or spacing,angle".to_string(),
+                                        );
+                                    }
+                                } else {
+                                    self.command_log.push(
+                                        "HATCH: Enter point x,y or spacing,angle".to_string(),
+                                    );
                                 }
                                 handled = true;
                             } else if self.fillet_phase == FilletPhase::EnteringRadius {

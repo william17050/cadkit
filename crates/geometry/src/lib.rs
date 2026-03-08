@@ -17,7 +17,9 @@
 
 pub mod intersect;
 pub mod primitives;
+pub mod region;
 pub(crate) mod utils;
 
 pub use intersect::{Intersection, Intersects};
 pub use primitives::{Arc, Circle, Line, Polyline};
+pub use region::{detect_closed_boundaries, detect_closed_boundaries_from_polylines};
