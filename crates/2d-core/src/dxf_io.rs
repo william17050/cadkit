@@ -3,7 +3,7 @@
 //! * Export: CadKit entities → DXF entities, layers with ACI colours
 //! * Import: DXF entities → CadKit entities, unsupported types skipped with warnings
 
-use crate::{Drawing, Entity, EntityKind};
+use crate::{Drawing, Entity, EntityKind, Linetype};
 use cadkit_types::{CadError, Guid, Result, Vec3};
 use dxf::entities::{EntityType, LwPolyline};
 use dxf::enums::DimensionType;
@@ -134,6 +134,7 @@ impl Drawing {
             dl.name = layer.name.clone();
             dl.color = Color::from_index(aci);
             dl.is_layer_on = layer.visible;
+            dl.line_type_name = layer.linetype.to_dxf_name().to_string();
             dxf.add_layer(dl);
         }
 
@@ -159,6 +160,11 @@ impl Drawing {
                     )));
                     e.common.layer = layer_name;
                     e.common.color = color;
+                    e.common.line_type_name = if entity.linetype_by_layer {
+                        "BYLAYER".to_string()
+                    } else {
+                        entity.linetype.to_dxf_name().to_string()
+                    };
                     Some(e)
                 }
                 EntityKind::Circle { center, radius } => {
@@ -169,6 +175,11 @@ impl Drawing {
                     )));
                     e.common.layer = layer_name;
                     e.common.color = color;
+                    e.common.line_type_name = if entity.linetype_by_layer {
+                        "BYLAYER".to_string()
+                    } else {
+                        entity.linetype.to_dxf_name().to_string()
+                    };
                     Some(e)
                 }
                 EntityKind::Arc { center, radius, start_angle, end_angle } => {
@@ -181,6 +192,11 @@ impl Drawing {
                     )));
                     e.common.layer = layer_name;
                     e.common.color = color;
+                    e.common.line_type_name = if entity.linetype_by_layer {
+                        "BYLAYER".to_string()
+                    } else {
+                        entity.linetype.to_dxf_name().to_string()
+                    };
                     Some(e)
                 }
                 EntityKind::Polyline { vertices, closed } => {
@@ -205,6 +221,11 @@ impl Drawing {
                         let mut e = DxfEntity::new(EntityType::LwPolyline(poly));
                         e.common.layer = layer_name;
                         e.common.color = color;
+                    e.common.line_type_name = if entity.linetype_by_layer {
+                        "BYLAYER".to_string()
+                    } else {
+                        entity.linetype.to_dxf_name().to_string()
+                    };
                         Some(e)
                     }
                 }
@@ -227,6 +248,11 @@ impl Drawing {
                         let mut e = dxf::entities::Entity::new(EntityType::MText(mt));
                         e.common.layer = layer_name;
                         e.common.color = color;
+                    e.common.line_type_name = if entity.linetype_by_layer {
+                        "BYLAYER".to_string()
+                    } else {
+                        entity.linetype.to_dxf_name().to_string()
+                    };
                         Some(e)
                     } else {
                         use dxf::entities::Text as DxfText;
@@ -243,6 +269,11 @@ impl Drawing {
                         let mut e = dxf::entities::Entity::new(EntityType::Text(t));
                         e.common.layer = layer_name;
                         e.common.color = color;
+                    e.common.line_type_name = if entity.linetype_by_layer {
+                        "BYLAYER".to_string()
+                    } else {
+                        entity.linetype.to_dxf_name().to_string()
+                    };
                         Some(e)
                     }
                 }
@@ -279,6 +310,11 @@ impl Drawing {
                         let mut e = DxfEntity::new(EntityType::RotatedDimension(dim));
                         e.common.layer = layer_name;
                         e.common.color = color;
+                    e.common.line_type_name = if entity.linetype_by_layer {
+                        "BYLAYER".to_string()
+                    } else {
+                        entity.linetype.to_dxf_name().to_string()
+                    };
                         Some(e)
                     }
                 }
@@ -311,6 +347,11 @@ impl Drawing {
                     let mut e = DxfEntity::new(EntityType::RotatedDimension(dim));
                     e.common.layer = layer_name;
                     e.common.color = color;
+                    e.common.line_type_name = if entity.linetype_by_layer {
+                        "BYLAYER".to_string()
+                    } else {
+                        entity.linetype.to_dxf_name().to_string()
+                    };
                     Some(e)
                 }
                 EntityKind::DimAngular { vertex, line1_pt, line2_pt, radius, text_override, text_pos, .. } => {
@@ -337,6 +378,11 @@ impl Drawing {
                     let mut e = DxfEntity::new(EntityType::AngularThreePointDimension(dim));
                     e.common.layer = layer_name;
                     e.common.color = color;
+                    e.common.line_type_name = if entity.linetype_by_layer {
+                        "BYLAYER".to_string()
+                    } else {
+                        entity.linetype.to_dxf_name().to_string()
+                    };
                     Some(e)
                 }
                 EntityKind::DimRadial { center, radius, leader_pt, is_diameter, text_override, text_pos, .. } => {
@@ -369,6 +415,11 @@ impl Drawing {
                     };
                     e.common.layer = layer_name;
                     e.common.color = color;
+                    e.common.line_type_name = if entity.linetype_by_layer {
+                        "BYLAYER".to_string()
+                    } else {
+                        entity.linetype.to_dxf_name().to_string()
+                    };
                     Some(e)
                 }
             };
@@ -411,6 +462,7 @@ impl Drawing {
                 if let Some(l) = drawing.get_layer_mut(0) {
                     l.color   = rgb;
                     l.visible = dl.is_layer_on;
+                    l.linetype = Linetype::from_dxf_name(&dl.line_type_name);
                 }
                 continue;
             }
@@ -418,6 +470,7 @@ impl Drawing {
             let new_id = drawing.add_layer_with_color(dl.name.clone(), rgb);
             if let Some(l) = drawing.get_layer_mut(new_id) {
                 l.visible = dl.is_layer_on;
+                l.linetype = Linetype::from_dxf_name(&dl.line_type_name);
             }
             name_to_id.insert(dl.name.clone(), new_id);
             layer_count += 1;
@@ -445,6 +498,7 @@ impl Drawing {
             } else {
                 de.common.color.index().map(aci_to_rgb)
             };
+            let linetype = Linetype::from_dxf_name(&de.common.line_type_name);
 
             let mut insert_count = 0usize;
             let cadkit: Option<Entity> = match &de.specific {
@@ -456,6 +510,9 @@ impl Drawing {
                     },
                     layer: layer_id,
                     color,
+                    linetype,
+                    linetype_by_layer: de.common.line_type_name.trim().eq_ignore_ascii_case("BYLAYER"),
+                    linetype_scale: None,
                 }),
 
                 EntityType::Circle(circle) => Some(Entity {
@@ -466,6 +523,9 @@ impl Drawing {
                     },
                     layer: layer_id,
                     color,
+                    linetype,
+                    linetype_by_layer: de.common.line_type_name.trim().eq_ignore_ascii_case("BYLAYER"),
+                    linetype_scale: None,
                 }),
 
                 EntityType::Arc(arc) => Some(Entity {
@@ -482,6 +542,9 @@ impl Drawing {
                     },
                     layer: layer_id,
                     color,
+                    linetype,
+                    linetype_by_layer: de.common.line_type_name.trim().eq_ignore_ascii_case("BYLAYER"),
+                    linetype_scale: None,
                 }),
 
                 EntityType::LwPolyline(poly) => {
@@ -497,6 +560,9 @@ impl Drawing {
                             kind:  EntityKind::Polyline { vertices: verts, closed },
                             layer: layer_id,
                             color,
+                            linetype,
+                    linetype_by_layer: de.common.line_type_name.trim().eq_ignore_ascii_case("BYLAYER"),
+                    linetype_scale: None,
                         })
                     } else {
                         None
@@ -516,6 +582,9 @@ impl Drawing {
                             kind:  EntityKind::Polyline { vertices: verts, closed },
                             layer: layer_id,
                             color,
+                            linetype,
+                    linetype_by_layer: de.common.line_type_name.trim().eq_ignore_ascii_case("BYLAYER"),
+                    linetype_scale: None,
                         })
                     } else {
                         None
@@ -537,6 +606,9 @@ impl Drawing {
                     },
                     layer: layer_id,
                     color,
+                    linetype,
+                    linetype_by_layer: de.common.line_type_name.trim().eq_ignore_ascii_case("BYLAYER"),
+                    linetype_scale: None,
                 }),
 
                 EntityType::MText(t) => {
@@ -568,6 +640,9 @@ impl Drawing {
                         },
                         layer: layer_id,
                         color,
+                        linetype,
+                    linetype_by_layer: de.common.line_type_name.trim().eq_ignore_ascii_case("BYLAYER"),
+                    linetype_scale: None,
                     })
                 }
 
@@ -601,6 +676,9 @@ impl Drawing {
                                 },
                                 layer: layer_id,
                                 color,
+                                linetype,
+                    linetype_by_layer: de.common.line_type_name.trim().eq_ignore_ascii_case("BYLAYER"),
+                    linetype_scale: None,
                             })
                         }
                     } else {
@@ -627,6 +705,9 @@ impl Drawing {
                             },
                             layer: layer_id,
                             color,
+                            linetype,
+                    linetype_by_layer: de.common.line_type_name.trim().eq_ignore_ascii_case("BYLAYER"),
+                    linetype_scale: None,
                         })
                     }
                 }
@@ -657,6 +738,9 @@ impl Drawing {
                         },
                         layer: layer_id,
                         color,
+                        linetype,
+                    linetype_by_layer: de.common.line_type_name.trim().eq_ignore_ascii_case("BYLAYER"),
+                    linetype_scale: None,
                     })
                 }
 
@@ -684,6 +768,9 @@ impl Drawing {
                         },
                         layer: layer_id,
                         color,
+                        linetype,
+                    linetype_by_layer: de.common.line_type_name.trim().eq_ignore_ascii_case("BYLAYER"),
+                    linetype_scale: None,
                     })
                 }
 
@@ -711,6 +798,9 @@ impl Drawing {
                         },
                         layer: layer_id,
                         color,
+                        linetype,
+                    linetype_by_layer: de.common.line_type_name.trim().eq_ignore_ascii_case("BYLAYER"),
+                    linetype_scale: None,
                     })
                 }
 
@@ -719,6 +809,7 @@ impl Drawing {
                         ins,
                         layer_id,
                         color,
+                        linetype,
                         &blocks_by_name,
                         &mut drawing,
                         &mut name_to_id,
@@ -909,6 +1000,7 @@ fn expand_insert_flattened(
     ins: &dxf::entities::Insert,
     insert_layer_id: u32,
     _insert_color: Option<[u8; 3]>,
+    insert_linetype: Linetype,
     blocks_by_name: &HashMap<String, dxf::Block>,
     drawing: &mut Drawing,
     name_to_id: &mut HashMap<String, u32>,
@@ -1061,6 +1153,7 @@ fn expand_insert_flattened(
                             child_insert,
                             layer_id,
                             color,
+                            insert_linetype,
                             blocks_by_name,
                             drawing,
                             name_to_id,
@@ -1083,6 +1176,9 @@ fn expand_insert_flattened(
                         kind,
                         layer: layer_id,
                         color,
+                        linetype: insert_linetype,
+                        linetype_by_layer: false,
+                        linetype_scale: None,
                     });
                     added += 1;
                 }
@@ -1240,5 +1336,8 @@ fn hatch_pairs_to_polyline(
         },
         layer: layer_id,
         color,
+        linetype: Linetype::Continuous,
+        linetype_by_layer: false,
+        linetype_scale: None,
     })
 }

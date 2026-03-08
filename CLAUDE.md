@@ -44,11 +44,11 @@ Line, Circle, Arc, Polyline, Text, DimAligned, DimLinear, DimAngular, DimRadial
 - `execute_command_alias` calls `exit_dim()` for any unrecognised input — guard with `|| self.from_phase != FromPhase::Idle` to preserve dim context during FROM offset entry
 
 ## Next Tasks (priority order)
-1. **DXF dimension export** — currently skipped with warning; use `dxf_rs` AlignedDimension / RotatedDimension
-2. **DXF TEXT / MTEXT export** — Text entity not yet exported to DXF
-3. **Layer freeze**
-4. **Array command** — rectangular / polar (associative rectangular editing shipped; persistence still TODO)
-5. **Polyline interior-join improvements** (PEDIT/JOIN currently endpoint-driven)
+1. **Hatch command/entity** — interactive hatch creation (not just DXF fallback boundary import)
+2. **Blocks & references** — block definition/insert/edit pipeline
+3. **Polyline interior-join improvements** (PEDIT/JOIN currently endpoint-driven)
+4. **Array persistence polish** — preserve associative arrays robustly across save/load/edit cycles
+5. **Linetype roadmap follow-up** — ByLayer/override is live; next is linetype table + custom patterns + DXF LT scale table mapping
 
 ## Adding a New Command — Checklist
 1. Add Phase enum variant(s) to `state.rs`
@@ -61,8 +61,8 @@ Line, Circle, Arc, Polyline, Text, DimAligned, DimLinear, DimAngular, DimRadial
 8. Update HELP window table in `app.rs`
 
 ## Roadmap Summary
-Phase 2 (in progress): DXF dims/text export, Layer freeze, Array
-Phase 3: DXF completeness, SVG/PDF
+Phase 2 (done): Dimensions/text/editing/layers/UI polish + linetype ByLayer/override
+Phase 3: DXF completeness + additional formats
 Phase 4: Python API + AI/MCP command line
 Phase 5: Hatch, Blocks
 Phase 6: 3D push/pull
@@ -91,3 +91,9 @@ Phase 8: Cabinet designer (target market)
   - selecting any member selects the full array group
   - running `ARRAY` on a member re-enters array edit with stored spacing/count/base/direction
   - `E` during array grip edit explodes associative linkage and exits edit
+- Linetype first pass (CAD-visible dash styles)
+  - built-in linetypes: `Continuous`, `Hidden`, `Center`
+  - global `LTSCALE` (`LTS`) multiplier
+  - layer style now includes linetype + LT scale
+  - entities support `ByLayer` linetype and per-entity override
+  - entities support `ByLayer` LT scale and per-entity numeric override

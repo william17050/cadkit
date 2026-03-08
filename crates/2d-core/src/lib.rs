@@ -33,10 +33,50 @@ fn default_layer_frozen() -> bool { false }
 fn default_dim_arrow_length() -> f64 { 3.0 }
 fn default_dim_arrow_half_width() -> f64 { 0.75 }
 fn default_text_font_name() -> String { "STANDARD".to_string() }
+fn default_linetype() -> Linetype { Linetype::Continuous }
+fn default_entity_linetype_by_layer() -> bool { false }
+fn default_layer_linetype() -> Linetype { Linetype::Continuous }
+fn default_linetype_scale() -> f64 { 1.0 }
 
 // =============================================================================
 // Entities
 // =============================================================================
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Linetype {
+    Continuous,
+    Hidden,
+    Center,
+}
+
+impl Linetype {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Continuous => "Continuous",
+            Self::Hidden => "Hidden",
+            Self::Center => "Center",
+        }
+    }
+
+    pub fn to_dxf_name(self) -> &'static str {
+        match self {
+            Self::Continuous => "CONTINUOUS",
+            Self::Hidden => "HIDDEN",
+            Self::Center => "CENTER",
+        }
+    }
+
+    pub fn from_dxf_name(name: &str) -> Self {
+        let n = name.trim();
+        if n.eq_ignore_ascii_case("HIDDEN") {
+            Self::Hidden
+        } else if n.eq_ignore_ascii_case("CENTER") {
+            Self::Center
+        } else {
+            Self::Continuous
+        }
+    }
+}
 
 /// Core 2D entity types
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -175,6 +215,15 @@ pub struct Entity {
     /// Per-entity colour override. `None` means "ByLayer" (inherit from the layer).
     #[serde(default)]
     pub color: Option<[u8; 3]>,
+    /// Simple built-in linetype. Defaults to `Continuous` for compatibility.
+    #[serde(default = "default_linetype")]
+    pub linetype: Linetype,
+    /// When true, linetype is inherited from the layer.
+    #[serde(default = "default_entity_linetype_by_layer")]
+    pub linetype_by_layer: bool,
+    /// Per-entity linetype scale override. `None` means "ByLayer".
+    #[serde(default)]
+    pub linetype_scale: Option<f64>,
 }
 
 impl Entity {
@@ -184,6 +233,9 @@ impl Entity {
             kind,
             layer,
             color: None,
+            linetype: Linetype::Continuous,
+            linetype_by_layer: false,
+            linetype_scale: None,
         }
     }
 }
@@ -204,6 +256,12 @@ pub struct Layer {
     /// Defaults to white so that old `.cadkit` files without this field load cleanly.
     #[serde(default = "default_layer_color")]
     pub color: [u8; 3],
+    /// Layer linetype for entities set to "ByLayer".
+    #[serde(default = "default_layer_linetype")]
+    pub linetype: Linetype,
+    /// Layer linetype scale for entities set to "ByLayer" scale.
+    #[serde(default = "default_linetype_scale")]
+    pub linetype_scale: f64,
 }
 
 impl Layer {
@@ -215,6 +273,8 @@ impl Layer {
             locked: false,
             frozen: false,
             color,
+            linetype: Linetype::Continuous,
+            linetype_scale: 1.0,
         }
     }
 }
@@ -228,6 +288,8 @@ impl Layer {
 pub struct Drawing {
     pub id: Guid,
     pub name: String,
+    #[serde(default = "default_linetype_scale")]
+    pub linetype_scale: f64,
     entities: HashMap<Guid, Entity>,
     layers: HashMap<u32, Layer>,
     next_layer_id: u32,
@@ -243,6 +305,7 @@ impl Drawing {
         Self {
             id: Guid::new(),
             name,
+            linetype_scale: 1.0,
             entities: HashMap::new(),
             layers,
             next_layer_id: 1,

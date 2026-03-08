@@ -17,11 +17,16 @@ pub const CANVAS_BG_SRGB: [u8; 3] = [81, 81, 81];
 pub mod font;
 pub mod vertex;
 
-use cadkit_2d_core::{Drawing, EntityKind};
+use cadkit_2d_core::{Drawing, EntityKind, Linetype};
 use cadkit_types::Vec2;
 use std::sync::Arc;
 use vertex::{Vertex, ViewTransform};
 use wgpu::util::DeviceExt;
+
+#[derive(Clone, Copy)]
+struct DashPattern {
+    segments: &'static [f64],
+}
 
 pub struct Viewport {
     device: Arc<wgpu::Device>,
@@ -45,6 +50,125 @@ pub struct Viewport {
 }
 
 impl Viewport {
+    const ARC_SAMPLE_LEN: f64 = 0.25;
+
+    fn linetype_pattern(linetype: Linetype) -> Option<DashPattern> {
+        match linetype {
+            Linetype::Continuous => None,
+            Linetype::Hidden => Some(DashPattern { segments: &[0.25, 0.125] }),
+            Linetype::Center => Some(DashPattern {
+                segments: &[0.75, 0.125, 0.125, 0.125],
+            }),
+        }
+    }
+
+    fn push_segment(vertices: &mut Vec<Vertex>, a: Vec2, b: Vec2, c: [f32; 3]) {
+        vertices.push(Vertex::new(a.x as f32, a.y as f32, c[0], c[1], c[2]));
+        vertices.push(Vertex::new(b.x as f32, b.y as f32, c[0], c[1], c[2]));
+    }
+
+    fn push_linetype_path(
+        vertices: &mut Vec<Vertex>,
+        points: &[Vec2],
+        closed: bool,
+        c: [f32; 3],
+        linetype: Linetype,
+        linetype_scale: f64,
+    ) {
+        if points.len() < 2 {
+            return;
+        }
+        let Some(pattern) = Self::linetype_pattern(linetype) else {
+            for w in points.windows(2) {
+                Self::push_segment(vertices, w[0], w[1], c);
+            }
+            if closed {
+                Self::push_segment(vertices, points[points.len() - 1], points[0], c);
+            }
+            return;
+        };
+
+        if pattern.segments.is_empty()
+            || pattern.segments.iter().any(|v| *v <= 1e-9 || !v.is_finite())
+        {
+            for w in points.windows(2) {
+                Self::push_segment(vertices, w[0], w[1], c);
+            }
+            if closed {
+                Self::push_segment(vertices, points[points.len() - 1], points[0], c);
+            }
+            return;
+        }
+
+        let mut dash_idx = 0usize;
+        let mut dash_pos = 0.0f64;
+        let scale = linetype_scale.max(1e-6);
+        let mut emit_patterned = |a: Vec2, b: Vec2| {
+            let dx = b.x - a.x;
+            let dy = b.y - a.y;
+            let seg_len = (dx * dx + dy * dy).sqrt();
+            if seg_len <= 1e-12 {
+                return;
+            }
+            let ux = dx / seg_len;
+            let uy = dy / seg_len;
+            let mut along = 0.0f64;
+            while along < seg_len - 1e-12 {
+                let draw = dash_idx % 2 == 0;
+                let seg_pat = pattern.segments[dash_idx] * scale;
+                let remain_pat = seg_pat - dash_pos;
+                let remain_seg = seg_len - along;
+                let step = remain_pat.min(remain_seg);
+                if draw && step > 1e-12 {
+                    let p0 = Vec2::new(a.x + ux * along, a.y + uy * along);
+                    let p1 = Vec2::new(a.x + ux * (along + step), a.y + uy * (along + step));
+                    Self::push_segment(vertices, p0, p1, c);
+                }
+                along += step;
+                dash_pos += step;
+                if dash_pos >= seg_pat - 1e-12 {
+                    dash_pos = 0.0;
+                    dash_idx = (dash_idx + 1) % pattern.segments.len();
+                }
+            }
+        };
+
+        for w in points.windows(2) {
+            emit_patterned(w[0], w[1]);
+        }
+        if closed {
+            emit_patterned(points[points.len() - 1], points[0]);
+        }
+    }
+
+    fn sample_arc_points(center: Vec2, radius: f64, start_angle: f64, end_angle: f64) -> Vec<Vec2> {
+        let span = end_angle - start_angle;
+        if span.abs() <= f64::EPSILON || radius <= 1e-9 {
+            return Vec::new();
+        }
+        let total_len = span.abs() * radius;
+        let steps = ((total_len / Self::ARC_SAMPLE_LEN).ceil() as usize).clamp(16, 720);
+        let mut pts = Vec::with_capacity(steps + 1);
+        for i in 0..=steps {
+            let t = i as f64 / steps as f64;
+            let a = start_angle + span * t;
+            pts.push(Vec2::new(center.x + radius * a.cos(), center.y + radius * a.sin()));
+        }
+        pts
+    }
+
+    fn sample_circle_points(center: Vec2, radius: f64) -> Vec<Vec2> {
+        let circumference = std::f64::consts::TAU * radius.abs();
+        let steps = ((circumference / Self::ARC_SAMPLE_LEN).ceil() as usize).clamp(24, 900);
+        let mut pts = Vec::with_capacity(steps);
+        for i in 0..steps {
+            let t = i as f64 / steps as f64;
+            let a = std::f64::consts::TAU * t;
+            pts.push(Vec2::new(center.x + radius * a.cos(), center.y + radius * a.sin()));
+        }
+        pts
+    }
+
     /// Create new viewport with given dimensions
     pub async fn new(width: u32, height: u32) -> anyhow::Result<Self> {
         // Create wgpu instance
@@ -311,14 +435,19 @@ impl Viewport {
     /// Only iterates visible entities; uses each entity's layer colour.
     fn generate_vertices(&self, drawing: &Drawing) -> Vec<Vertex> {
         let mut vertices = Vec::new();
+        let linetype_scale = if drawing.linetype_scale.is_finite() && drawing.linetype_scale > 0.0 {
+            drawing.linetype_scale
+        } else {
+            1.0
+        };
 
         for entity in drawing.visible_entities() {
+            let layer = drawing.get_layer(entity.layer);
             // Resolve colour: entity override → layer colour → white fallback.
             let c = if let Some(ec) = entity.color {
                 [ec[0] as f32 / 255.0, ec[1] as f32 / 255.0, ec[2] as f32 / 255.0]
             } else {
-                drawing
-                    .get_layer(entity.layer)
+                layer
                     .map(|l| {
                         [
                             l.color[0] as f32 / 255.0,
@@ -328,76 +457,68 @@ impl Viewport {
                     })
                     .unwrap_or([1.0, 1.0, 1.0])
             };
+            let effective_linetype = if entity.linetype_by_layer {
+                layer.map(|l| l.linetype).unwrap_or(Linetype::Continuous)
+            } else {
+                entity.linetype
+            };
+            let local_lt_scale = entity
+                .linetype_scale
+                .unwrap_or_else(|| layer.map(|l| l.linetype_scale).unwrap_or(1.0));
+            let effective_lt_scale = (linetype_scale * local_lt_scale).max(1e-6);
 
             match &entity.kind {
                 EntityKind::Line { start, end } => {
-                    vertices.push(Vertex::new(start.x as f32, start.y as f32, c[0], c[1], c[2]));
-                    vertices.push(Vertex::new(end.x as f32, end.y as f32, c[0], c[1], c[2]));
+                    let pts = [Vec2::new(start.x, start.y), Vec2::new(end.x, end.y)];
+                    Self::push_linetype_path(
+                        &mut vertices,
+                        &pts,
+                        false,
+                        c,
+                        effective_linetype,
+                        effective_lt_scale,
+                    );
                 }
                 EntityKind::Circle { center, radius } => {
-                    let segments = 32;
-                    let cx = center.x as f32;
-                    let cy = center.y as f32;
-                    let r = *radius as f32;
-
-                    for i in 0..segments {
-                        let t0 = (i as f32 / segments as f32) * std::f32::consts::TAU;
-                        let t1 = ((i + 1) as f32 / segments as f32) * std::f32::consts::TAU;
-
-                        let x0 = cx + r * t0.cos();
-                        let y0 = cy + r * t0.sin();
-                        let x1 = cx + r * t1.cos();
-                        let y1 = cy + r * t1.sin();
-
-                        vertices.push(Vertex::new(x0, y0, c[0], c[1], c[2]));
-                        vertices.push(Vertex::new(x1, y1, c[0], c[1], c[2]));
-                    }
+                    let pts = Self::sample_circle_points(Vec2::new(center.x, center.y), *radius);
+                    Self::push_linetype_path(
+                        &mut vertices,
+                        &pts,
+                        true,
+                        c,
+                        effective_linetype,
+                        effective_lt_scale,
+                    );
                 }
                 EntityKind::Arc { center, radius, start_angle, end_angle } => {
-                    let cx = center.x as f32;
-                    let cy = center.y as f32;
-                    let r = *radius as f32;
-                    let start = *start_angle as f32;
-                    let end = *end_angle as f32;
-
-                    let span = end - start;
-                    if span.abs() <= f32::EPSILON {
-                        continue;
-                    }
-
-                    let segments =
-                        (((span.abs() / std::f32::consts::TAU) * 32.0).ceil()).max(1.0) as usize;
-
-                    for i in 0..segments {
-                        let t0 = start + span * (i as f32 / segments as f32);
-                        let t1 = start + span * ((i + 1) as f32 / segments as f32);
-
-                        let x0 = cx + r * t0.cos();
-                        let y0 = cy + r * t0.sin();
-                        let x1 = cx + r * t1.cos();
-                        let y1 = cy + r * t1.sin();
-
-                        vertices.push(Vertex::new(x0, y0, c[0], c[1], c[2]));
-                        vertices.push(Vertex::new(x1, y1, c[0], c[1], c[2]));
-                    }
+                    let pts = Self::sample_arc_points(
+                        Vec2::new(center.x, center.y),
+                        *radius,
+                        *start_angle,
+                        *end_angle,
+                    );
+                    Self::push_linetype_path(
+                        &mut vertices,
+                        &pts,
+                        false,
+                        c,
+                        effective_linetype,
+                        effective_lt_scale,
+                    );
                 }
                 EntityKind::Polyline { vertices: verts, closed } => {
                     if verts.len() < 2 {
                         continue;
                     }
-                    let mut iter = verts.iter().peekable();
-                    while let Some(a) = iter.next() {
-                        if let Some(b) = iter.peek() {
-                            vertices.push(Vertex::new(a.x as f32, a.y as f32, c[0], c[1], c[2]));
-                            vertices.push(Vertex::new(b.x as f32, b.y as f32, c[0], c[1], c[2]));
-                        }
-                    }
-                    if *closed {
-                        let a = verts.last().unwrap();
-                        let b = verts.first().unwrap();
-                        vertices.push(Vertex::new(a.x as f32, a.y as f32, c[0], c[1], c[2]));
-                        vertices.push(Vertex::new(b.x as f32, b.y as f32, c[0], c[1], c[2]));
-                    }
+                    let pts: Vec<Vec2> = verts.iter().map(|v| Vec2::new(v.x, v.y)).collect();
+                    Self::push_linetype_path(
+                        &mut vertices,
+                        &pts,
+                        *closed,
+                        c,
+                        effective_linetype,
+                        effective_lt_scale,
+                    );
                 }
                 EntityKind::DimAligned { start, end, offset, text_override, text_pos, arrow_length, arrow_half_width } => {
                     let sx = start.x as f32;

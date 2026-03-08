@@ -95,6 +95,29 @@ impl CadKitApp {
             }
             return true;
         }
+        if head == "ltscale" || head == "lts" {
+            match arg1 {
+                None => {
+                    self.command_log
+                        .push(format!("LTSCALE={:.4}", self.drawing.linetype_scale));
+                }
+                Some(v) => match v.parse::<f64>() {
+                    Ok(n) if n.is_finite() && n > 0.0 => {
+                        self.drawing.linetype_scale = n.clamp(0.01, 1000.0);
+                        self.command_log.push(format!(
+                            "LTSCALE set to {:.4}",
+                            self.drawing.linetype_scale
+                        ));
+                    }
+                    _ => {
+                        self.command_log.push(
+                            "LTSCALE: Enter a positive number (example: LTSCALE 10)".to_string(),
+                        );
+                    }
+                },
+            }
+            return true;
+        }
 
         let keeps_dim_context = matches!(
             cmd.as_str(),

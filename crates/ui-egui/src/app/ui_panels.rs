@@ -4,7 +4,7 @@ use super::state::{
     OffsetPhase, PeditPhase, PolygonPhase, RectanglePhase, RotatePhase, ScalePhase, TextPhase, TrimPhase,
 };
 use super::CadKitApp;
-use cadkit_2d_core::EntityKind;
+use cadkit_2d_core::{EntityKind, Linetype};
 use cadkit_types::{Guid, Vec2};
 use eframe::egui;
 
@@ -535,6 +535,9 @@ impl CadKitApp {
             let mut start_edit: Option<(u32, String)> = None;
 
             let mut assign_entity_layer: Option<u32> = None;
+            let mut assign_entity_linetype: Option<Linetype> = None;
+            let mut assign_entity_linetype_bylayer: Option<bool> = None;
+            let mut assign_entity_linetype_scale: Option<Option<f64>> = None;
             let mut set_entity_bylayer = false;
             let mut open_entity_color_picker = false;
 
@@ -544,12 +547,39 @@ impl CadKitApp {
             if let Some(cur) = self.drawing.get_layer(self.current_layer) {
                 let c = cur.color;
                 let name = cur.name.clone();
+                let mut layer_lt = cur.linetype;
+                let mut layer_lts = cur.linetype_scale;
                 ui.horizontal(|ui| {
                     ui.label("Active:");
                     let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
                     ui.painter().rect_filled(rect, 2.0, egui::Color32::from_rgb(c[0], c[1], c[2]));
                     ui.label(egui::RichText::new(name).strong().color(egui::Color32::from_rgb(160, 210, 255)));
                 });
+                ui.horizontal(|ui| {
+                    ui.label("Layer LT:")
+                        .on_hover_text("Default linetype used by entities set to ByLayer.");
+                    egui::ComboBox::from_id_source("current_layer_linetype")
+                        .selected_text(layer_lt.as_str())
+                        .width(96.0)
+                        .show_ui(ui, |ui| {
+                            for lt in [Linetype::Continuous, Linetype::Hidden, Linetype::Center] {
+                                if ui.selectable_label(layer_lt == lt, lt.as_str()).clicked() {
+                                    layer_lt = lt;
+                                }
+                            }
+                        });
+                    ui.add(
+                        egui::DragValue::new(&mut layer_lts)
+                            .prefix("S ")
+                            .clamp_range(0.01..=1000.0)
+                            .speed(0.1),
+                    )
+                    .on_hover_text("Layer linetype scale. Used when entity LTScale is ByLayer.");
+                });
+                if let Some(l) = self.drawing.get_layer_mut(self.current_layer) {
+                    l.linetype = layer_lt;
+                    l.linetype_scale = layer_lts.clamp(0.01, 1000.0);
+                }
             }
             ui.add_space(2.0);
 
@@ -675,6 +705,13 @@ impl CadKitApp {
                         let mut color_mixed = false;
                         let mut common_layer: Option<u32> = None;
                         let mut layer_mixed = false;
+                        let mut common_linetype: Option<Linetype> = None;
+                        let mut linetype_mixed = false;
+                        let mut common_linetype_by_layer: Option<bool> = None;
+                        let mut linetype_bylayer_mixed = false;
+                        let mut common_linetype_scale: Option<Option<f64>> = None;
+                        let mut linetype_scale_mixed = false;
+                        let mut linetype_supported = true;
 
                         for id in &self.selected_entities {
                             if let Some(e) = self.drawing.get_entity(id) {
@@ -687,6 +724,30 @@ impl CadKitApp {
                                     None => common_layer = Some(e.layer),
                                     Some(l) if l == e.layer => {}
                                     _ => layer_mixed = true,
+                                }
+                                match common_linetype {
+                                    None => common_linetype = Some(e.linetype),
+                                    Some(lt) if lt == e.linetype => {}
+                                    _ => linetype_mixed = true,
+                                }
+                                match common_linetype_by_layer {
+                                    None => common_linetype_by_layer = Some(e.linetype_by_layer),
+                                    Some(v) if v == e.linetype_by_layer => {}
+                                    _ => linetype_bylayer_mixed = true,
+                                }
+                                match common_linetype_scale {
+                                    None => common_linetype_scale = Some(e.linetype_scale),
+                                    Some(v) if v == e.linetype_scale => {}
+                                    _ => linetype_scale_mixed = true,
+                                }
+                                if !matches!(
+                                    e.kind,
+                                    EntityKind::Line { .. }
+                                        | EntityKind::Circle { .. }
+                                        | EntityKind::Arc { .. }
+                                        | EntityKind::Polyline { .. }
+                                ) {
+                                    linetype_supported = false;
                                 }
                             }
                         }
@@ -842,6 +903,96 @@ impl CadKitApp {
                                     }
                                 });
                         });
+
+                        if linetype_supported {
+                            let linetype_display = if linetype_bylayer_mixed || linetype_mixed {
+                                "*varies*".to_string()
+                            } else if common_linetype_by_layer == Some(true) {
+                                "ByLayer".to_string()
+                            } else {
+                                common_linetype
+                                    .unwrap_or(Linetype::Continuous)
+                                    .as_str()
+                                    .to_string()
+                            };
+                            ui.horizontal(|ui| {
+                                ui.label("Linetype:")
+                                    .on_hover_text("ByLayer uses the layer linetype. Other values override per entity.");
+                                egui::ComboBox::from_id_source("prop_linetype_combo")
+                                    .selected_text(linetype_display)
+                                    .width(110.0)
+                                    .show_ui(ui, |ui| {
+                                        let selected_bylayer = !linetype_bylayer_mixed
+                                            && common_linetype_by_layer == Some(true);
+                                        if ui.selectable_label(selected_bylayer, "ByLayer").clicked() {
+                                            assign_entity_linetype_bylayer = Some(true);
+                                        }
+                                        let choices = [
+                                            Linetype::Continuous,
+                                            Linetype::Hidden,
+                                            Linetype::Center,
+                                        ];
+                                        for lt in choices {
+                                            let selected = !linetype_bylayer_mixed
+                                                && common_linetype_by_layer == Some(false)
+                                                && !linetype_mixed
+                                                && common_linetype == Some(lt);
+                                            if ui.selectable_label(selected, lt.as_str()).clicked() {
+                                                assign_entity_linetype_bylayer = Some(false);
+                                                assign_entity_linetype = Some(lt);
+                                            }
+                                        }
+                                    });
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("LTScale:")
+                                    .on_hover_text("ByLayer uses the layer LT scale. Numeric value overrides per entity.");
+                                if linetype_scale_mixed {
+                                    ui.label(
+                                        egui::RichText::new("varies")
+                                            .small()
+                                            .color(egui::Color32::from_gray(120)),
+                                    );
+                                } else if common_linetype_scale == Some(None) {
+                                    ui.label(
+                                        egui::RichText::new("ByLayer")
+                                            .small()
+                                            .color(egui::Color32::from_gray(120)),
+                                    );
+                                }
+                                if ui
+                                    .small_button("ByLayer")
+                                    .on_hover_text("Use layer linetype scale for selected entities.")
+                                    .clicked()
+                                {
+                                    assign_entity_linetype_scale = Some(None);
+                                }
+                                let mut lt_scale_edit = common_linetype_scale
+                                    .flatten()
+                                    .or_else(|| {
+                                        common_layer.and_then(|lid| {
+                                            self.drawing.get_layer(lid).map(|l| l.linetype_scale)
+                                        })
+                                    })
+                                    .unwrap_or(1.0);
+                                if ui
+                                    .add(
+                                        egui::DragValue::new(&mut lt_scale_edit)
+                                            .clamp_range(0.01..=1000.0)
+                                            .speed(0.1),
+                                    )
+                                    .changed()
+                                {
+                                    assign_entity_linetype_scale =
+                                        Some(Some(lt_scale_edit.clamp(0.01, 1000.0)));
+                                }
+                            });
+                        } else {
+                            ui.horizontal(|ui| {
+                                ui.label("Linetype:");
+                                ui.label(egui::RichText::new("N/A").color(egui::Color32::from_gray(120)));
+                            });
+                        }
 
                         let entity_custom_color: Option<[u8; 3]> = if color_mixed {
                             None
@@ -1008,6 +1159,34 @@ impl CadKitApp {
                 }
             }
 
+            if let Some(lt) = assign_entity_linetype {
+                let requested: Vec<Guid> = self.selected_entities.iter().copied().collect();
+                let ids = self.filter_editable_entity_ids(&requested, "PROPERTIES");
+                for id in &ids {
+                    if let Some(e) = self.drawing.get_entity_mut(id) {
+                        e.linetype = lt;
+                    }
+                }
+            }
+            if let Some(bylayer) = assign_entity_linetype_bylayer {
+                let requested: Vec<Guid> = self.selected_entities.iter().copied().collect();
+                let ids = self.filter_editable_entity_ids(&requested, "PROPERTIES");
+                for id in &ids {
+                    if let Some(e) = self.drawing.get_entity_mut(id) {
+                        e.linetype_by_layer = bylayer;
+                    }
+                }
+            }
+            if let Some(scale_override) = assign_entity_linetype_scale {
+                let requested: Vec<Guid> = self.selected_entities.iter().copied().collect();
+                let ids = self.filter_editable_entity_ids(&requested, "PROPERTIES");
+                for id in &ids {
+                    if let Some(e) = self.drawing.get_entity_mut(id) {
+                        e.linetype_scale = scale_override;
+                    }
+                }
+            }
+
             if set_entity_bylayer {
                 let requested: Vec<Guid> = self.selected_entities.iter().copied().collect();
                 let ids = self.filter_editable_entity_ids(&requested, "PROPERTIES");
@@ -1064,6 +1243,19 @@ impl CadKitApp {
                                     .speed(0.5)
                                     .suffix("\""),
                             );
+                            ui.separator();
+                            ui.label("LT Scale");
+                            let mut lt = self.drawing.linetype_scale;
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut lt)
+                                        .clamp_range(0.01..=1000.0)
+                                        .speed(0.1),
+                                )
+                                .changed()
+                            {
+                                self.drawing.linetype_scale = lt.clamp(0.01, 1000.0);
+                            }
                             ui.separator();
                             ui.label(format!("Zoom: {:.2}x  Pan: ({:.2}, {:.2})", zoom, pan_x, pan_y));
                             if let Some(world) = self.hover_world_pos {

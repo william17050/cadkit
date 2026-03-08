@@ -117,6 +117,13 @@ cargo test --workspace
 cargo test -p cadkit-types
 ```
 
+## Linetype Controls (ByLayer + Override)
+- **Global scale**: `LTS` or `LTSCALE` changes overall dash size multiplier.
+- **Layer defaults**: In the right panel, active layer has `Layer LT` and `S` (layer LT scale).
+- **Per-entity linetype**: In Properties, set `Linetype` to `ByLayer` or a direct value (`Continuous`, `Hidden`, `Center`).
+- **Per-entity LT scale**: In Properties, set `LTScale` to `ByLayer` or type a numeric override.
+- Effective dash size is: `global LTSCALE * (entity LTScale override or layer LT scale)`.
+
 ## Project Status
 **Current**: Interactive 2D drafting MVP — command-line tools, snaps, layers, undo/redo, DXF IO, linear dimensions.
 **Next Milestone**: Dim text via egui font + DimStyle dialog + TEXT placement command.

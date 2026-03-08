@@ -38,7 +38,7 @@
 
 ---
 
-## Phase 2: Annotations & Precision (Q2 2026) — **In Progress**
+## Phase 2: Annotations & Precision (Q2 2026) — **Done**
 
 ### Milestone 2.1: Linear Dimensions
 - [x] `DimLinear` entity kind in 2d-core
@@ -103,6 +103,11 @@
 - [x] Perpendicular / parallel tracking snaps
 - [x] Preference persistence (last file, grid spacing, snap/ortho/grid, dim style)
 - [x] Recent files list in File menu
+- [x] Basic linetypes (Continuous / Hidden / Center) for line-based entities
+- [x] Global linetype scale command (`LTS` / `LTSCALE`)
+- [x] Layer linetype + layer LT scale style controls
+- [x] Per-entity `ByLayer` linetype with per-entity override
+- [x] Per-entity `ByLayer` LT scale with numeric override
 
 ---
 

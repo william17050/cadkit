@@ -82,6 +82,12 @@ fn point_seg_dist2(p: Vec2, a: Vec2, b: Vec2) -> f64 {
     ex * ex + ey * ey
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OrthoAxis {
+    Horizontal,
+    Vertical,
+}
+
 /// Given an entity kind and a click world position, return the nearest line segment (start, end).
 /// Supports Line and Polyline entities only; returns `None` otherwise.
 fn dim_angular_pick_segment(kind: &EntityKind, click: Vec2) -> Option<(Vec2, Vec2)> {
@@ -192,6 +198,9 @@ struct AssocArraySource {
     kind: EntityKind,
     layer: u32,
     color: Option<[u8; 3]>,
+    linetype: cadkit_2d_core::Linetype,
+    linetype_by_layer: bool,
+    linetype_scale: Option<f64>,
 }
 
 #[derive(Clone, Debug)]
@@ -2136,7 +2145,12 @@ impl CadKitApp {
                     },
                 };
                 let layer = entity.layer;
-                self.drawing.add_entity(Entity::new(new_kind, layer));
+                let mut out = Entity::new(new_kind, layer);
+                out.color = entity.color;
+                out.linetype = entity.linetype;
+                out.linetype_by_layer = entity.linetype_by_layer;
+                out.linetype_scale = entity.linetype_scale;
+                self.drawing.add_entity(out);
                 count += 1;
             }
         }
@@ -2531,6 +2545,9 @@ impl CadKitApp {
                         kind: src.kind.clone(),
                         layer: src.layer,
                         color: src.color,
+                        linetype: src.linetype,
+                        linetype_by_layer: src.linetype_by_layer,
+                        linetype_scale: src.linetype_scale,
                     });
                 }
             }
@@ -2559,6 +2576,9 @@ impl CadKitApp {
                     let kind = Self::clone_kind_translated(&src.kind, ox, oy);
                     let mut e = Entity::new(kind, src.layer);
                     e.color = src.color;
+                    e.linetype = src.linetype;
+                    e.linetype_by_layer = src.linetype_by_layer;
+                    e.linetype_scale = src.linetype_scale;
                     let id = self.drawing.add_entity(e);
                     members.push(id);
                     self.assoc_member_to_array.insert(id, array_id);
@@ -2636,7 +2656,12 @@ impl CadKitApp {
             for id in &ids {
                 if let Some(src) = self.drawing.get_entity(id) {
                     let kind = Self::clone_kind_rotated(&src.kind, center, ang);
-                    self.drawing.add_entity(Entity::new(kind, src.layer));
+                    let mut out = Entity::new(kind, src.layer);
+                    out.color = src.color;
+                    out.linetype = src.linetype;
+                    out.linetype_by_layer = src.linetype_by_layer;
+                    out.linetype_scale = src.linetype_scale;
+                    self.drawing.add_entity(out);
                     created += 1;
                 }
             }
@@ -5828,6 +5853,9 @@ impl CadKitApp {
                     kind: entity.kind.clone(),
                     layer: entity.layer,
                     color: entity.color,
+                    linetype: entity.linetype,
+                    linetype_by_layer: entity.linetype_by_layer,
+                    linetype_scale: entity.linetype_scale,
                 })
                 .collect()
         };
@@ -6928,6 +6956,9 @@ impl eframe::App for CadKitApp {
                                 ("LA / LAYER",  "",  "Manage layers (see right panel)"),
                                 ("OSNAP",       "",  "Toggle object snap; OSNAP ON/OFF"),
                                 ("OSMODE",      "",  "Set/get object snap bitmask (e.g., OSMODE 175)"),
+                                ("LTS / LTSCALE", "", "Set/get linetype scale (global dash size)"),
+                                ("ByLayer LT",  "",  "Entity Properties -> Linetype: ByLayer uses layer linetype"),
+                                ("ByLayer LTS", "",  "Entity Properties -> LTScale: ByLayer uses layer LT scale"),
                             ] {
                                 ui.label(egui::RichText::new(alias).strong());
                                 ui.label(full);
@@ -8658,10 +8689,31 @@ impl eframe::App for CadKitApp {
 
                             let local = pointer_pos - response.rect.min;
                             let raw_world = screen_to_world(local.x, local.y, viewport);
+                            let ortho_base = if self.dim_grip_drag.is_none()
+                                && matches!(self.from_phase, FromPhase::Idle)
+                            {
+                                self.ortho_snap_base_point()
+                            } else {
+                                None
+                            };
+
                             let (hover_pick, mut world) = if let Some(handle) = self.dim_grip_drag {
                                 let (w, kind) =
                                     self.snapped_world_for_grip_drag(handle, viewport, response.rect, pointer_pos);
                                 let w = self.constrained_dim_grip_world(handle, w);
+                                self.hover_snap_kind = kind;
+                                if kind == Some(SnapKind::Intersection) {
+                                    self.snap_intersection_point = Some(w);
+                                }
+                                (None, w)
+                            } else if let Some(base) = ortho_base {
+                                let (w, kind) = self.resolve_ortho_snap_for_line_like(
+                                    viewport,
+                                    response.rect,
+                                    pointer_pos,
+                                    base,
+                                    raw_world,
+                                );
                                 self.hover_snap_kind = kind;
                                 if kind == Some(SnapKind::Intersection) {
                                     self.snap_intersection_point = Some(w);
@@ -8789,6 +8841,7 @@ impl eframe::App for CadKitApp {
                             // Intersection snap (priority 2: below entity point, above perp/tangent/nearest).
                             if hover_pick.is_none()
                                 && self.dim_grip_drag.is_none()
+                                && ortho_base.is_none()
                                 && self.snap_enabled
                                 && self.snap_intersection
                             {
@@ -8802,6 +8855,7 @@ impl eframe::App for CadKitApp {
                             // Parallel/perpendicular tracking (priority 3).
                             if hover_pick.is_none()
                                 && self.dim_grip_drag.is_none()
+                                && ortho_base.is_none()
                                 && self.snap_intersection_point.is_none()
                                 && self.hover_snap_kind.is_none()
                                 && self.snap_enabled
@@ -8820,6 +8874,7 @@ impl eframe::App for CadKitApp {
                             // Perpendicular snap (priority 4: foot on entity from last placed point).
                             if hover_pick.is_none()
                                 && self.dim_grip_drag.is_none()
+                                && ortho_base.is_none()
                                 && self.snap_intersection_point.is_none()
                                 && self.hover_snap_kind.is_none()
                                 && self.snap_enabled
@@ -8836,6 +8891,7 @@ impl eframe::App for CadKitApp {
                             // Tangent snap (priority 5: tangent point on circle/arc from last placed point).
                             if hover_pick.is_none()
                                 && self.dim_grip_drag.is_none()
+                                && ortho_base.is_none()
                                 && self.snap_intersection_point.is_none()
                                 && self.hover_snap_kind.is_none()
                                 && self.snap_enabled
@@ -8852,6 +8908,7 @@ impl eframe::App for CadKitApp {
                             // Nearest snap (priority 6: closest point on any entity curve).
                             if hover_pick.is_none()
                                 && self.dim_grip_drag.is_none()
+                                && ortho_base.is_none()
                                 && self.snap_intersection_point.is_none()
                                 && self.hover_snap_kind.is_none()
                                 && self.snap_enabled
@@ -9029,17 +9086,24 @@ impl eframe::App for CadKitApp {
                             (ui.input(|i| i.pointer.hover_pos()), self.viewport.as_ref())
                         {
                             if self.snap_enabled || matches!(self.active_tool, ActiveTool::None) {
+                                let ortho_snap_mode = self.ortho_snap_base_point().is_some();
                                 if self.dim_grip_drag.is_none() {
-                                    if let Some((candidate, kind)) =
+                                    if !ortho_snap_mode {
+                                        if let Some((candidate, kind)) =
                                         self.pick_entity_point(viewport, response.rect, pointer_pos)
-                                    {
-                                        Self::draw_snap_glyph(
-                                            ui,
-                                            response.rect,
-                                            viewport,
-                                            candidate.world,
-                                            kind,
-                                        );
+                                        {
+                                            Self::draw_snap_glyph(
+                                                ui,
+                                                response.rect,
+                                                viewport,
+                                                candidate.world,
+                                                kind,
+                                            );
+                                        } else if let Some(snap_kind) = self.hover_snap_kind {
+                                            if let Some(world) = self.hover_world_pos {
+                                                Self::draw_snap_glyph(ui, response.rect, viewport, world, snap_kind);
+                                            }
+                                        }
                                     } else if let Some(snap_kind) = self.hover_snap_kind {
                                         if let Some(world) = self.hover_world_pos {
                                             Self::draw_snap_glyph(ui, response.rect, viewport, world, snap_kind);
@@ -9063,21 +9127,36 @@ impl eframe::App for CadKitApp {
                                     let local = click_pos - response.rect.min;
                                     let raw_world =
                                         screen_to_world(local.x, local.y, viewport);
-                                let pick = if self.snap_enabled {
+                                let ortho_base = if matches!(self.from_phase, FromPhase::Idle) {
+                                    self.ortho_snap_base_point()
+                                } else {
+                                    None
+                                };
+                                let pick = if ortho_base.is_none() && self.snap_enabled {
                                     self.pick_entity_point(viewport, response.rect, click_pos)
                                 } else {
                                     None
                                 };
-                                    let mut world = pick
-                                        .as_ref()
-                                        .map(|(s, _)| s.world)
-                                        .unwrap_or_else(|| {
-                                            if self.snap_enabled && self.grid_visible {
-                                                self.snap_to_grid(raw_world)
-                                            } else {
-                                                raw_world
-                                            }
-                                        });
+                                    let mut world = if let Some(base) = ortho_base {
+                                        self.resolve_ortho_snap_for_line_like(
+                                            viewport,
+                                            response.rect,
+                                            click_pos,
+                                            base,
+                                            raw_world,
+                                        )
+                                        .0
+                                    } else {
+                                        pick.as_ref()
+                                            .map(|(s, _)| s.world)
+                                            .unwrap_or_else(|| {
+                                                if self.snap_enabled && self.grid_visible {
+                                                    self.snap_to_grid(raw_world)
+                                                } else {
+                                                    raw_world
+                                                }
+                                            })
+                                    };
 
                                     // Apply tool snapping if no pick override.
                                     // Skip during FROM mode: the FROM base/offset owns the click position.
@@ -10680,6 +10759,322 @@ impl CadKitApp {
             ActiveTool::Polyline { points } if !points.is_empty() => points.last().copied(),
             _ => None,
         }
+    }
+
+    fn ortho_snap_base_point(&self) -> Option<Vec2> {
+        if !self.ortho_enabled {
+            return None;
+        }
+        match &self.active_tool {
+            ActiveTool::Line { start: Some(s) } => Some(*s),
+            ActiveTool::Polyline { points } if !points.is_empty() => points.last().copied(),
+            _ => None,
+        }
+    }
+
+    fn ortho_axis_from_cursor(base: Vec2, cursor: Vec2) -> OrthoAxis {
+        let dx = (cursor.x - base.x).abs();
+        let dy = (cursor.y - base.y).abs();
+        if dx >= dy {
+            OrthoAxis::Horizontal
+        } else {
+            OrthoAxis::Vertical
+        }
+    }
+
+    fn project_to_ortho_axis(base: Vec2, cursor: Vec2, axis: OrthoAxis) -> Vec2 {
+        match axis {
+            OrthoAxis::Horizontal => Vec2::new(cursor.x, base.y),
+            OrthoAxis::Vertical => Vec2::new(base.x, cursor.y),
+        }
+    }
+
+    fn ortho_axis_world_tolerance(viewport: &Viewport, rect: egui::Rect) -> f64 {
+        let p0 = screen_to_world(0.0, 0.0, viewport);
+        let px = screen_to_world(Self::PICK_RADIUS, 0.0, viewport);
+        let py = screen_to_world(0.0, Self::PICK_RADIUS, viewport);
+        let wx = (px.x - p0.x).abs();
+        let wy = (py.y - p0.y).abs();
+        wx.max(wy).max(1e-6).max((rect.width() as f64).recip())
+    }
+
+    fn point_on_ortho_axis(base: Vec2, axis: OrthoAxis, pt: Vec2, tol: f64) -> bool {
+        match axis {
+            OrthoAxis::Horizontal => (pt.y - base.y).abs() <= tol,
+            OrthoAxis::Vertical => (pt.x - base.x).abs() <= tol,
+        }
+    }
+
+    fn ortho_line_intersections(
+        &self,
+        base: Vec2,
+        axis: OrthoAxis,
+    ) -> Vec<Vec2> {
+        const INF: f64 = 1_000_000.0;
+        let (s, e) = match axis {
+            OrthoAxis::Horizontal => (
+                Vec3::xy(base.x - INF, base.y),
+                Vec3::xy(base.x + INF, base.y),
+            ),
+            OrthoAxis::Vertical => (
+                Vec3::xy(base.x, base.y - INF),
+                Vec3::xy(base.x, base.y + INF),
+            ),
+        };
+        let ortho = GeomPrim::Line(GeomLine::new(s, e));
+        let mut points: Vec<Vec2> = Vec::new();
+        for entity in self.drawing.visible_entities() {
+            let Some(other) = Self::entity_to_geom_prim(&entity.kind) else {
+                continue;
+            };
+            let hit = Self::intersect_geom_prims(&ortho, &other, Self::GEOM_TOL);
+            for p in hit.points() {
+                points.push(Vec2::new(p.x, p.y));
+            }
+        }
+        points.sort_by(|a, b| {
+            let ax = a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal);
+            if ax == std::cmp::Ordering::Equal {
+                a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal)
+            } else {
+                ax
+            }
+        });
+        points.dedup_by(|a, b| (a.x - b.x).abs() <= Self::GEOM_TOL && (a.y - b.y).abs() <= Self::GEOM_TOL);
+        points
+    }
+
+    fn add_ranked_ortho_candidate(
+        best: &mut Option<(u8, f32, Vec2, SnapKind)>,
+        viewport: &Viewport,
+        rect: egui::Rect,
+        screen_pos: egui::Pos2,
+        rank: u8,
+        world: Vec2,
+        kind: SnapKind,
+    ) {
+        let (sx, sy) = world_to_screen(world.x as f32, world.y as f32, viewport);
+        let pos = rect.min + egui::vec2(sx, sy);
+        let dist = pos.distance(screen_pos);
+        match best {
+            Some((best_rank, best_dist, _, _))
+                if rank > *best_rank || (rank == *best_rank && dist >= *best_dist) => {}
+            _ => {
+                *best = Some((rank, dist, world, kind));
+            }
+        }
+    }
+
+    fn resolve_ortho_snap_for_line_like(
+        &self,
+        viewport: &Viewport,
+        rect: egui::Rect,
+        screen_pos: egui::Pos2,
+        base: Vec2,
+        raw_world: Vec2,
+    ) -> (Vec2, Option<SnapKind>) {
+        let axis = Self::ortho_axis_from_cursor(base, raw_world);
+        let raw_ortho = Self::project_to_ortho_axis(base, raw_world, axis);
+        if !self.snap_enabled {
+            return (raw_ortho, None);
+        }
+
+        let tol = Self::ortho_axis_world_tolerance(viewport, rect);
+        let mut best: Option<(u8, f32, Vec2, SnapKind)> = None;
+
+        for entity in self.drawing.visible_entities() {
+            match &entity.kind {
+                EntityKind::Line { start, end } => {
+                    if self.snap_endpoint {
+                        let s: Vec2 = (*start).into();
+                        let e: Vec2 = (*end).into();
+                        if Self::point_on_ortho_axis(base, axis, s, tol) {
+                            Self::add_ranked_ortho_candidate(
+                                &mut best, viewport, rect, screen_pos, 0, s, SnapKind::Endpoint,
+                            );
+                        }
+                        if Self::point_on_ortho_axis(base, axis, e, tol) {
+                            Self::add_ranked_ortho_candidate(
+                                &mut best, viewport, rect, screen_pos, 0, e, SnapKind::Endpoint,
+                            );
+                        }
+                    }
+                    if self.snap_midpoint {
+                        let s: Vec2 = (*start).into();
+                        let e: Vec2 = (*end).into();
+                        let m = Vec2::new((s.x + e.x) * 0.5, (s.y + e.y) * 0.5);
+                        if Self::point_on_ortho_axis(base, axis, m, tol) {
+                            Self::add_ranked_ortho_candidate(
+                                &mut best, viewport, rect, screen_pos, 2, m, SnapKind::Midpoint,
+                            );
+                        }
+                    }
+                }
+                EntityKind::Arc { center, radius, start_angle, end_angle } => {
+                    let c: Vec2 = (*center).into();
+                    if self.snap_endpoint {
+                        let ps = Vec2::new(c.x + radius * start_angle.cos(), c.y + radius * start_angle.sin());
+                        let pe = Vec2::new(c.x + radius * end_angle.cos(), c.y + radius * end_angle.sin());
+                        if Self::point_on_ortho_axis(base, axis, ps, tol) {
+                            Self::add_ranked_ortho_candidate(
+                                &mut best, viewport, rect, screen_pos, 0, ps, SnapKind::Endpoint,
+                            );
+                        }
+                        if Self::point_on_ortho_axis(base, axis, pe, tol) {
+                            Self::add_ranked_ortho_candidate(
+                                &mut best, viewport, rect, screen_pos, 0, pe, SnapKind::Endpoint,
+                            );
+                        }
+                    }
+                    if self.snap_midpoint {
+                        let a = start_angle + (end_angle - start_angle) * 0.5;
+                        let pm = Vec2::new(c.x + radius * a.cos(), c.y + radius * a.sin());
+                        if Self::point_on_ortho_axis(base, axis, pm, tol) {
+                            Self::add_ranked_ortho_candidate(
+                                &mut best, viewport, rect, screen_pos, 2, pm, SnapKind::Midpoint,
+                            );
+                        }
+                    }
+                    if self.snap_center && Self::point_on_ortho_axis(base, axis, c, tol) {
+                        Self::add_ranked_ortho_candidate(
+                            &mut best, viewport, rect, screen_pos, 3, c, SnapKind::Center,
+                        );
+                    }
+                }
+                EntityKind::Circle { center, .. } => {
+                    let c: Vec2 = (*center).into();
+                    if self.snap_center && Self::point_on_ortho_axis(base, axis, c, tol) {
+                        Self::add_ranked_ortho_candidate(
+                            &mut best, viewport, rect, screen_pos, 3, c, SnapKind::Center,
+                        );
+                    }
+                }
+                EntityKind::Polyline { vertices, closed } => {
+                    if vertices.is_empty() {
+                        continue;
+                    }
+                    if self.snap_endpoint {
+                        for v in vertices.iter() {
+                            let p: Vec2 = (*v).into();
+                            if Self::point_on_ortho_axis(base, axis, p, tol) {
+                                Self::add_ranked_ortho_candidate(
+                                    &mut best, viewport, rect, screen_pos, 0, p, SnapKind::Endpoint,
+                                );
+                            }
+                        }
+                    }
+                    if self.snap_midpoint {
+                        let mut add_seg_mid = |a: Vec2, b: Vec2| {
+                            let m = Vec2::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5);
+                            if Self::point_on_ortho_axis(base, axis, m, tol) {
+                                Self::add_ranked_ortho_candidate(
+                                    &mut best, viewport, rect, screen_pos, 2, m, SnapKind::Midpoint,
+                                );
+                            }
+                        };
+                        for seg in vertices.windows(2) {
+                            let a: Vec2 = seg[0].into();
+                            let b: Vec2 = seg[1].into();
+                            add_seg_mid(a, b);
+                        }
+                        if *closed && vertices.len() >= 2 {
+                            let a: Vec2 = vertices[vertices.len() - 1].into();
+                            let b: Vec2 = vertices[0].into();
+                            add_seg_mid(a, b);
+                        }
+                    }
+                }
+                EntityKind::DimAligned { start, end, .. }
+                | EntityKind::DimLinear { start, end, .. } => {
+                    if self.snap_endpoint {
+                        let s: Vec2 = (*start).into();
+                        let e: Vec2 = (*end).into();
+                        if Self::point_on_ortho_axis(base, axis, s, tol) {
+                            Self::add_ranked_ortho_candidate(
+                                &mut best, viewport, rect, screen_pos, 0, s, SnapKind::Endpoint,
+                            );
+                        }
+                        if Self::point_on_ortho_axis(base, axis, e, tol) {
+                            Self::add_ranked_ortho_candidate(
+                                &mut best, viewport, rect, screen_pos, 0, e, SnapKind::Endpoint,
+                            );
+                        }
+                    }
+                    if self.snap_midpoint {
+                        let s: Vec2 = (*start).into();
+                        let e: Vec2 = (*end).into();
+                        let m = Vec2::new((s.x + e.x) * 0.5, (s.y + e.y) * 0.5);
+                        if Self::point_on_ortho_axis(base, axis, m, tol) {
+                            Self::add_ranked_ortho_candidate(
+                                &mut best, viewport, rect, screen_pos, 2, m, SnapKind::Midpoint,
+                            );
+                        }
+                    }
+                }
+                EntityKind::DimAngular { vertex, .. } => {
+                    if self.snap_center {
+                        let c: Vec2 = (*vertex).into();
+                        if Self::point_on_ortho_axis(base, axis, c, tol) {
+                            Self::add_ranked_ortho_candidate(
+                                &mut best, viewport, rect, screen_pos, 3, c, SnapKind::Center,
+                            );
+                        }
+                    }
+                }
+                EntityKind::DimRadial { center, .. } => {
+                    if self.snap_center {
+                        let c: Vec2 = (*center).into();
+                        if Self::point_on_ortho_axis(base, axis, c, tol) {
+                            Self::add_ranked_ortho_candidate(
+                                &mut best, viewport, rect, screen_pos, 3, c, SnapKind::Center,
+                            );
+                        }
+                    }
+                }
+                EntityKind::Text { position, .. } => {
+                    if self.snap_endpoint {
+                        let p: Vec2 = (*position).into();
+                        if Self::point_on_ortho_axis(base, axis, p, tol) {
+                            Self::add_ranked_ortho_candidate(
+                                &mut best, viewport, rect, screen_pos, 0, p, SnapKind::Endpoint,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        if self.snap_intersection {
+            for p in self.ortho_line_intersections(base, axis) {
+                if Self::point_on_ortho_axis(base, axis, p, tol) {
+                    Self::add_ranked_ortho_candidate(
+                        &mut best, viewport, rect, screen_pos, 1, p, SnapKind::Intersection,
+                    );
+                }
+            }
+        }
+
+        if self.snap_perpendicular {
+            if let Some(p) = self.perpendicular_snap(viewport, rect, screen_pos, base) {
+                if Self::point_on_ortho_axis(base, axis, p, tol) {
+                    Self::add_ranked_ortho_candidate(
+                        &mut best, viewport, rect, screen_pos, 4, p, SnapKind::Perpendicular,
+                    );
+                }
+            }
+        }
+
+        if self.snap_nearest {
+            if let Some(p) = self.nearest_entity_snap(viewport, rect, screen_pos) {
+                if Self::point_on_ortho_axis(base, axis, p, tol) {
+                    Self::add_ranked_ortho_candidate(
+                        &mut best, viewport, rect, screen_pos, 5, p, SnapKind::Nearest,
+                    );
+                }
+            }
+        }
+
+        best.map(|(_, _, p, k)| (p, Some(k))).unwrap_or((raw_ortho, None))
     }
 
     /// Track from `from_pt` to a point parallel/perpendicular to nearby line-like geometry.
