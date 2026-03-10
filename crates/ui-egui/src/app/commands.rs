@@ -6,8 +6,13 @@ use super::state::{
     TextPhase, TrimPhase,
 };
 use super::{create_arc_from_three_points, AiBackendMode, AiModelProfile, CadKitApp};
-use cadkit_2d_core::{create_circle, create_line};
-use cadkit_types::Vec2;
+use cadkit_2d_core::{
+    create_circle, create_line, ActionBinding, ActionKind, ActionTarget, AxisMask,
+    BlockAuthoredEntity, BlockBounds, BlockEntity, DynamicBlockDefinition, EntityBehavior,
+    EntityKind, ParameterAxis, ParameterDefinition, PlacementRule, ReferenceFrame,
+    RigidGroupDefinition, TargetRef,
+};
+use cadkit_types::{Guid, Vec2};
 use serde_json::json;
 use std::path::PathBuf;
 
@@ -236,12 +241,24 @@ impl CadKitApp {
             cmd.as_str(),
             "bmake"
                 | "block"
+                | "blockmake"
                 | "insert"
                 | "i"
+                | "insertblock"
                 | "bedit"
                 | "be"
                 | "bsave"
                 | "bcancel"
+                | "dynaddparam"
+                | "dynlistdef"
+                | "dynaddaction"
+                | "dynbindsel"
+                | "dynmakegroup"
+                | "dynbindgroup"
+                | "dynlist"
+                | "dynset"
+                | "dynclear"
+                | "dynclearall"
                 | "from"
                 | "fr"
         ) || self.block_phase != BlockPhase::Idle;
@@ -285,6 +302,717 @@ impl CadKitApp {
                         ));
                     }
                 }
+            }
+            return true;
+        }
+
+        if head == "insertblock" {
+            let raw_words: Vec<&str> = raw_trimmed.split_whitespace().collect();
+            if raw_words.len() < 2 || raw_words[1].trim().is_empty() {
+                self.command_log
+                    .push("INSERTBLOCK: Usage INSERTBLOCK <block_name>".to_string());
+                return true;
+            }
+            let name = raw_words[1].trim().to_string();
+            if self.drawing.get_block(&name).is_none() {
+                self.command_log
+                    .push(format!("INSERTBLOCK: Block '{}' not found", name));
+            } else {
+                self.insert_phase = InsertPhase::PickPoint { name: name.clone() };
+                self.command_log
+                    .push(format!("INSERTBLOCK: Pick insertion point for '{}'", name));
+            }
+            return true;
+        }
+
+        if head == "blockmake" {
+            let raw_words: Vec<&str> = raw_trimmed.split_whitespace().collect();
+            if raw_words.len() < 2 || raw_words[1].trim().is_empty() {
+                self.command_log
+                    .push("BLOCKMAKE: Usage BLOCKMAKE <block_name>".to_string());
+                return true;
+            }
+            let block_name = raw_words[1].trim().to_string();
+            let requested: Vec<Guid> = self.selected_entities.iter().copied().collect();
+            let ids = self.filter_editable_entity_ids(&requested, "BLOCKMAKE");
+            if ids.is_empty() {
+                self.command_log
+                    .push("BLOCKMAKE: Select source entities first".to_string());
+                return true;
+            }
+            let mut min_x = f64::INFINITY;
+            let mut min_y = f64::INFINITY;
+            let mut max_x = f64::NEG_INFINITY;
+            let mut max_y = f64::NEG_INFINITY;
+            let mut payload: Vec<BlockEntity> = Vec::new();
+            let mut authored: Vec<BlockAuthoredEntity> = Vec::new();
+            let mut source_map: std::collections::HashMap<Guid, Guid> =
+                std::collections::HashMap::new();
+            for id in &ids {
+                let Some(src) = self.drawing.get_entity(id) else {
+                    continue;
+                };
+                if let Some((x0, y0, x1, y1)) = self.entity_bounds_world_for_entity(src) {
+                    min_x = min_x.min(x0);
+                    min_y = min_y.min(y0);
+                    max_x = max_x.max(x1);
+                    max_y = max_y.max(y1);
+                }
+            }
+            if !min_x.is_finite() || !min_y.is_finite() || !max_x.is_finite() || !max_y.is_finite()
+            {
+                self.command_log
+                    .push("BLOCKMAKE: Could not compute source bounds".to_string());
+                return true;
+            }
+            let base = Vec2::new(min_x, min_y);
+            for id in &ids {
+                let Some(src) = self.drawing.get_entity(id) else {
+                    continue;
+                };
+                let local_kind = Self::clone_kind_translated(&src.kind, -base.x, -base.y);
+                let local_id = Guid::new();
+                payload.push(BlockEntity {
+                    kind: local_kind.clone(),
+                    layer: src.layer,
+                    color: src.color,
+                    linetype: src.linetype,
+                    linetype_by_layer: src.linetype_by_layer,
+                    linetype_scale: src.linetype_scale,
+                });
+                authored.push(BlockAuthoredEntity {
+                    local_entity_id: local_id,
+                    kind: local_kind,
+                    layer: src.layer,
+                });
+                source_map.insert(*id, local_id);
+            }
+            if payload.is_empty() {
+                self.command_log
+                    .push("BLOCKMAKE: No valid source entities".to_string());
+                return true;
+            }
+            let dynamic = Self::infer_block_dynamic_from_payload(&payload);
+            self.push_undo();
+            if !self.drawing.define_block(
+                block_name.clone(),
+                cadkit_types::Vec3::xy(base.x, base.y),
+                payload,
+                dynamic,
+            ) {
+                self.command_log
+                    .push("BLOCKMAKE: Failed to create block".to_string());
+                return true;
+            }
+            let dynamic_v1 = DynamicBlockDefinition {
+                block_name: block_name.clone(),
+                base_entities: authored,
+                base_bounds: BlockBounds {
+                    min: Vec2::new(0.0, 0.0),
+                    max: Vec2::new((max_x - min_x).max(0.0), (max_y - min_y).max(0.0)),
+                },
+                parameters: Vec::new(),
+                actions: Vec::new(),
+                groups: Vec::new(),
+            };
+            let _ = self
+                .drawing
+                .set_block_dynamic_v1(&block_name, Some(dynamic_v1));
+            self.dyn_block_source_entity_map
+                .insert(block_name.trim().to_ascii_lowercase(), source_map);
+            self.command_log.push(format!(
+                "BLOCKMAKE: '{}' created from {} entities (base {:.4},{:.4})",
+                block_name,
+                ids.len(),
+                base.x,
+                base.y
+            ));
+            return true;
+        }
+
+        if head == "dynaddparam" {
+            let raw_words: Vec<&str> = raw_trimmed.split_whitespace().collect();
+            if raw_words.len() < 8 {
+                self.command_log.push(
+                    "DYNADDPARAM: Usage DYNADDPARAM <block_name> <param_name> <axis:X|Y> <default> <min> <max> <step>"
+                        .to_string(),
+                );
+                return true;
+            }
+            let block_name = raw_words[1].trim();
+            let param_name = raw_words[2].trim();
+            let axis = match raw_words[3].trim().to_ascii_lowercase().as_str() {
+                "x" => ParameterAxis::X,
+                "y" => ParameterAxis::Y,
+                _ => {
+                    self.command_log
+                        .push("DYNADDPARAM: axis must be X or Y".to_string());
+                    return true;
+                }
+            };
+            let Ok(default_value) = raw_words[4].trim().parse::<f64>() else {
+                self.command_log
+                    .push("DYNADDPARAM: invalid default value".to_string());
+                return true;
+            };
+            let Ok(min_value) = raw_words[5].trim().parse::<f64>() else {
+                self.command_log
+                    .push("DYNADDPARAM: invalid min".to_string());
+                return true;
+            };
+            let Ok(max_value) = raw_words[6].trim().parse::<f64>() else {
+                self.command_log
+                    .push("DYNADDPARAM: invalid max".to_string());
+                return true;
+            };
+            let Ok(step) = raw_words[7].trim().parse::<f64>() else {
+                self.command_log
+                    .push("DYNADDPARAM: invalid step".to_string());
+                return true;
+            };
+            let Ok(mut dynv1) = self.ensure_dynamic_v1_for_block(block_name) else {
+                self.command_log
+                    .push(format!("DYNADDPARAM: Block '{}' not found", block_name));
+                return true;
+            };
+            if let Some(p) = dynv1
+                .parameters
+                .iter_mut()
+                .find(|p| p.name.eq_ignore_ascii_case(param_name))
+            {
+                p.axis = axis;
+                p.default_value = default_value;
+                p.min_value = min_value;
+                p.max_value = max_value;
+                p.step = step;
+                self.command_log.push(format!(
+                    "DYNADDPARAM: Updated '{}' on '{}'",
+                    p.name, block_name
+                ));
+            } else {
+                dynv1.parameters.push(ParameterDefinition {
+                    id: Guid::new(),
+                    name: param_name.to_string(),
+                    axis,
+                    default_value,
+                    min_value,
+                    max_value,
+                    step,
+                });
+                self.command_log.push(format!(
+                    "DYNADDPARAM: Added '{}' on '{}'",
+                    param_name, block_name
+                ));
+            }
+            let _ = self.drawing.set_block_dynamic_v1(block_name, Some(dynv1));
+            return true;
+        }
+
+        if head == "dynlistdef" {
+            let raw_words: Vec<&str> = raw_trimmed.split_whitespace().collect();
+            if raw_words.len() < 2 {
+                self.command_log
+                    .push("DYNLISTDEF: Usage DYNLISTDEF <block_name>".to_string());
+                return true;
+            }
+            let block_name = raw_words[1].trim();
+            let Some(dynv1) = self.drawing.get_block_dynamic_v1(block_name) else {
+                self.command_log.push(format!(
+                    "DYNLISTDEF: Block '{}' has no dynamic_v1 definition",
+                    block_name
+                ));
+                return true;
+            };
+            self.command_log
+                .push(format!("DYNLISTDEF: '{}'", block_name));
+            self.command_log.push("  Parameters:".to_string());
+            if dynv1.parameters.is_empty() {
+                self.command_log.push("    (none)".to_string());
+            } else {
+                for p in &dynv1.parameters {
+                    self.command_log.push(format!(
+                        "    {} [{}] default={:.4} min={:.4} max={:.4} step={:.4}",
+                        p.name,
+                        match p.axis {
+                            ParameterAxis::X => "X",
+                            ParameterAxis::Y => "Y",
+                        },
+                        p.default_value,
+                        p.min_value,
+                        p.max_value,
+                        p.step
+                    ));
+                }
+            }
+            self.command_log.push("  Actions:".to_string());
+            if dynv1.actions.is_empty() {
+                self.command_log.push("    (none)".to_string());
+            } else {
+                for a in &dynv1.actions {
+                    let pname = dynv1
+                        .parameters
+                        .iter()
+                        .find(|p| p.id == a.parameter_id)
+                        .map(|p| p.name.as_str())
+                        .unwrap_or("<unknown>");
+                    self.command_log.push(format!(
+                        "    action {} kind={:?} param={} order={} targets={}",
+                        a.id,
+                        a.action_kind,
+                        pname,
+                        a.order,
+                        a.targets.len()
+                    ));
+                    for t in &a.targets {
+                        self.command_log.push(format!(
+                            "      {:?} behavior={:?} frame={:?} placement={:?}",
+                            t.target, t.behavior, t.reference_frame, t.placement_rule
+                        ));
+                    }
+                }
+            }
+            self.command_log.push("  Groups:".to_string());
+            if dynv1.groups.is_empty() {
+                self.command_log.push("    (none)".to_string());
+            } else {
+                for g in &dynv1.groups {
+                    self.command_log
+                        .push(format!("    {} ({} members)", g.name, g.members.len()));
+                }
+            }
+            return true;
+        }
+
+        if head == "dynaddaction" {
+            let raw_words: Vec<&str> = raw_trimmed.split_whitespace().collect();
+            if raw_words.len() < 4 {
+                self.command_log.push(
+                    "DYNADDACTION: Usage DYNADDACTION <block_name> <param_name> <move|anchor|stretch|visibility>"
+                        .to_string(),
+                );
+                return true;
+            }
+            let block_name = raw_words[1].trim();
+            let param_name = raw_words[2].trim();
+            let action_kind = match raw_words[3].trim().to_ascii_lowercase().as_str() {
+                "move" => ActionKind::Move,
+                "anchor" => ActionKind::Anchor,
+                "stretch" => ActionKind::Stretch,
+                "visibility" => ActionKind::Visibility,
+                _ => {
+                    self.command_log
+                        .push("DYNADDACTION: invalid action kind".to_string());
+                    return true;
+                }
+            };
+            let Ok(mut dynv1) = self.ensure_dynamic_v1_for_block(block_name) else {
+                self.command_log
+                    .push(format!("DYNADDACTION: Block '{}' not found", block_name));
+                return true;
+            };
+            let Some(param) = dynv1
+                .parameters
+                .iter()
+                .find(|p| p.name.eq_ignore_ascii_case(param_name))
+            else {
+                self.command_log
+                    .push(format!("DYNADDACTION: Unknown parameter '{}'", param_name));
+                return true;
+            };
+            let next_order = dynv1.actions.iter().map(|a| a.order).max().unwrap_or(-1) + 1;
+            let action = ActionBinding {
+                id: Guid::new(),
+                parameter_id: param.id,
+                action_kind,
+                targets: Vec::new(),
+                order: next_order,
+            };
+            let action_id = action.id;
+            dynv1.actions.push(action);
+            let _ = self.drawing.set_block_dynamic_v1(block_name, Some(dynv1));
+            self.command_log.push(format!(
+                "DYNADDACTION: Added action {} for '{}' on '{}'",
+                action_id, param_name, block_name
+            ));
+            return true;
+        }
+
+        if head == "dynmakegroup" {
+            let raw_words: Vec<&str> = raw_trimmed.split_whitespace().collect();
+            if raw_words.len() < 3 {
+                self.command_log
+                    .push("DYNMAKEGROUP: Usage DYNMAKEGROUP <block_name> <group_name>".to_string());
+                return true;
+            }
+            let block_name = raw_words[1].trim();
+            let group_name = raw_words[2].trim();
+            let Ok(local_ids) = self.selected_local_ids_for_block(block_name) else {
+                self.command_log.push(format!(
+                    "DYNMAKEGROUP: {}",
+                    "No bindable selected source entities for this block"
+                ));
+                return true;
+            };
+            if local_ids.is_empty() {
+                self.command_log
+                    .push("DYNMAKEGROUP: No bindable selected entities".to_string());
+                return true;
+            }
+            let Ok(mut dynv1) = self.ensure_dynamic_v1_for_block(block_name) else {
+                self.command_log
+                    .push(format!("DYNMAKEGROUP: Block '{}' not found", block_name));
+                return true;
+            };
+            if let Some(g) = dynv1
+                .groups
+                .iter_mut()
+                .find(|g| g.name.eq_ignore_ascii_case(group_name))
+            {
+                g.members = local_ids;
+            } else {
+                dynv1.groups.push(RigidGroupDefinition {
+                    id: Guid::new(),
+                    name: group_name.to_string(),
+                    members: local_ids,
+                });
+            }
+            let _ = self.drawing.set_block_dynamic_v1(block_name, Some(dynv1));
+            self.command_log.push(format!(
+                "DYNMAKEGROUP: Group '{}' saved on '{}'",
+                group_name, block_name
+            ));
+            return true;
+        }
+
+        if head == "dynbindgroup" {
+            let raw_words: Vec<&str> = raw_trimmed.split_whitespace().collect();
+            if raw_words.len() < 7 {
+                self.command_log.push(
+                    "DYNBINDGROUP: Usage DYNBINDGROUP <block_name> <param_name> <group_name> <behavior> <frame> <keepdefault|offset:<v>|<v>>"
+                        .to_string(),
+                );
+                return true;
+            }
+            let block_name = raw_words[1].trim();
+            let param_name = raw_words[2].trim();
+            let group_name = raw_words[3].trim();
+            let Some(behavior) = Self::parse_dyn_behavior(raw_words[4].trim()) else {
+                self.command_log
+                    .push("DYNBINDGROUP: invalid behavior".to_string());
+                return true;
+            };
+            let Some(frame) = Self::parse_dyn_frame(raw_words[5].trim()) else {
+                self.command_log
+                    .push("DYNBINDGROUP: invalid reference frame".to_string());
+                return true;
+            };
+            let Some(placement) = Self::parse_dyn_placement(raw_words[6].trim()) else {
+                self.command_log
+                    .push("DYNBINDGROUP: invalid placement".to_string());
+                return true;
+            };
+            let Ok(mut dynv1) = self.ensure_dynamic_v1_for_block(block_name) else {
+                self.command_log
+                    .push(format!("DYNBINDGROUP: Block '{}' not found", block_name));
+                return true;
+            };
+            let Some(param_id) = dynv1
+                .parameters
+                .iter()
+                .find(|p| p.name.eq_ignore_ascii_case(param_name))
+                .map(|p| p.id)
+            else {
+                self.command_log
+                    .push(format!("DYNBINDGROUP: Unknown parameter '{}'", param_name));
+                return true;
+            };
+            let Some(group_id) = dynv1
+                .groups
+                .iter()
+                .find(|g| g.name.eq_ignore_ascii_case(group_name))
+                .map(|g| g.id)
+            else {
+                self.command_log
+                    .push(format!("DYNBINDGROUP: Unknown group '{}'", group_name));
+                return true;
+            };
+            let Some(action) = dynv1
+                .actions
+                .iter_mut()
+                .filter(|a| a.parameter_id == param_id)
+                .max_by_key(|a| a.order)
+            else {
+                self.command_log.push(
+                    "DYNBINDGROUP: No action for parameter. Run DYNADDACTION first".to_string(),
+                );
+                return true;
+            };
+            action.targets.push(ActionTarget {
+                target: TargetRef::Group(group_id),
+                behavior,
+                reference_frame: frame,
+                placement_rule: placement,
+                axis_mask: AxisMask::default(),
+                weight: 1.0,
+            });
+            let _ = self.drawing.set_block_dynamic_v1(block_name, Some(dynv1));
+            self.command_log.push(format!(
+                "DYNBINDGROUP: Bound group '{}' to parameter '{}'",
+                group_name, param_name
+            ));
+            return true;
+        }
+
+        if head == "dynbindsel" {
+            let raw_words: Vec<&str> = raw_trimmed.split_whitespace().collect();
+            if raw_words.len() < 6 {
+                self.command_log.push(
+                    "DYNBINDSEL: Usage DYNBINDSEL <block_name> <param_name> <behavior> <frame> <keepdefault|offset:<v>|<v>>"
+                        .to_string(),
+                );
+                return true;
+            }
+            let block_name = raw_words[1].trim();
+            let param_name = raw_words[2].trim();
+            let Some(behavior) = Self::parse_dyn_behavior(raw_words[3].trim()) else {
+                self.command_log
+                    .push("DYNBINDSEL: invalid behavior".to_string());
+                return true;
+            };
+            let Some(frame) = Self::parse_dyn_frame(raw_words[4].trim()) else {
+                self.command_log
+                    .push("DYNBINDSEL: invalid reference frame".to_string());
+                return true;
+            };
+            let Some(placement) = Self::parse_dyn_placement(raw_words[5].trim()) else {
+                self.command_log
+                    .push("DYNBINDSEL: invalid placement".to_string());
+                return true;
+            };
+            let Ok(local_ids) = self.selected_local_ids_for_block(block_name) else {
+                self.command_log.push(
+                    "DYNBINDSEL: Selected entities are not mapped to this block. Use BLOCKMAKE source selection or DYNMAKEGROUP."
+                        .to_string(),
+                );
+                return true;
+            };
+            if local_ids.is_empty() {
+                self.command_log
+                    .push("DYNBINDSEL: No bindable selected entities".to_string());
+                return true;
+            }
+            let Ok(mut dynv1) = self.ensure_dynamic_v1_for_block(block_name) else {
+                self.command_log
+                    .push(format!("DYNBINDSEL: Block '{}' not found", block_name));
+                return true;
+            };
+            let Some(param_id) = dynv1
+                .parameters
+                .iter()
+                .find(|p| p.name.eq_ignore_ascii_case(param_name))
+                .map(|p| p.id)
+            else {
+                self.command_log
+                    .push(format!("DYNBINDSEL: Unknown parameter '{}'", param_name));
+                return true;
+            };
+            let Some(action) = dynv1
+                .actions
+                .iter_mut()
+                .filter(|a| a.parameter_id == param_id)
+                .max_by_key(|a| a.order)
+            else {
+                self.command_log.push(
+                    "DYNBINDSEL: No action for parameter. Run DYNADDACTION first".to_string(),
+                );
+                return true;
+            };
+            let mut added = 0usize;
+            for local_id in local_ids {
+                action.targets.push(ActionTarget {
+                    target: TargetRef::Entity(local_id),
+                    behavior,
+                    reference_frame: frame,
+                    placement_rule: placement,
+                    axis_mask: AxisMask::default(),
+                    weight: 1.0,
+                });
+                added += 1;
+            }
+            let _ = self.drawing.set_block_dynamic_v1(block_name, Some(dynv1));
+            self.command_log.push(format!(
+                "DYNBINDSEL: Added {} target binding(s) for '{}' on '{}'",
+                added, param_name, block_name
+            ));
+            return true;
+        }
+
+        if head == "dynlist" {
+            match self.selected_insert_for_dynamic_debug() {
+                Ok((insert_id, block_name)) => {
+                    let Some(dynv1) = self.drawing.get_block_dynamic_v1(&block_name) else {
+                        self.command_log.push(format!(
+                            "DYNLIST: Insert '{}' does not reference a dynamic_v1 block",
+                            block_name
+                        ));
+                        return true;
+                    };
+                    let effective = self
+                        .drawing
+                        .get_insert_effective_dynamic_params(&insert_id)
+                        .unwrap_or_default();
+                    let overrides = self
+                        .drawing
+                        .get_insert_dynamic_param_overrides(&insert_id)
+                        .cloned()
+                        .unwrap_or_default();
+                    self.command_log
+                        .push(format!("DYNLIST: Block '{}'", block_name));
+                    if dynv1.parameters.is_empty() {
+                        self.command_log
+                            .push("  (No dynamic parameters defined)".to_string());
+                    } else {
+                        for p in &dynv1.parameters {
+                            let eff = effective.get(&p.id).copied().unwrap_or(p.default_value);
+                            if let Some(ovr) = overrides.get(&p.id) {
+                                self.command_log.push(format!(
+                                    "  {}: default={:.4} effective={:.4} override={:.4}",
+                                    p.name, p.default_value, eff, ovr
+                                ));
+                            } else {
+                                self.command_log.push(format!(
+                                    "  {}: default={:.4} effective={:.4} override=<none>",
+                                    p.name, p.default_value, eff
+                                ));
+                            }
+                        }
+                    }
+                }
+                Err(msg) => self.command_log.push(format!("DYNLIST: {msg}")),
+            }
+            return true;
+        }
+
+        if head == "dynset" {
+            let raw_words: Vec<&str> = raw_trimmed.split_whitespace().collect();
+            if raw_words.len() < 3 {
+                self.command_log
+                    .push("DYNSET: Usage DYNSET <param_name> <value>".to_string());
+                return true;
+            }
+            let param_name = raw_words[1].trim();
+            let Ok(value) = raw_words[2].trim().parse::<f64>() else {
+                self.command_log
+                    .push("DYNSET: Invalid numeric value".to_string());
+                return true;
+            };
+            match self.selected_insert_for_dynamic_debug() {
+                Ok((insert_id, block_name)) => {
+                    let Some(dynv1) = self.drawing.get_block_dynamic_v1(&block_name) else {
+                        self.command_log.push(format!(
+                            "DYNSET: Insert '{}' does not reference a dynamic_v1 block",
+                            block_name
+                        ));
+                        return true;
+                    };
+                    let Some(param) = dynv1
+                        .parameters
+                        .iter()
+                        .find(|p| p.name.eq_ignore_ascii_case(param_name))
+                    else {
+                        self.command_log
+                            .push(format!("DYNSET: Unknown parameter '{}'", param_name));
+                        return true;
+                    };
+                    let param_id = param.id;
+                    let param_label = param.name.clone();
+                    self.push_undo();
+                    if self
+                        .drawing
+                        .set_insert_dynamic_param_override(&insert_id, param_id, value)
+                    {
+                        // No explicit cache currently; renderer/snap use live evaluation paths.
+                        self.command_log.push(format!(
+                            "DYNSET: {} set to {:.4} on '{}'",
+                            param_label, value, block_name
+                        ));
+                    } else {
+                        self.command_log
+                            .push("DYNSET: Failed to set override".to_string());
+                    }
+                }
+                Err(msg) => self.command_log.push(format!("DYNSET: {msg}")),
+            }
+            return true;
+        }
+
+        if head == "dynclear" {
+            let raw_words: Vec<&str> = raw_trimmed.split_whitespace().collect();
+            if raw_words.len() < 2 {
+                self.command_log
+                    .push("DYNCLEAR: Usage DYNCLEAR <param_name>".to_string());
+                return true;
+            }
+            let param_name = raw_words[1].trim();
+            match self.selected_insert_for_dynamic_debug() {
+                Ok((insert_id, block_name)) => {
+                    let Some(dynv1) = self.drawing.get_block_dynamic_v1(&block_name) else {
+                        self.command_log.push(format!(
+                            "DYNCLEAR: Insert '{}' does not reference a dynamic_v1 block",
+                            block_name
+                        ));
+                        return true;
+                    };
+                    let Some(param) = dynv1
+                        .parameters
+                        .iter()
+                        .find(|p| p.name.eq_ignore_ascii_case(param_name))
+                    else {
+                        self.command_log
+                            .push(format!("DYNCLEAR: Unknown parameter '{}'", param_name));
+                        return true;
+                    };
+                    let param_id = param.id;
+                    let param_label = param.name.clone();
+                    self.push_undo();
+                    let removed = self
+                        .drawing
+                        .remove_insert_dynamic_param_override(&insert_id, &param_id);
+                    if removed {
+                        self.command_log.push(format!(
+                            "DYNCLEAR: Cleared override for {} on '{}'",
+                            param_label, block_name
+                        ));
+                    } else {
+                        self.command_log.push(format!(
+                            "DYNCLEAR: No override set for {} (already default)",
+                            param_label
+                        ));
+                    }
+                }
+                Err(msg) => self.command_log.push(format!("DYNCLEAR: {msg}")),
+            }
+            return true;
+        }
+
+        if head == "dynclearall" {
+            match self.selected_insert_for_dynamic_debug() {
+                Ok((insert_id, block_name)) => {
+                    self.push_undo();
+                    if self
+                        .drawing
+                        .clear_insert_dynamic_param_overrides(&insert_id)
+                    {
+                        self.command_log.push(format!(
+                            "DYNCLEARALL: Cleared all dynamic overrides on '{}'",
+                            block_name
+                        ));
+                    } else {
+                        self.command_log
+                            .push("DYNCLEARALL: Failed to clear overrides".to_string());
+                    }
+                }
+                Err(msg) => self.command_log.push(format!("DYNCLEARALL: {msg}")),
             }
             return true;
         }
@@ -1009,6 +1737,130 @@ impl CadKitApp {
             }
             _ => false,
         }
+    }
+
+    fn selected_insert_for_dynamic_debug(&self) -> Result<(Guid, String), String> {
+        if self.selected_entities.is_empty() {
+            return Err("No selection. Select one Insert entity first.".to_string());
+        }
+        if self.selected_entities.len() != 1 {
+            return Err("Select exactly one Insert entity.".to_string());
+        }
+        let id = *self
+            .selected_entities
+            .iter()
+            .next()
+            .ok_or_else(|| "No selection".to_string())?;
+        let Some(entity) = self.drawing.get_entity(&id) else {
+            return Err("Selected entity not found".to_string());
+        };
+        let EntityKind::Insert { name, .. } = &entity.kind else {
+            return Err("Selected entity is not an Insert".to_string());
+        };
+        Ok((id, name.clone()))
+    }
+
+    fn ensure_dynamic_v1_for_block(
+        &self,
+        block_name: &str,
+    ) -> Result<DynamicBlockDefinition, String> {
+        if let Some(existing) = self.drawing.get_block_dynamic_v1(block_name) {
+            return Ok(existing.clone());
+        }
+        let Some(block) = self.drawing.get_block(block_name).cloned() else {
+            return Err("block not found".to_string());
+        };
+        let mut base_entities: Vec<BlockAuthoredEntity> = Vec::new();
+        let mut min_x = f64::INFINITY;
+        let mut min_y = f64::INFINITY;
+        let mut max_x = f64::NEG_INFINITY;
+        let mut max_y = f64::NEG_INFINITY;
+        for e in &block.entities {
+            let local_id = Guid::new();
+            base_entities.push(BlockAuthoredEntity {
+                local_entity_id: local_id,
+                kind: e.kind.clone(),
+                layer: e.layer,
+            });
+            if let Some((x0, y0, x1, y1)) = Self::entity_bounds_world(&e.kind) {
+                min_x = min_x.min(x0);
+                min_y = min_y.min(y0);
+                max_x = max_x.max(x1);
+                max_y = max_y.max(y1);
+            }
+        }
+        if !min_x.is_finite() || !min_y.is_finite() || !max_x.is_finite() || !max_y.is_finite() {
+            min_x = 0.0;
+            min_y = 0.0;
+            max_x = 0.0;
+            max_y = 0.0;
+        }
+        Ok(DynamicBlockDefinition {
+            block_name: block.name,
+            base_entities,
+            base_bounds: BlockBounds {
+                min: Vec2::new(min_x, min_y),
+                max: Vec2::new(max_x, max_y),
+            },
+            parameters: Vec::new(),
+            actions: Vec::new(),
+            groups: Vec::new(),
+        })
+    }
+
+    fn selected_local_ids_for_block(&self, block_name: &str) -> Result<Vec<Guid>, String> {
+        if self.selected_entities.is_empty() {
+            return Err("no selection".to_string());
+        }
+        let key = block_name.trim().to_ascii_lowercase();
+        let Some(map) = self.dyn_block_source_entity_map.get(&key) else {
+            return Err("no source mapping".to_string());
+        };
+        let mut out: Vec<Guid> = Vec::new();
+        for id in &self.selected_entities {
+            if let Some(local_id) = map.get(id) {
+                out.push(*local_id);
+            }
+        }
+        out.sort_by(|a, b| a.to_string().cmp(&b.to_string()));
+        out.dedup();
+        Ok(out)
+    }
+
+    fn parse_dyn_behavior(text: &str) -> Option<EntityBehavior> {
+        match text.trim().to_ascii_lowercase().as_str() {
+            "moverigid" | "move" => Some(EntityBehavior::MoveRigid),
+            "keepcentered" | "center" => Some(EntityBehavior::KeepCentered),
+            "anchoredge" | "edge" => Some(EntityBehavior::AnchorToEdge),
+            _ => None,
+        }
+    }
+
+    fn parse_dyn_frame(text: &str) -> Option<ReferenceFrame> {
+        match text.trim().to_ascii_lowercase().as_str() {
+            "blockorigin" | "origin" => Some(ReferenceFrame::BlockOrigin),
+            "boundscenter" | "center" => Some(ReferenceFrame::BoundsCenter),
+            "leftedge" | "left" => Some(ReferenceFrame::LeftEdge),
+            "rightedge" | "right" => Some(ReferenceFrame::RightEdge),
+            "topedge" | "top" => Some(ReferenceFrame::TopEdge),
+            "bottomedge" | "bottom" => Some(ReferenceFrame::BottomEdge),
+            _ => None,
+        }
+    }
+
+    fn parse_dyn_placement(text: &str) -> Option<PlacementRule> {
+        let t = text.trim();
+        if t.eq_ignore_ascii_case("keepdefault") {
+            return Some(PlacementRule::KeepDefault);
+        }
+        if let Some(rest) = t.strip_prefix("offset:") {
+            let v = rest.trim().parse::<f64>().ok()?;
+            return Some(PlacementRule::Offset(v));
+        }
+        if let Ok(v) = t.parse::<f64>() {
+            return Some(PlacementRule::Offset(v));
+        }
+        None
     }
 
     pub(crate) fn tool_uses_distance_input(&self) -> bool {

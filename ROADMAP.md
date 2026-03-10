@@ -167,7 +167,11 @@
 - [x] Block definition
 - [x] Insert block reference (true `Insert` entity, non-exploded by default)
 - [x] Block editor (first pass: `BEDIT` / `BSAVE` / `BCANCEL`)
-- [~] Dynamic blocks (simple first pass: auto width/height parameters + per-insert property overrides)
+- [~] Dynamic blocks (developer first pass)
+  - [x] Dynamic data model (`dynamic_v1`) + per-insert override storage + runtime regeneration hooks
+  - [x] Runtime regen reads effective params and evaluates ordered actions (initial subset)
+  - [x] Dev commands for in-app testing (`DYNLIST`, `DYNSET`, `DYNCLEAR`, `DYNCLEARALL`)
+  - [x] Dev authoring commands (`BLOCKMAKE`, `INSERTBLOCK`, `DYNADDPARAM`, `DYNLISTDEF`, `DYNADDACTION`, `DYNBINDSEL`, `DYNMAKEGROUP`, `DYNBINDGROUP`)
 - [ ] Nested blocks
 - [~] Block library / palette (name list + insert flow; thumbnails pending)
 

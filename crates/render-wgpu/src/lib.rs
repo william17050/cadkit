@@ -951,11 +951,15 @@ impl Viewport {
                     scale_x,
                     scale_y,
                 } => {
-                    let Some(def) = drawing.get_block(name) else {
+                    let Some(local_entities) = drawing.evaluate_insert_local_entities(entity)
+                    else {
                         continue;
                     };
                     let mut sx = *scale_x;
                     let mut sy = *scale_y;
+                    let Some(def) = drawing.get_block(name) else {
+                        continue;
+                    };
                     if let Some(dynb) = &def.dynamic {
                         if dynb.enable_width && dynb.base_width.abs() > 1e-9 {
                             if let Some(w) = entity.block_params.width.filter(|v| *v > 1e-9) {
@@ -978,7 +982,7 @@ impl Viewport {
                             position.y + lx * sa + ly * ca,
                         )
                     };
-                    for be in &def.entities {
+                    for be in &local_entities {
                         let blayer = drawing.get_layer(be.layer);
                         let bc = if let Some(ec) = be.color {
                             [

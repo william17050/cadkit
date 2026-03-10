@@ -45,7 +45,7 @@ Modular Rust workspace with clear separation of concerns:
 - **Editing**: move, copy, rotate, offset, trim, extend — all with ghosted rubber-band previews; cancel via Esc or right-click; undo/redo stack.
 - **Blocks**: block definitions (`BLOCK`/`BMAKE`), true block inserts (`INSERT`), explode (`X/EXPLODE`), and first-pass block editing workflow (`BEDIT`, `BSAVE`, `BCANCEL`).
 - **Block snapping/selection**: insert geometry is selectable/snappable from transformed block geometry (not just insert origin); selected insert highlights full block geometry.
-- **Dynamic blocks (simple)**: new blocks auto-store base width/height; placed inserts expose per-instance `Dyn Width` / `Dyn Height` in Properties (Reset available).
+- **Dynamic blocks (developer first pass)**: `dynamic_v1` data model + per-insert override map + runtime regeneration pipeline (authored-base driven, ordered action execution subset).
 - **Trim/Extend policy**: non-block entities can trim/extend against block geometry; direct trim/extend of insert internals requires explode or block edit workflow.
 - **Dimensions**: DIMLINEAR command (`dli`) — 3-click placement (first point, second point, line location); live preview with stroke text; readable text regardless of pick direction.
 - **Layers**: create, color, rename, set current, toggle visibility; selection highlights by layer.
@@ -130,12 +130,21 @@ cargo test -p cadkit-types
 
 ## Block Commands
 - `BLOCK` / `BMAKE`: create block definition from selected entities.
+- `BLOCKMAKE <name>`: developer shortcut to create block definition from current selection with inline name.
 - `INSERT <name>`: place block reference by pick point.
+- `INSERTBLOCK <name>`: developer alias for insert flow.
 - `X` / `EXPLODE`: explode selected inserts/associative arrays into regular entities.
 - `BEDIT <name>` or `BEDIT` with an insert selected: open block edit workspace.
 - `BSAVE`: commit block edits back to definition.
 - `BCANCEL`: discard block edits and restore drawing state.
-- Dynamic insert sizing is currently property-driven (select one insert → Properties panel → `Dyn Width` / `Dyn Height`).
+- Dynamic instance test commands (selected insert): `DYNLIST`, `DYNSET <param> <value>`, `DYNCLEAR <param>`, `DYNCLEARALL`.
+- Dynamic definition dev commands:
+  - `DYNADDPARAM <block> <param> <axis:X|Y> <default> <min> <max> <step>`
+  - `DYNLISTDEF <block>`
+  - `DYNADDACTION <block> <param> <move|anchor|stretch|visibility>`
+  - `DYNBINDSEL <block> <param> <behavior> <frame> <keepdefault|offset:v|v>`
+  - `DYNMAKEGROUP <block> <group_name>`
+  - `DYNBINDGROUP <block> <param> <group_name> <behavior> <frame> <keepdefault|offset:v|v>`
 
 ## Project Status
 **Current**: Interactive 2D drafting MVP — command-line tools, snaps, layers, undo/redo, DXF IO, linear dimensions.

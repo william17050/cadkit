@@ -576,6 +576,7 @@ impl Drawing {
                         .eq_ignore_ascii_case("BYLAYER"),
                     linetype_scale: None,
                     block_params: crate::BlockParamValues::default(),
+                    insert_dynamic_param_overrides: std::collections::HashMap::new(),
                 }),
 
                 EntityType::Circle(circle) => Some(Entity {
@@ -594,6 +595,7 @@ impl Drawing {
                         .eq_ignore_ascii_case("BYLAYER"),
                     linetype_scale: None,
                     block_params: crate::BlockParamValues::default(),
+                    insert_dynamic_param_overrides: std::collections::HashMap::new(),
                 }),
 
                 EntityType::Arc(arc) => Some(Entity {
@@ -618,6 +620,7 @@ impl Drawing {
                         .eq_ignore_ascii_case("BYLAYER"),
                     linetype_scale: None,
                     block_params: crate::BlockParamValues::default(),
+                    insert_dynamic_param_overrides: std::collections::HashMap::new(),
                 }),
 
                 EntityType::LwPolyline(poly) => {
@@ -644,6 +647,7 @@ impl Drawing {
                                 .eq_ignore_ascii_case("BYLAYER"),
                             linetype_scale: None,
                             block_params: crate::BlockParamValues::default(),
+                            insert_dynamic_param_overrides: std::collections::HashMap::new(),
                         })
                     } else {
                         None
@@ -674,6 +678,7 @@ impl Drawing {
                                 .eq_ignore_ascii_case("BYLAYER"),
                             linetype_scale: None,
                             block_params: crate::BlockParamValues::default(),
+                            insert_dynamic_param_overrides: std::collections::HashMap::new(),
                         })
                     } else {
                         None
@@ -703,6 +708,7 @@ impl Drawing {
                         .eq_ignore_ascii_case("BYLAYER"),
                     linetype_scale: None,
                     block_params: crate::BlockParamValues::default(),
+                    insert_dynamic_param_overrides: std::collections::HashMap::new(),
                 }),
 
                 EntityType::MText(t) => {
@@ -740,6 +746,7 @@ impl Drawing {
                             .eq_ignore_ascii_case("BYLAYER"),
                         linetype_scale: None,
                         block_params: crate::BlockParamValues::default(),
+                        insert_dynamic_param_overrides: std::collections::HashMap::new(),
                     })
                 }
 
@@ -785,6 +792,7 @@ impl Drawing {
                                     .eq_ignore_ascii_case("BYLAYER"),
                                 linetype_scale: None,
                                 block_params: crate::BlockParamValues::default(),
+                                insert_dynamic_param_overrides: std::collections::HashMap::new(),
                             })
                         }
                     } else {
@@ -820,6 +828,7 @@ impl Drawing {
                                 .eq_ignore_ascii_case("BYLAYER"),
                             linetype_scale: None,
                             block_params: crate::BlockParamValues::default(),
+                            insert_dynamic_param_overrides: std::collections::HashMap::new(),
                         })
                     }
                 }
@@ -861,6 +870,7 @@ impl Drawing {
                             .eq_ignore_ascii_case("BYLAYER"),
                         linetype_scale: None,
                         block_params: crate::BlockParamValues::default(),
+                        insert_dynamic_param_overrides: std::collections::HashMap::new(),
                     })
                 }
 
@@ -904,6 +914,7 @@ impl Drawing {
                             .eq_ignore_ascii_case("BYLAYER"),
                         linetype_scale: None,
                         block_params: crate::BlockParamValues::default(),
+                        insert_dynamic_param_overrides: std::collections::HashMap::new(),
                     })
                 }
 
@@ -947,6 +958,7 @@ impl Drawing {
                             .eq_ignore_ascii_case("BYLAYER"),
                         linetype_scale: None,
                         block_params: crate::BlockParamValues::default(),
+                        insert_dynamic_param_overrides: std::collections::HashMap::new(),
                     })
                 }
 
@@ -1362,6 +1374,7 @@ fn expand_insert_flattened(
                         linetype_by_layer: false,
                         linetype_scale: None,
                         block_params: crate::BlockParamValues::default(),
+                        insert_dynamic_param_overrides: std::collections::HashMap::new(),
                     });
                     added += 1;
                 }
@@ -1520,5 +1533,6 @@ fn hatch_pairs_to_polyline(
         linetype_by_layer: false,
         linetype_scale: None,
         block_params: crate::BlockParamValues::default(),
+        insert_dynamic_param_overrides: std::collections::HashMap::new(),
     })
 }

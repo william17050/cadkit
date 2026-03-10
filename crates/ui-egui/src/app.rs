@@ -416,6 +416,9 @@ pub struct CadKitApp {
     block_edit_snapshot: Option<Drawing>,
     block_edit_layer_map: HashMap<u32, u32>, // edit layer id -> original layer id
     block_edit_prev_layer: u32,
+    // Dev dynamic-block mapping: source drawing entity id -> block local entity id
+    // captured at BLOCKMAKE time for temporary DYNBINDSEL/DYNMAKEGROUP flows.
+    dyn_block_source_entity_map: HashMap<String, HashMap<Guid, Guid>>,
     bgcolor_picker_open: bool,
     last_saved_prefs: Option<AppPrefs>,
     autosave_last_at: Instant,
@@ -573,6 +576,7 @@ impl Default for CadKitApp {
             block_edit_snapshot: None,
             block_edit_layer_map: HashMap::new(),
             block_edit_prev_layer: 0,
+            dyn_block_source_entity_map: HashMap::new(),
             bgcolor_picker_open: false,
             last_saved_prefs: None,
             autosave_last_at: Instant::now(),
@@ -6522,28 +6526,10 @@ impl CadKitApp {
                     continue;
                 };
                 match &b.kind {
-                    EntityKind::Insert {
-                        name,
-                        position,
-                        rotation,
-                        scale_x,
-                        scale_y,
-                    } => {
-                        let (eff_sx, eff_sy) = self.resolved_insert_scale(
-                            name,
-                            *scale_x,
-                            *scale_y,
-                            b.block_params.width,
-                            b.block_params.height,
-                        );
-                        if let Some(def) = self.drawing.get_block(name) {
-                            for be in &def.entities {
-                                let wk = Self::transform_insert_local_kind(
-                                    &be.kind, *position, *rotation, eff_sx, eff_sy,
-                                );
-                                if let Some(p) = inf_boundary(&wk) {
-                                    out.push(p);
-                                }
+                    EntityKind::Insert { .. } => {
+                        for be in self.evaluate_insert_world_entities(b) {
+                            if let Some(p) = inf_boundary(&be.kind) {
+                                out.push(p);
                             }
                         }
                     }
@@ -9129,11 +9115,23 @@ impl eframe::App for CadKitApp {
                                 ("PE / PEDIT",     "",          "Select polyline, then join touching line/arc"),
                                 ("HA / HATCH",     "",          "Pick inside closed area to create hatch lines"),
                                 ("BLOCK / BMAKE",  "",          "Create named block definition from selected entities"),
+                                ("BLOCKMAKE",      "",          "Dev: create block from current selection with inline name"),
                                 ("BE / BEDIT",     "",          "Edit block definition by name or selected insert"),
                                 ("BSAVE",          "",          "Save block edits and update all inserts"),
                                 ("BCANCEL",        "",          "Cancel block edits and restore drawing"),
                                 ("I / INSERT",     "",          "Insert block by name (example: INSERT name)"),
+                                ("INSERTBLOCK",    "",          "Dev: alias INSERTBLOCK <block_name>"),
                                 ("X / EXPLODE",    "",          "Break array/block grouping links in current selection"),
+                                ("DYNADDPARAM",    "",          "Dev: add/update dynamic parameter on block"),
+                                ("DYNLISTDEF",     "",          "Dev: list block dynamic_v1 definition"),
+                                ("DYNADDACTION",   "",          "Dev: add action on block parameter"),
+                                ("DYNBINDSEL",     "",          "Dev: bind selected BLOCKMAKE source entities to latest param action"),
+                                ("DYNMAKEGROUP",   "",          "Dev: create/update group from selected BLOCKMAKE source entities"),
+                                ("DYNBINDGROUP",   "",          "Dev: bind a named dynamic group to latest param action"),
+                                ("DYNLIST",        "",          "Dev: list dynamic_v1 params/defaults/effective/overrides on selected insert"),
+                                ("DYNSET",         "",          "Dev: DYNSET <param_name> <value> on selected insert"),
+                                ("DYNCLEAR",       "",          "Dev: DYNCLEAR <param_name> on selected insert"),
+                                ("DYNCLEARALL",    "",          "Dev: clear all dynamic overrides on selected insert"),
                                 ("ET / EDITTEXT",  "",          "Edit a text entity via dialog"),
                                 ("U / UNDO",       "",          "Undo last change"),
                                 ("R / REDO",       "",          "Redo undone change"),
@@ -12105,31 +12103,14 @@ impl CadKitApp {
 
     fn entity_bounds_world_for_entity(&self, entity: &Entity) -> Option<(f64, f64, f64, f64)> {
         match &entity.kind {
-            EntityKind::Insert {
-                name,
-                position,
-                rotation,
-                scale_x,
-                scale_y,
-            } => {
-                let def = self.drawing.get_block(name)?;
-                let (eff_sx, eff_sy) = self.resolved_insert_scale(
-                    name,
-                    *scale_x,
-                    *scale_y,
-                    entity.block_params.width,
-                    entity.block_params.height,
-                );
+            EntityKind::Insert { position, .. } => {
                 let mut min_x = f64::INFINITY;
                 let mut min_y = f64::INFINITY;
                 let mut max_x = f64::NEG_INFINITY;
                 let mut max_y = f64::NEG_INFINITY;
                 let mut found = false;
-                for be in &def.entities {
-                    let wk = Self::transform_insert_local_kind(
-                        &be.kind, *position, *rotation, eff_sx, eff_sy,
-                    );
-                    if let Some((x0, y0, x1, y1)) = Self::entity_bounds_world(&wk) {
+                for be in self.evaluate_insert_world_entities(entity) {
+                    if let Some((x0, y0, x1, y1)) = Self::entity_bounds_world(&be.kind) {
                         min_x = min_x.min(x0);
                         min_y = min_y.min(y0);
                         max_x = max_x.max(x1);
@@ -12155,31 +12136,13 @@ impl CadKitApp {
         screen_pos: egui::Pos2,
     ) -> f32 {
         match &entity.kind {
-            EntityKind::Insert {
-                name,
-                position,
-                rotation,
-                scale_x,
-                scale_y,
-            } => {
+            EntityKind::Insert { .. } => {
                 let mut best =
                     Self::screen_dist_to_entity(&entity.kind, viewport, rect, screen_pos);
-                let (eff_sx, eff_sy) = self.resolved_insert_scale(
-                    name,
-                    *scale_x,
-                    *scale_y,
-                    entity.block_params.width,
-                    entity.block_params.height,
-                );
-                if let Some(def) = self.drawing.get_block(name) {
-                    for be in &def.entities {
-                        let wk = Self::transform_insert_local_kind(
-                            &be.kind, *position, *rotation, eff_sx, eff_sy,
-                        );
-                        let d = Self::screen_dist_to_entity(&wk, viewport, rect, screen_pos);
-                        if d < best {
-                            best = d;
-                        }
+                for be in self.evaluate_insert_world_entities(entity) {
+                    let d = Self::screen_dist_to_entity(&be.kind, viewport, rect, screen_pos);
+                    if d < best {
+                        best = d;
                     }
                 }
                 best
@@ -12439,13 +12402,7 @@ impl CadKitApp {
                         &[("text origin", p)],
                     );
                 }
-                EntityKind::Insert {
-                    name,
-                    position,
-                    rotation,
-                    scale_x,
-                    scale_y,
-                } => {
+                EntityKind::Insert { position, .. } => {
                     let p: Vec2 = (*position).into();
                     self.push_pick_candidates(
                         &mut best,
@@ -12455,186 +12412,168 @@ impl CadKitApp {
                         entity.id,
                         &[("insert origin", p)],
                     );
-                    let (eff_sx, eff_sy) = self.resolved_insert_scale(
-                        name,
-                        *scale_x,
-                        *scale_y,
-                        entity.block_params.width,
-                        entity.block_params.height,
-                    );
-                    if let Some(def) = self.drawing.get_block(name) {
-                        for be in &def.entities {
-                            let world_kind = Self::transform_insert_local_kind(
-                                &be.kind, *position, *rotation, eff_sx, eff_sy,
-                            );
-                            match &world_kind {
-                                EntityKind::Line { start, end } => {
-                                    let s: Vec2 = (*start).into();
-                                    let e: Vec2 = (*end).into();
-                                    let mid = Vec2::new((s.x + e.x) * 0.5, (s.y + e.y) * 0.5);
-                                    self.push_pick_candidates(
-                                        &mut best,
-                                        viewport,
-                                        rect,
-                                        screen_pos,
-                                        entity.id,
-                                        &[("line start", s), ("line end", e), ("line mid", mid)],
-                                    );
-                                }
-                                EntityKind::Arc {
-                                    center,
-                                    radius,
-                                    start_angle,
-                                    end_angle,
-                                } => {
-                                    let c: Vec2 = (*center).into();
-                                    let r = *radius;
-                                    let sa = *start_angle;
-                                    let ea = *end_angle;
-                                    let mid_ang = sa + (ea - sa) * 0.5;
-                                    let pts = [
-                                        (
-                                            "arc start",
-                                            Vec2::new(c.x + r * sa.cos(), c.y + r * sa.sin()),
-                                        ),
-                                        (
-                                            "arc mid",
-                                            Vec2::new(
-                                                c.x + r * mid_ang.cos(),
-                                                c.y + r * mid_ang.sin(),
-                                            ),
-                                        ),
-                                        (
-                                            "arc end",
-                                            Vec2::new(c.x + r * ea.cos(), c.y + r * ea.sin()),
-                                        ),
-                                    ];
-                                    self.push_pick_candidates(
-                                        &mut best, viewport, rect, screen_pos, entity.id, &pts,
-                                    );
-                                }
-                                EntityKind::Circle { center, radius } => {
-                                    let c: Vec2 = (*center).into();
-                                    let r = *radius;
-                                    let pts = [
-                                        ("circle center", c),
-                                        ("circle east", Vec2::new(c.x + r, c.y)),
-                                        ("circle west", Vec2::new(c.x - r, c.y)),
-                                        ("circle north", Vec2::new(c.x, c.y + r)),
-                                        ("circle south", Vec2::new(c.x, c.y - r)),
-                                    ];
-                                    self.push_pick_candidates(
-                                        &mut best, viewport, rect, screen_pos, entity.id, &pts,
-                                    );
-                                }
-                                EntityKind::Polyline { vertices, closed } => {
-                                    if vertices.is_empty() {
-                                        continue;
-                                    }
-                                    for (i, v) in vertices.iter().enumerate() {
-                                        let p: Vec2 = (*v).into();
-                                        let label = if i == 0 {
-                                            "poly start"
-                                        } else if i + 1 == vertices.len() && !*closed {
-                                            "poly end"
-                                        } else {
-                                            "poly vertex"
-                                        };
-                                        self.push_pick_candidates(
-                                            &mut best,
-                                            viewport,
-                                            rect,
-                                            screen_pos,
-                                            entity.id,
-                                            &[(label, p)],
-                                        );
-                                    }
-                                    for seg in vertices.windows(2) {
-                                        let a: Vec2 = seg[0].into();
-                                        let b: Vec2 = seg[1].into();
-                                        let mid = Vec2::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5);
-                                        self.push_pick_candidates(
-                                            &mut best,
-                                            viewport,
-                                            rect,
-                                            screen_pos,
-                                            entity.id,
-                                            &[("poly mid", mid)],
-                                        );
-                                    }
-                                    if *closed && vertices.len() >= 2 {
-                                        let a: Vec2 = vertices.last().unwrap().to_owned().into();
-                                        let b: Vec2 = vertices.first().unwrap().to_owned().into();
-                                        let mid = Vec2::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5);
-                                        self.push_pick_candidates(
-                                            &mut best,
-                                            viewport,
-                                            rect,
-                                            screen_pos,
-                                            entity.id,
-                                            &[("poly mid", mid)],
-                                        );
-                                    }
-                                }
-                                EntityKind::DimAligned { start, end, .. }
-                                | EntityKind::DimLinear { start, end, .. } => {
-                                    let s: Vec2 = (*start).into();
-                                    let e: Vec2 = (*end).into();
-                                    let mid = Vec2::new((s.x + e.x) * 0.5, (s.y + e.y) * 0.5);
-                                    self.push_pick_candidates(
-                                        &mut best,
-                                        viewport,
-                                        rect,
-                                        screen_pos,
-                                        entity.id,
-                                        &[("dim start", s), ("dim end", e), ("dim mid", mid)],
-                                    );
-                                }
-                                EntityKind::DimAngular {
-                                    vertex,
-                                    line1_pt,
-                                    line2_pt,
-                                    ..
-                                } => {
-                                    let v: Vec2 = (*vertex).into();
-                                    let p1: Vec2 = (*line1_pt).into();
-                                    let p2: Vec2 = (*line2_pt).into();
-                                    self.push_pick_candidates(
-                                        &mut best,
-                                        viewport,
-                                        rect,
-                                        screen_pos,
-                                        entity.id,
-                                        &[("center", v), ("dim start", p1), ("dim end", p2)],
-                                    );
-                                }
-                                EntityKind::DimRadial {
-                                    center, leader_pt, ..
-                                } => {
-                                    let c: Vec2 = (*center).into();
-                                    let l: Vec2 = (*leader_pt).into();
-                                    self.push_pick_candidates(
-                                        &mut best,
-                                        viewport,
-                                        rect,
-                                        screen_pos,
-                                        entity.id,
-                                        &[("center", c), ("dim end", l)],
-                                    );
-                                }
-                                EntityKind::Text { position, .. } => {
-                                    let p: Vec2 = (*position).into();
-                                    self.push_pick_candidates(
-                                        &mut best,
-                                        viewport,
-                                        rect,
-                                        screen_pos,
-                                        entity.id,
-                                        &[("text origin", p)],
-                                    );
-                                }
-                                EntityKind::Insert { .. } => {}
+                    for be in self.evaluate_insert_world_entities(entity) {
+                        match &be.kind {
+                            EntityKind::Line { start, end } => {
+                                let s: Vec2 = (*start).into();
+                                let e: Vec2 = (*end).into();
+                                let mid = Vec2::new((s.x + e.x) * 0.5, (s.y + e.y) * 0.5);
+                                self.push_pick_candidates(
+                                    &mut best,
+                                    viewport,
+                                    rect,
+                                    screen_pos,
+                                    entity.id,
+                                    &[("line start", s), ("line end", e), ("line mid", mid)],
+                                );
                             }
+                            EntityKind::Arc {
+                                center,
+                                radius,
+                                start_angle,
+                                end_angle,
+                            } => {
+                                let c: Vec2 = (*center).into();
+                                let r = *radius;
+                                let sa = *start_angle;
+                                let ea = *end_angle;
+                                let mid_ang = sa + (ea - sa) * 0.5;
+                                let pts = [
+                                    (
+                                        "arc start",
+                                        Vec2::new(c.x + r * sa.cos(), c.y + r * sa.sin()),
+                                    ),
+                                    (
+                                        "arc mid",
+                                        Vec2::new(c.x + r * mid_ang.cos(), c.y + r * mid_ang.sin()),
+                                    ),
+                                    ("arc end", Vec2::new(c.x + r * ea.cos(), c.y + r * ea.sin())),
+                                ];
+                                self.push_pick_candidates(
+                                    &mut best, viewport, rect, screen_pos, entity.id, &pts,
+                                );
+                            }
+                            EntityKind::Circle { center, radius } => {
+                                let c: Vec2 = (*center).into();
+                                let r = *radius;
+                                let pts = [
+                                    ("circle center", c),
+                                    ("circle east", Vec2::new(c.x + r, c.y)),
+                                    ("circle west", Vec2::new(c.x - r, c.y)),
+                                    ("circle north", Vec2::new(c.x, c.y + r)),
+                                    ("circle south", Vec2::new(c.x, c.y - r)),
+                                ];
+                                self.push_pick_candidates(
+                                    &mut best, viewport, rect, screen_pos, entity.id, &pts,
+                                );
+                            }
+                            EntityKind::Polyline { vertices, closed } => {
+                                if vertices.is_empty() {
+                                    continue;
+                                }
+                                for (i, v) in vertices.iter().enumerate() {
+                                    let p: Vec2 = (*v).into();
+                                    let label = if i == 0 {
+                                        "poly start"
+                                    } else if i + 1 == vertices.len() && !*closed {
+                                        "poly end"
+                                    } else {
+                                        "poly vertex"
+                                    };
+                                    self.push_pick_candidates(
+                                        &mut best,
+                                        viewport,
+                                        rect,
+                                        screen_pos,
+                                        entity.id,
+                                        &[(label, p)],
+                                    );
+                                }
+                                for seg in vertices.windows(2) {
+                                    let a: Vec2 = seg[0].into();
+                                    let b: Vec2 = seg[1].into();
+                                    let mid = Vec2::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5);
+                                    self.push_pick_candidates(
+                                        &mut best,
+                                        viewport,
+                                        rect,
+                                        screen_pos,
+                                        entity.id,
+                                        &[("poly mid", mid)],
+                                    );
+                                }
+                                if *closed && vertices.len() >= 2 {
+                                    let a: Vec2 = vertices.last().unwrap().to_owned().into();
+                                    let b: Vec2 = vertices.first().unwrap().to_owned().into();
+                                    let mid = Vec2::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5);
+                                    self.push_pick_candidates(
+                                        &mut best,
+                                        viewport,
+                                        rect,
+                                        screen_pos,
+                                        entity.id,
+                                        &[("poly mid", mid)],
+                                    );
+                                }
+                            }
+                            EntityKind::DimAligned { start, end, .. }
+                            | EntityKind::DimLinear { start, end, .. } => {
+                                let s: Vec2 = (*start).into();
+                                let e: Vec2 = (*end).into();
+                                let mid = Vec2::new((s.x + e.x) * 0.5, (s.y + e.y) * 0.5);
+                                self.push_pick_candidates(
+                                    &mut best,
+                                    viewport,
+                                    rect,
+                                    screen_pos,
+                                    entity.id,
+                                    &[("dim start", s), ("dim end", e), ("dim mid", mid)],
+                                );
+                            }
+                            EntityKind::DimAngular {
+                                vertex,
+                                line1_pt,
+                                line2_pt,
+                                ..
+                            } => {
+                                let v: Vec2 = (*vertex).into();
+                                let p1: Vec2 = (*line1_pt).into();
+                                let p2: Vec2 = (*line2_pt).into();
+                                self.push_pick_candidates(
+                                    &mut best,
+                                    viewport,
+                                    rect,
+                                    screen_pos,
+                                    entity.id,
+                                    &[("center", v), ("dim start", p1), ("dim end", p2)],
+                                );
+                            }
+                            EntityKind::DimRadial {
+                                center, leader_pt, ..
+                            } => {
+                                let c: Vec2 = (*center).into();
+                                let l: Vec2 = (*leader_pt).into();
+                                self.push_pick_candidates(
+                                    &mut best,
+                                    viewport,
+                                    rect,
+                                    screen_pos,
+                                    entity.id,
+                                    &[("center", c), ("dim end", l)],
+                                );
+                            }
+                            EntityKind::Text { position, .. } => {
+                                let p: Vec2 = (*position).into();
+                                self.push_pick_candidates(
+                                    &mut best,
+                                    viewport,
+                                    rect,
+                                    screen_pos,
+                                    entity.id,
+                                    &[("text origin", p)],
+                                );
+                            }
+                            EntityKind::Insert { .. } => {}
                         }
                     }
                 }
@@ -13758,37 +13697,54 @@ impl CadKitApp {
         }
     }
 
-    fn explode_insert_entity(&mut self, id: Guid) -> bool {
-        let Some(src) = self.drawing.get_entity(&id).cloned() else {
-            return false;
-        };
+    fn evaluate_insert_world_entities(&self, insert_entity: &Entity) -> Vec<BlockEntity> {
         let EntityKind::Insert {
             name,
             position,
             rotation,
             scale_x,
             scale_y,
-        } = src.kind
+        } = &insert_entity.kind
         else {
-            return false;
-        };
-        let Some(def) = self.drawing.get_block(&name).cloned() else {
-            return false;
+            return Vec::new();
         };
         let (eff_sx, eff_sy) = self.resolved_insert_scale(
-            &name,
-            scale_x,
-            scale_y,
-            src.block_params.width,
-            src.block_params.height,
+            name,
+            *scale_x,
+            *scale_y,
+            insert_entity.block_params.width,
+            insert_entity.block_params.height,
         );
+        let Some(local_entities) = self.drawing.evaluate_insert_local_entities(insert_entity)
+        else {
+            return Vec::new();
+        };
+        local_entities
+            .into_iter()
+            .map(|mut be| {
+                be.kind = Self::transform_insert_local_kind(
+                    &be.kind, *position, *rotation, eff_sx, eff_sy,
+                );
+                be
+            })
+            .collect()
+    }
+
+    fn explode_insert_entity(&mut self, id: Guid) -> bool {
+        let Some(src) = self.drawing.get_entity(&id).cloned() else {
+            return false;
+        };
+        if !matches!(src.kind, EntityKind::Insert { .. }) {
+            return false;
+        }
+        let world_entities = self.evaluate_insert_world_entities(&src);
+        if world_entities.is_empty() {
+            return false;
+        }
 
         let _ = self.drawing.remove_entity(&id);
-        for b in &def.entities {
-            let mut e = Entity::new(
-                Self::transform_insert_local_kind(&b.kind, position, rotation, eff_sx, eff_sy),
-                b.layer,
-            );
+        for b in &world_entities {
+            let mut e = Entity::new(b.kind.clone(), b.layer);
             e.color = b.color;
             e.linetype = b.linetype;
             e.linetype_by_layer = b.linetype_by_layer;
@@ -13975,28 +13931,10 @@ impl CadKitApp {
                 continue;
             };
             match &e.kind {
-                EntityKind::Insert {
-                    name,
-                    position,
-                    rotation,
-                    scale_x,
-                    scale_y,
-                } => {
-                    let (eff_sx, eff_sy) = self.resolved_insert_scale(
-                        name,
-                        *scale_x,
-                        *scale_y,
-                        e.block_params.width,
-                        e.block_params.height,
-                    );
-                    if let Some(def) = self.drawing.get_block(name) {
-                        for be in &def.entities {
-                            let wk = Self::transform_insert_local_kind(
-                                &be.kind, *position, *rotation, eff_sx, eff_sy,
-                            );
-                            if let Some(p) = Self::entity_to_geom_prim(&wk) {
-                                cutting_prims.push(p);
-                            }
+                EntityKind::Insert { .. } => {
+                    for be in self.evaluate_insert_world_entities(e) {
+                        if let Some(p) = Self::entity_to_geom_prim(&be.kind) {
+                            cutting_prims.push(p);
                         }
                     }
                 }
@@ -15140,13 +15078,7 @@ impl CadKitApp {
                         }
                     }
                 }
-                EntityKind::Insert {
-                    name,
-                    position,
-                    rotation,
-                    scale_x,
-                    scale_y,
-                } => {
+                EntityKind::Insert { position, .. } => {
                     if self.snap_endpoint {
                         let p: Vec2 = (*position).into();
                         if Self::point_on_ortho_axis(base, axis, p, tol) {
@@ -15161,285 +15093,142 @@ impl CadKitApp {
                             );
                         }
                     }
-                    let (eff_sx, eff_sy) = self.resolved_insert_scale(
-                        name,
-                        *scale_x,
-                        *scale_y,
-                        entity.block_params.width,
-                        entity.block_params.height,
-                    );
-                    if let Some(def) = self.drawing.get_block(name) {
-                        for be in &def.entities {
-                            let world_kind = Self::transform_insert_local_kind(
-                                &be.kind, *position, *rotation, eff_sx, eff_sy,
-                            );
-                            match &world_kind {
-                                EntityKind::Line { start, end } => {
-                                    if self.snap_endpoint {
-                                        let s: Vec2 = (*start).into();
-                                        let e: Vec2 = (*end).into();
-                                        if Self::point_on_ortho_axis(base, axis, s, tol) {
-                                            Self::add_ranked_ortho_candidate(
-                                                &mut best,
-                                                viewport,
-                                                rect,
-                                                screen_pos,
-                                                0,
-                                                s,
-                                                SnapKind::Endpoint,
-                                            );
-                                        }
-                                        if Self::point_on_ortho_axis(base, axis, e, tol) {
-                                            Self::add_ranked_ortho_candidate(
-                                                &mut best,
-                                                viewport,
-                                                rect,
-                                                screen_pos,
-                                                0,
-                                                e,
-                                                SnapKind::Endpoint,
-                                            );
-                                        }
-                                    }
-                                    if self.snap_midpoint {
-                                        let s: Vec2 = (*start).into();
-                                        let e: Vec2 = (*end).into();
-                                        let m = Vec2::new((s.x + e.x) * 0.5, (s.y + e.y) * 0.5);
-                                        if Self::point_on_ortho_axis(base, axis, m, tol) {
-                                            Self::add_ranked_ortho_candidate(
-                                                &mut best,
-                                                viewport,
-                                                rect,
-                                                screen_pos,
-                                                2,
-                                                m,
-                                                SnapKind::Midpoint,
-                                            );
-                                        }
-                                    }
-                                }
-                                EntityKind::Arc {
-                                    center,
-                                    radius,
-                                    start_angle,
-                                    end_angle,
-                                } => {
-                                    let c: Vec2 = (*center).into();
-                                    if self.snap_endpoint {
-                                        let ps = Vec2::new(
-                                            c.x + radius * start_angle.cos(),
-                                            c.y + radius * start_angle.sin(),
-                                        );
-                                        let pe = Vec2::new(
-                                            c.x + radius * end_angle.cos(),
-                                            c.y + radius * end_angle.sin(),
-                                        );
-                                        if Self::point_on_ortho_axis(base, axis, ps, tol) {
-                                            Self::add_ranked_ortho_candidate(
-                                                &mut best,
-                                                viewport,
-                                                rect,
-                                                screen_pos,
-                                                0,
-                                                ps,
-                                                SnapKind::Endpoint,
-                                            );
-                                        }
-                                        if Self::point_on_ortho_axis(base, axis, pe, tol) {
-                                            Self::add_ranked_ortho_candidate(
-                                                &mut best,
-                                                viewport,
-                                                rect,
-                                                screen_pos,
-                                                0,
-                                                pe,
-                                                SnapKind::Endpoint,
-                                            );
-                                        }
-                                    }
-                                    if self.snap_midpoint {
-                                        let a = start_angle + (end_angle - start_angle) * 0.5;
-                                        let pm = Vec2::new(
-                                            c.x + radius * a.cos(),
-                                            c.y + radius * a.sin(),
-                                        );
-                                        if Self::point_on_ortho_axis(base, axis, pm, tol) {
-                                            Self::add_ranked_ortho_candidate(
-                                                &mut best,
-                                                viewport,
-                                                rect,
-                                                screen_pos,
-                                                2,
-                                                pm,
-                                                SnapKind::Midpoint,
-                                            );
-                                        }
-                                    }
-                                    if self.snap_center
-                                        && Self::point_on_ortho_axis(base, axis, c, tol)
-                                    {
+                    for be in self.evaluate_insert_world_entities(entity) {
+                        match &be.kind {
+                            EntityKind::Line { start, end } => {
+                                if self.snap_endpoint {
+                                    let s: Vec2 = (*start).into();
+                                    let e: Vec2 = (*end).into();
+                                    if Self::point_on_ortho_axis(base, axis, s, tol) {
                                         Self::add_ranked_ortho_candidate(
                                             &mut best,
                                             viewport,
                                             rect,
                                             screen_pos,
-                                            3,
-                                            c,
-                                            SnapKind::Center,
+                                            0,
+                                            s,
+                                            SnapKind::Endpoint,
                                         );
                                     }
-                                }
-                                EntityKind::Circle { center, .. } => {
-                                    let c: Vec2 = (*center).into();
-                                    if self.snap_center
-                                        && Self::point_on_ortho_axis(base, axis, c, tol)
-                                    {
+                                    if Self::point_on_ortho_axis(base, axis, e, tol) {
                                         Self::add_ranked_ortho_candidate(
                                             &mut best,
                                             viewport,
                                             rect,
                                             screen_pos,
-                                            3,
-                                            c,
-                                            SnapKind::Center,
+                                            0,
+                                            e,
+                                            SnapKind::Endpoint,
                                         );
                                     }
                                 }
-                                EntityKind::Polyline { vertices, closed } => {
-                                    if vertices.is_empty() {
-                                        continue;
-                                    }
-                                    if self.snap_endpoint {
-                                        for v in vertices.iter() {
-                                            let p: Vec2 = (*v).into();
-                                            if Self::point_on_ortho_axis(base, axis, p, tol) {
-                                                Self::add_ranked_ortho_candidate(
-                                                    &mut best,
-                                                    viewport,
-                                                    rect,
-                                                    screen_pos,
-                                                    0,
-                                                    p,
-                                                    SnapKind::Endpoint,
-                                                );
-                                            }
-                                        }
-                                    }
-                                    if self.snap_midpoint {
-                                        for seg in vertices.windows(2) {
-                                            let a: Vec2 = seg[0].into();
-                                            let b: Vec2 = seg[1].into();
-                                            let m = Vec2::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5);
-                                            if Self::point_on_ortho_axis(base, axis, m, tol) {
-                                                Self::add_ranked_ortho_candidate(
-                                                    &mut best,
-                                                    viewport,
-                                                    rect,
-                                                    screen_pos,
-                                                    2,
-                                                    m,
-                                                    SnapKind::Midpoint,
-                                                );
-                                            }
-                                        }
-                                        if *closed && vertices.len() >= 2 {
-                                            let a: Vec2 = vertices[vertices.len() - 1].into();
-                                            let b: Vec2 = vertices[0].into();
-                                            let m = Vec2::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5);
-                                            if Self::point_on_ortho_axis(base, axis, m, tol) {
-                                                Self::add_ranked_ortho_candidate(
-                                                    &mut best,
-                                                    viewport,
-                                                    rect,
-                                                    screen_pos,
-                                                    2,
-                                                    m,
-                                                    SnapKind::Midpoint,
-                                                );
-                                            }
-                                        }
+                                if self.snap_midpoint {
+                                    let s: Vec2 = (*start).into();
+                                    let e: Vec2 = (*end).into();
+                                    let m = Vec2::new((s.x + e.x) * 0.5, (s.y + e.y) * 0.5);
+                                    if Self::point_on_ortho_axis(base, axis, m, tol) {
+                                        Self::add_ranked_ortho_candidate(
+                                            &mut best,
+                                            viewport,
+                                            rect,
+                                            screen_pos,
+                                            2,
+                                            m,
+                                            SnapKind::Midpoint,
+                                        );
                                     }
                                 }
-                                EntityKind::DimAligned { start, end, .. }
-                                | EntityKind::DimLinear { start, end, .. } => {
-                                    if self.snap_endpoint {
-                                        let s: Vec2 = (*start).into();
-                                        let e: Vec2 = (*end).into();
-                                        if Self::point_on_ortho_axis(base, axis, s, tol) {
-                                            Self::add_ranked_ortho_candidate(
-                                                &mut best,
-                                                viewport,
-                                                rect,
-                                                screen_pos,
-                                                0,
-                                                s,
-                                                SnapKind::Endpoint,
-                                            );
-                                        }
-                                        if Self::point_on_ortho_axis(base, axis, e, tol) {
-                                            Self::add_ranked_ortho_candidate(
-                                                &mut best,
-                                                viewport,
-                                                rect,
-                                                screen_pos,
-                                                0,
-                                                e,
-                                                SnapKind::Endpoint,
-                                            );
-                                        }
+                            }
+                            EntityKind::Arc {
+                                center,
+                                radius,
+                                start_angle,
+                                end_angle,
+                            } => {
+                                let c: Vec2 = (*center).into();
+                                if self.snap_endpoint {
+                                    let ps = Vec2::new(
+                                        c.x + radius * start_angle.cos(),
+                                        c.y + radius * start_angle.sin(),
+                                    );
+                                    let pe = Vec2::new(
+                                        c.x + radius * end_angle.cos(),
+                                        c.y + radius * end_angle.sin(),
+                                    );
+                                    if Self::point_on_ortho_axis(base, axis, ps, tol) {
+                                        Self::add_ranked_ortho_candidate(
+                                            &mut best,
+                                            viewport,
+                                            rect,
+                                            screen_pos,
+                                            0,
+                                            ps,
+                                            SnapKind::Endpoint,
+                                        );
                                     }
-                                    if self.snap_midpoint {
-                                        let s: Vec2 = (*start).into();
-                                        let e: Vec2 = (*end).into();
-                                        let m = Vec2::new((s.x + e.x) * 0.5, (s.y + e.y) * 0.5);
-                                        if Self::point_on_ortho_axis(base, axis, m, tol) {
-                                            Self::add_ranked_ortho_candidate(
-                                                &mut best,
-                                                viewport,
-                                                rect,
-                                                screen_pos,
-                                                2,
-                                                m,
-                                                SnapKind::Midpoint,
-                                            );
-                                        }
+                                    if Self::point_on_ortho_axis(base, axis, pe, tol) {
+                                        Self::add_ranked_ortho_candidate(
+                                            &mut best,
+                                            viewport,
+                                            rect,
+                                            screen_pos,
+                                            0,
+                                            pe,
+                                            SnapKind::Endpoint,
+                                        );
                                     }
                                 }
-                                EntityKind::DimAngular { vertex, .. } => {
-                                    if self.snap_center {
-                                        let c: Vec2 = (*vertex).into();
-                                        if Self::point_on_ortho_axis(base, axis, c, tol) {
-                                            Self::add_ranked_ortho_candidate(
-                                                &mut best,
-                                                viewport,
-                                                rect,
-                                                screen_pos,
-                                                3,
-                                                c,
-                                                SnapKind::Center,
-                                            );
-                                        }
+                                if self.snap_midpoint {
+                                    let a = start_angle + (end_angle - start_angle) * 0.5;
+                                    let pm =
+                                        Vec2::new(c.x + radius * a.cos(), c.y + radius * a.sin());
+                                    if Self::point_on_ortho_axis(base, axis, pm, tol) {
+                                        Self::add_ranked_ortho_candidate(
+                                            &mut best,
+                                            viewport,
+                                            rect,
+                                            screen_pos,
+                                            2,
+                                            pm,
+                                            SnapKind::Midpoint,
+                                        );
                                     }
                                 }
-                                EntityKind::DimRadial { center, .. } => {
-                                    if self.snap_center {
-                                        let c: Vec2 = (*center).into();
-                                        if Self::point_on_ortho_axis(base, axis, c, tol) {
-                                            Self::add_ranked_ortho_candidate(
-                                                &mut best,
-                                                viewport,
-                                                rect,
-                                                screen_pos,
-                                                3,
-                                                c,
-                                                SnapKind::Center,
-                                            );
-                                        }
-                                    }
+                                if self.snap_center && Self::point_on_ortho_axis(base, axis, c, tol)
+                                {
+                                    Self::add_ranked_ortho_candidate(
+                                        &mut best,
+                                        viewport,
+                                        rect,
+                                        screen_pos,
+                                        3,
+                                        c,
+                                        SnapKind::Center,
+                                    );
                                 }
-                                EntityKind::Text { position, .. } => {
-                                    if self.snap_endpoint {
-                                        let p: Vec2 = (*position).into();
+                            }
+                            EntityKind::Circle { center, .. } => {
+                                let c: Vec2 = (*center).into();
+                                if self.snap_center && Self::point_on_ortho_axis(base, axis, c, tol)
+                                {
+                                    Self::add_ranked_ortho_candidate(
+                                        &mut best,
+                                        viewport,
+                                        rect,
+                                        screen_pos,
+                                        3,
+                                        c,
+                                        SnapKind::Center,
+                                    );
+                                }
+                            }
+                            EntityKind::Polyline { vertices, closed } => {
+                                if vertices.is_empty() {
+                                    continue;
+                                }
+                                if self.snap_endpoint {
+                                    for v in vertices.iter() {
+                                        let p: Vec2 = (*v).into();
                                         if Self::point_on_ortho_axis(base, axis, p, tol) {
                                             Self::add_ranked_ortho_candidate(
                                                 &mut best,
@@ -15453,8 +15242,135 @@ impl CadKitApp {
                                         }
                                     }
                                 }
-                                EntityKind::Insert { .. } => {}
+                                if self.snap_midpoint {
+                                    for seg in vertices.windows(2) {
+                                        let a: Vec2 = seg[0].into();
+                                        let b: Vec2 = seg[1].into();
+                                        let m = Vec2::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5);
+                                        if Self::point_on_ortho_axis(base, axis, m, tol) {
+                                            Self::add_ranked_ortho_candidate(
+                                                &mut best,
+                                                viewport,
+                                                rect,
+                                                screen_pos,
+                                                2,
+                                                m,
+                                                SnapKind::Midpoint,
+                                            );
+                                        }
+                                    }
+                                    if *closed && vertices.len() >= 2 {
+                                        let a: Vec2 = vertices[vertices.len() - 1].into();
+                                        let b: Vec2 = vertices[0].into();
+                                        let m = Vec2::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5);
+                                        if Self::point_on_ortho_axis(base, axis, m, tol) {
+                                            Self::add_ranked_ortho_candidate(
+                                                &mut best,
+                                                viewport,
+                                                rect,
+                                                screen_pos,
+                                                2,
+                                                m,
+                                                SnapKind::Midpoint,
+                                            );
+                                        }
+                                    }
+                                }
                             }
+                            EntityKind::DimAligned { start, end, .. }
+                            | EntityKind::DimLinear { start, end, .. } => {
+                                if self.snap_endpoint {
+                                    let s: Vec2 = (*start).into();
+                                    let e: Vec2 = (*end).into();
+                                    if Self::point_on_ortho_axis(base, axis, s, tol) {
+                                        Self::add_ranked_ortho_candidate(
+                                            &mut best,
+                                            viewport,
+                                            rect,
+                                            screen_pos,
+                                            0,
+                                            s,
+                                            SnapKind::Endpoint,
+                                        );
+                                    }
+                                    if Self::point_on_ortho_axis(base, axis, e, tol) {
+                                        Self::add_ranked_ortho_candidate(
+                                            &mut best,
+                                            viewport,
+                                            rect,
+                                            screen_pos,
+                                            0,
+                                            e,
+                                            SnapKind::Endpoint,
+                                        );
+                                    }
+                                }
+                                if self.snap_midpoint {
+                                    let s: Vec2 = (*start).into();
+                                    let e: Vec2 = (*end).into();
+                                    let m = Vec2::new((s.x + e.x) * 0.5, (s.y + e.y) * 0.5);
+                                    if Self::point_on_ortho_axis(base, axis, m, tol) {
+                                        Self::add_ranked_ortho_candidate(
+                                            &mut best,
+                                            viewport,
+                                            rect,
+                                            screen_pos,
+                                            2,
+                                            m,
+                                            SnapKind::Midpoint,
+                                        );
+                                    }
+                                }
+                            }
+                            EntityKind::DimAngular { vertex, .. } => {
+                                if self.snap_center {
+                                    let c: Vec2 = (*vertex).into();
+                                    if Self::point_on_ortho_axis(base, axis, c, tol) {
+                                        Self::add_ranked_ortho_candidate(
+                                            &mut best,
+                                            viewport,
+                                            rect,
+                                            screen_pos,
+                                            3,
+                                            c,
+                                            SnapKind::Center,
+                                        );
+                                    }
+                                }
+                            }
+                            EntityKind::DimRadial { center, .. } => {
+                                if self.snap_center {
+                                    let c: Vec2 = (*center).into();
+                                    if Self::point_on_ortho_axis(base, axis, c, tol) {
+                                        Self::add_ranked_ortho_candidate(
+                                            &mut best,
+                                            viewport,
+                                            rect,
+                                            screen_pos,
+                                            3,
+                                            c,
+                                            SnapKind::Center,
+                                        );
+                                    }
+                                }
+                            }
+                            EntityKind::Text { position, .. } => {
+                                if self.snap_endpoint {
+                                    let p: Vec2 = (*position).into();
+                                    if Self::point_on_ortho_axis(base, axis, p, tol) {
+                                        Self::add_ranked_ortho_candidate(
+                                            &mut best,
+                                            viewport,
+                                            rect,
+                                            screen_pos,
+                                            0,
+                                            p,
+                                            SnapKind::Endpoint,
+                                        );
+                                    }
+                                }
+                            }
+                            EntityKind::Insert { .. } => {}
                         }
                     }
                 }
