@@ -9219,8 +9219,102 @@ impl CadKitApp {
                 e.layer = layer;
                 Ok(e)
             }
-            EntityKind::Polyline { .. } => {
-                Err("OFFSET: Polyline offset not yet supported".to_string())
+            EntityKind::Polyline { vertices, closed } => {
+                let n = vertices.len();
+                if n < 2 {
+                    return Err("OFFSET: Polyline has too few vertices".to_string());
+                }
+                let verts: Vec<Vec2> = vertices.iter().map(|v| (*v).into()).collect();
+                let seg_count = if *closed { n } else { n - 1 };
+
+                // Find nearest segment, determine which side the click is on.
+                let mut best_dist_sq = f64::MAX;
+                let mut sign = 1.0_f64;
+                for i in 0..seg_count {
+                    let a = verts[i];
+                    let b = verts[(i + 1) % n];
+                    let dx = b.x - a.x;
+                    let dy = b.y - a.y;
+                    let len_sq = dx * dx + dy * dy;
+                    if len_sq < 1e-18 {
+                        continue;
+                    }
+                    let tx = world_click.x - a.x;
+                    let ty = world_click.y - a.y;
+                    let t = ((tx * dx + ty * dy) / len_sq).clamp(0.0, 1.0);
+                    let px = a.x + t * dx;
+                    let py = a.y + t * dy;
+                    let d_sq = (world_click.x - px).powi(2) + (world_click.y - py).powi(2);
+                    if d_sq < best_dist_sq {
+                        best_dist_sq = d_sq;
+                        // Cross product: positive = click is to the left of segment direction
+                        let cp = dx * (world_click.y - a.y) - dy * (world_click.x - a.x);
+                        sign = if cp >= 0.0 { 1.0 } else { -1.0 };
+                    }
+                }
+                let dist = self.offset_distance.unwrap_or_else(|| best_dist_sq.sqrt());
+                if dist < 1e-9 {
+                    return Err("OFFSET: Click is on the polyline — pick a point to one side".to_string());
+                }
+
+                // Build per-segment offset lines (start, end, unit-dir).
+                struct OffSeg { start: Vec2, end: Vec2, dir: Vec2 }
+                let mut off_segs: Vec<OffSeg> = Vec::with_capacity(seg_count);
+                for i in 0..seg_count {
+                    let a = verts[i];
+                    let b = verts[(i + 1) % n];
+                    let dx = b.x - a.x;
+                    let dy = b.y - a.y;
+                    let len = (dx * dx + dy * dy).sqrt();
+                    if len < 1e-9 {
+                        continue;
+                    }
+                    let nx = -dy / len;
+                    let ny = dx / len;
+                    let ox = sign * dist * nx;
+                    let oy = sign * dist * ny;
+                    off_segs.push(OffSeg {
+                        start: Vec2::new(a.x + ox, a.y + oy),
+                        end: Vec2::new(b.x + ox, b.y + oy),
+                        dir: Vec2::new(dx / len, dy / len),
+                    });
+                }
+                if off_segs.is_empty() {
+                    return Err("OFFSET: Polyline is degenerate".to_string());
+                }
+
+                // Intersect adjacent offset segments to get corner vertices.
+                let intersect = |p1: Vec2, d1: Vec2, p2: Vec2, d2: Vec2| -> Vec2 {
+                    let cross_d = d1.x * d2.y - d1.y * d2.x;
+                    if cross_d.abs() < 1e-12 {
+                        return p1; // parallel — just use the endpoint
+                    }
+                    let t = ((p2.x - p1.x) * d2.y - (p2.y - p1.y) * d2.x) / cross_d;
+                    Vec2::new(p1.x + t * d1.x, p1.y + t * d1.y)
+                };
+
+                let m = off_segs.len();
+                let mut new_verts: Vec<Vec2> = Vec::with_capacity(m + 1);
+                if *closed {
+                    for i in 0..m {
+                        let a = &off_segs[i];
+                        let b = &off_segs[(i + 1) % m];
+                        new_verts.push(intersect(a.start, a.dir, b.start, b.dir));
+                    }
+                } else {
+                    new_verts.push(off_segs[0].start);
+                    for i in 0..m - 1 {
+                        let a = &off_segs[i];
+                        let b = &off_segs[i + 1];
+                        new_verts.push(intersect(a.start, a.dir, b.start, b.dir));
+                    }
+                    new_verts.push(off_segs[m - 1].end);
+                }
+
+                let vertices_out: Vec<Vec3> = new_verts.iter().map(|v| Vec3::xy(v.x, v.y)).collect();
+                let mut e = Entity::new(EntityKind::Polyline { vertices: vertices_out, closed: *closed }, layer);
+                e.layer = layer;
+                Ok(e)
             }
             EntityKind::DimAligned { .. }
             | EntityKind::DimLinear { .. }
@@ -9455,6 +9549,34 @@ impl CadKitApp {
                         let pos = rect.min + egui::vec2(sx, sy);
                         if let Some(prev) = last { painter.line_segment([prev, pos], preview_stroke); }
                         last = Some(pos);
+                    }
+                }
+                EntityKind::Polyline { vertices, closed } => {
+                    if vertices.len() >= 2 {
+                        let verts: Vec<Vec2> = vertices.iter().map(|v| (*v).into()).collect();
+                        let iter = verts.windows(2);
+                        let mut prev_pt: Option<egui::Pos2> = None;
+                        for seg in iter {
+                            let a: Vec2 = seg[0];
+                            let b: Vec2 = seg[1];
+                            let (x1, y1) = world_to_screen(a.x as f32, a.y as f32, viewport);
+                            let (x2, y2) = world_to_screen(b.x as f32, b.y as f32, viewport);
+                            let pa = rect.min + egui::vec2(x1, y1);
+                            let pb = rect.min + egui::vec2(x2, y2);
+                            painter.line_segment([pa, pb], preview_stroke);
+                            prev_pt = Some(pb);
+                        }
+                        if *closed {
+                            let a: Vec2 = *verts.last().unwrap();
+                            let b: Vec2 = *verts.first().unwrap();
+                            let (x1, y1) = world_to_screen(a.x as f32, a.y as f32, viewport);
+                            let (x2, y2) = world_to_screen(b.x as f32, b.y as f32, viewport);
+                            painter.line_segment(
+                                [rect.min + egui::vec2(x1, y1), rect.min + egui::vec2(x2, y2)],
+                                preview_stroke,
+                            );
+                        }
+                        let _ = prev_pt;
                     }
                 }
                 _ => {}
