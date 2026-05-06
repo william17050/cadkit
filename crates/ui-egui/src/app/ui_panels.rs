@@ -2284,6 +2284,25 @@ impl CadKitApp {
                                         .push("  *FROM: enter @dx,dy or @dist<angle*".to_string());
                                 }
                                 handled = true;
+                            } else if self.offset_phase == OffsetPhase::EnteringDistance {
+                                if let Ok(d) = cmd.trim().parse::<f64>() {
+                                    if d > 1e-9 {
+                                        self.offset_distance = Some(d);
+                                        self.offset_phase = OffsetPhase::SelectingEntity;
+                                        self.offset_selected_entity = None;
+                                        self.command_log.push(format!(
+                                            "OFFSET: Distance {:.4}. Select entity to offset:",
+                                            d
+                                        ));
+                                    } else {
+                                        self.command_log
+                                            .push("OFFSET: Distance must be > 0".to_string());
+                                    }
+                                } else {
+                                    self.command_log
+                                        .push("  *OFFSET: enter numeric distance*".to_string());
+                                }
+                                handled = true;
                             } else if self.boundary_phase == BoundaryPhase::PickingPoint {
                                 if let Some(world) = Self::resolve_typed_point(&cmd, None) {
                                     self.apply_boundary_pick(world);
