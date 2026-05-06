@@ -1,4 +1,4 @@
-use super::state::{ActiveTool, GeomPrim, SnapKind};
+use super::state::{ActiveTool, GeomPrim, IsoPlane, SnapKind};
 use super::CadKitApp;
 use cadkit_2d_core::EntityKind;
 use cadkit_geometry::{
@@ -63,6 +63,92 @@ impl CadKitApp {
             }
             gx += spacing;
         }
+    }
+
+    /// Isometric triangular-lattice grid overlay.
+    /// Dots sit at integer combinations of the two 30° iso basis vectors.
+    pub(crate) fn draw_iso_grid_overlay(
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        viewport: &Viewport,
+        spacing: f64,
+    ) {
+        let (w, h) = viewport.size();
+        if w == 0 || h == 0 {
+            return;
+        }
+        let ax1x =  spacing * 0.8660254037844386;
+        let ax1y =  spacing * 0.5;
+        let ax2x = -spacing * 0.8660254037844386;
+        let ax2y =  spacing * 0.5;
+
+        let tl = screen_to_world(0.0, 0.0, viewport);
+        let br = screen_to_world(w as f32, h as f32, viewport);
+        let min_x = tl.x.min(br.x) - spacing * 2.0;
+        let max_x = tl.x.max(br.x) + spacing * 2.0;
+        let min_y = tl.y.min(br.y) - spacing * 2.0;
+        let max_y = tl.y.max(br.y) + spacing * 2.0;
+
+        // Inverse: i = x/(s√3) + y/s,  j = -x/(s√3) + y/s
+        let inv_s3 = 1.0 / (spacing * 1.7320508075688772);
+        let i_at_min = (min_x * inv_s3 + min_y / spacing).floor() as i64 - 1;
+        let i_at_max = (max_x * inv_s3 + max_y / spacing).ceil() as i64 + 1;
+        let j_at_min = (-max_x * inv_s3 + min_y / spacing).floor() as i64 - 1;
+        let j_at_max = (-min_x * inv_s3 + max_y / spacing).ceil() as i64 + 1;
+
+        let count = (i_at_max - i_at_min + 1) * (j_at_max - j_at_min + 1);
+        if count > Self::GRID_MAX_POINTS as i64 {
+            return;
+        }
+
+        let painter = ui.painter_at(rect);
+        let color = egui::Color32::from_gray(95);
+        for i in i_at_min..=i_at_max {
+            for j in j_at_min..=j_at_max {
+                let wx = i as f64 * ax1x + j as f64 * ax2x;
+                let wy = i as f64 * ax1y + j as f64 * ax2y;
+                if wx < min_x || wx > max_x || wy < min_y || wy > max_y {
+                    continue;
+                }
+                let (sx, sy) = world_to_screen(wx as f32, wy as f32, viewport);
+                let pos = rect.min + egui::vec2(sx, sy);
+                painter.circle_filled(pos, 1.5, color);
+            }
+        }
+    }
+
+    /// Draw the isometric crosshair at `world_cursor` — two lines along the current iso plane's axes.
+    pub(crate) fn draw_iso_crosshair(
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        viewport: &Viewport,
+        world_cursor: Vec2,
+        plane: IsoPlane,
+    ) {
+        let (sx, sy) = world_to_screen(world_cursor.x as f32, world_cursor.y as f32, viewport);
+        let center = rect.min + egui::vec2(sx, sy);
+        let painter = ui.painter_at(rect);
+        let stroke = egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(180, 180, 180, 120));
+        // Extend each axis arm to fill the screen (use a large world-space length)
+        let arm = 1_000_000.0f64;
+        for ax in plane.axes() {
+            let (x1, y1) = world_to_screen(
+                (world_cursor.x - ax.x * arm) as f32,
+                (world_cursor.y - ax.y * arm) as f32,
+                viewport,
+            );
+            let (x2, y2) = world_to_screen(
+                (world_cursor.x + ax.x * arm) as f32,
+                (world_cursor.y + ax.y * arm) as f32,
+                viewport,
+            );
+            painter.line_segment(
+                [rect.min + egui::vec2(x1, y1), rect.min + egui::vec2(x2, y2)],
+                stroke,
+            );
+        }
+        // Small dot at cursor
+        painter.circle_filled(center, 3.0, egui::Color32::from_rgb(0, 220, 120));
     }
 
     pub(crate) fn draw_selected_entities_overlay(

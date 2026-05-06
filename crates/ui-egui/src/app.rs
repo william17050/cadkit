@@ -2,6 +2,7 @@
 
 use cadkit_2d_core::{
     create_arc, create_circle, create_line, BlockDynamic, BlockEntity, Drawing, Entity, EntityKind,
+    Linetype,
 };
 // create_arc_from_three_points helper lives below in this file (UI layer-specific).
 use cadkit_geometry::{detect_closed_boundaries_with_gap, Circle as GeomCircle, Line as GeomLine};
@@ -117,6 +118,33 @@ enum OrthoAxis {
     Vertical,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct StretchWindow {
+    min: Vec2,
+    max: Vec2,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RadialSourceChange {
+    old_center: Vec2,
+    old_radius: f64,
+    new_center: Vec3,
+    new_radius: f64,
+}
+
+impl StretchWindow {
+    fn new(a: Vec2, b: Vec2) -> Self {
+        Self {
+            min: Vec2::new(a.x.min(b.x), a.y.min(b.y)),
+            max: Vec2::new(a.x.max(b.x), a.y.max(b.y)),
+        }
+    }
+
+    fn contains(&self, p: Vec2) -> bool {
+        p.x >= self.min.x && p.x <= self.max.x && p.y >= self.min.y && p.y <= self.max.y
+    }
+}
+
 /// Given an entity kind and a click world position, return the nearest line segment (start, end).
 /// Supports Line and Polyline entities only; returns `None` otherwise.
 fn dim_angular_pick_segment(kind: &EntityKind, click: Vec2) -> Option<(Vec2, Vec2)> {
@@ -175,7 +203,7 @@ impl Default for AppPrefs {
             snap_parallel: true,
             snap_perpendicular: true,
             snap_tangent: true,
-            snap_nearest: true,
+            snap_nearest: false,
             ortho_enabled: true,
             grid_visible: true,
             grid_spacing: 12.0,
@@ -296,6 +324,8 @@ pub struct CadKitApp {
     hover_dim_grip: Option<DimGripHandle>,
     ortho_enabled: bool,
     ortho_increment_deg: f64,
+    iso_mode: bool,
+    iso_plane: IsoPlane,
     distance_input: String,
     circle_use_diameter: bool,
     command_log: Vec<String>,
@@ -309,6 +339,10 @@ pub struct CadKitApp {
     move_phase: MovePhase,
     move_base_point: Option<Vec2>,
     move_entities: Vec<Guid>,
+    stretch_phase: StretchPhase,
+    stretch_base_point: Option<Vec2>,
+    stretch_entities: Vec<Guid>,
+    stretch_selection_box: Option<(Vec2, Vec2)>,
     extend_phase: ExtendPhase,
     extend_boundary_edges: Vec<Guid>,
     copy_phase: CopyPhase,
@@ -331,6 +365,7 @@ pub struct CadKitApp {
     chamfer_distance2: f64,
     polygon_phase: PolygonPhase,
     polygon_sides: usize,
+    isocircle_phase: IsocirclePhase,
     ellipse_phase: EllipsePhase,
     rectangle_phase: RectanglePhase,
     rectangle_width: f64,
@@ -353,6 +388,17 @@ pub struct CadKitApp {
     pedit_phase: PeditPhase,
     boundary_phase: BoundaryPhase,
     hatch_phase: HatchPhase,
+    isoextrude_phase: IsoExtrudePhase,
+    isoextrude_entities: Vec<Guid>,
+    isoextrude_depth: f64,
+    isoextrude_elevation_origin: Option<Vec2>,
+    isoextrude_output_origin: Option<Vec2>,
+    dwiso_side_phase: DwIsoSidePhase,
+    dwiso_side_front_entities: Vec<Guid>,
+    dwiso_side_front_origin: Option<Vec2>,
+    dwiso_side_side_entities: Vec<Guid>,
+    dwiso_side_side_origin: Option<Vec2>,
+    dwiso_side_output_origin: Option<Vec2>,
     block_phase: BlockPhase,
     insert_phase: InsertPhase,
     hatch_dialog_open: bool,
@@ -446,7 +492,7 @@ impl Default for CadKitApp {
             snap_parallel: true,
             snap_perpendicular: true,
             snap_tangent: true,
-            snap_nearest: true,
+            snap_nearest: false,
             grid_visible: true,
             grid_spacing: 12.0,
             active_tool: ActiveTool::None,
@@ -459,6 +505,8 @@ impl Default for CadKitApp {
             hover_dim_grip: None,
             ortho_enabled: true,
             ortho_increment_deg: 90.0,
+            iso_mode: false,
+            iso_plane: IsoPlane::Right,
             distance_input: String::new(),
             circle_use_diameter: false,
             command_log: Vec::new(),
@@ -472,6 +520,10 @@ impl Default for CadKitApp {
             move_phase: MovePhase::Idle,
             move_base_point: None,
             move_entities: Vec::new(),
+            stretch_phase: StretchPhase::Idle,
+            stretch_base_point: None,
+            stretch_entities: Vec::new(),
+            stretch_selection_box: None,
             extend_phase: ExtendPhase::Idle,
             extend_boundary_edges: Vec::new(),
             copy_phase: CopyPhase::Idle,
@@ -494,6 +546,7 @@ impl Default for CadKitApp {
             chamfer_distance2: 5.0,
             polygon_phase: PolygonPhase::Idle,
             polygon_sides: 6,
+            isocircle_phase: IsocirclePhase::Idle,
             ellipse_phase: EllipsePhase::Idle,
             rectangle_phase: RectanglePhase::Idle,
             rectangle_width: 10.0,
@@ -516,6 +569,17 @@ impl Default for CadKitApp {
             pedit_phase: PeditPhase::Idle,
             boundary_phase: BoundaryPhase::Idle,
             hatch_phase: HatchPhase::Idle,
+            isoextrude_phase: IsoExtrudePhase::Idle,
+            isoextrude_entities: Vec::new(),
+            isoextrude_depth: 24.0,
+            isoextrude_elevation_origin: None,
+            isoextrude_output_origin: None,
+            dwiso_side_phase: DwIsoSidePhase::Idle,
+            dwiso_side_front_entities: Vec::new(),
+            dwiso_side_front_origin: None,
+            dwiso_side_side_entities: Vec::new(),
+            dwiso_side_side_origin: None,
+            dwiso_side_output_origin: None,
             block_phase: BlockPhase::Idle,
             insert_phase: InsertPhase::Idle,
             hatch_dialog_open: false,
@@ -592,6 +656,7 @@ impl CadKitApp {
     const PAN_SENSITIVITY: f32 = 0.3;
     const GRID_MAX_POINTS: usize = 20_000;
     const PICK_RADIUS: f32 = 16.0; // screen-space pixels
+    const NEAREST_SNAP_RADIUS: f32 = 8.0; // tighter aperture for nearest-on-curve snap
     const TRACKING_RADIUS: f32 = 12.0; // screen-space pixels
     pub(crate) const DIM_GRIP_RADIUS: f32 = 7.0;
     const GEOM_TOL: f64 = 1e-9;
@@ -1164,12 +1229,15 @@ impl CadKitApp {
         self.exit_fillet();
         self.exit_chamfer();
         self.exit_polygon();
+        self.exit_isocircle();
         self.exit_ellipse();
         self.exit_rectangle();
         self.exit_array();
         self.exit_pedit();
         self.exit_boundary();
         self.exit_hatch();
+        self.exit_isoextrude();
+        self.exit_dwiso_side();
         self.exit_block();
         self.exit_insert();
         self.selection = None;
@@ -1196,6 +1264,22 @@ impl CadKitApp {
         self.hatch_phase = HatchPhase::Idle;
     }
 
+    fn exit_isoextrude(&mut self) {
+        self.isoextrude_phase = IsoExtrudePhase::Idle;
+        self.isoextrude_entities.clear();
+        self.isoextrude_elevation_origin = None;
+        self.isoextrude_output_origin = None;
+    }
+
+    fn exit_dwiso_side(&mut self) {
+        self.dwiso_side_phase = DwIsoSidePhase::Idle;
+        self.dwiso_side_front_entities.clear();
+        self.dwiso_side_front_origin = None;
+        self.dwiso_side_side_entities.clear();
+        self.dwiso_side_side_origin = None;
+        self.dwiso_side_output_origin = None;
+    }
+
     fn exit_block(&mut self) {
         self.block_phase = BlockPhase::Idle;
     }
@@ -1210,6 +1294,10 @@ impl CadKitApp {
 
     fn exit_polygon(&mut self) {
         self.polygon_phase = PolygonPhase::Idle;
+    }
+
+    fn exit_isocircle(&mut self) {
+        self.isocircle_phase = IsocirclePhase::Idle;
     }
 
     fn exit_ellipse(&mut self) {
@@ -1270,6 +1358,9 @@ impl CadKitApp {
                 matches!(
                     self.move_phase,
                     MovePhase::BasePoint | MovePhase::Destination
+                ) || matches!(
+                    self.stretch_phase,
+                    StretchPhase::BasePoint | StretchPhase::Destination
                 ) || matches!(
                     self.copy_phase,
                     CopyPhase::BasePoint | CopyPhase::Destination
@@ -1411,6 +1502,13 @@ impl CadKitApp {
                 .push("MOVE: Pick destination point".to_string());
         } else if self.move_phase == MovePhase::Destination {
             self.apply_move(world);
+        } else if self.stretch_phase == StretchPhase::BasePoint {
+            self.stretch_base_point = Some(world);
+            self.stretch_phase = StretchPhase::Destination;
+            self.command_log
+                .push("STRETCH: Pick second point or displacement".to_string());
+        } else if self.stretch_phase == StretchPhase::Destination {
+            self.apply_stretch(world);
         } else if self.copy_phase == CopyPhase::BasePoint {
             self.copy_base_point = Some(world);
             self.copy_phase = CopyPhase::Destination;
@@ -1456,7 +1554,7 @@ impl CadKitApp {
         } else if self.mirror_phase == MirrorPhase::SecondAxisPoint {
             if let Some(p1) = self.mirror_axis_p1 {
                 let axis_p2 = if self.ortho_enabled {
-                    Self::snap_angle(p1, world, self.ortho_increment_deg)
+                    self.ortho_snap(p1, world)
                 } else {
                     world
                 };
@@ -1470,13 +1568,21 @@ impl CadKitApp {
             if self.apply_polygon(center, world) {
                 self.polygon_phase = PolygonPhase::Center;
             }
+        } else if self.isocircle_phase == IsocirclePhase::Center {
+            self.isocircle_phase = IsocirclePhase::Radius { center: world };
+            self.command_log.push("ISOCIRCLE: Pick radius or type value:".to_string());
+        } else if let IsocirclePhase::Radius { center } = self.isocircle_phase {
+            let radius = center.distance_to(&world);
+            if self.apply_isocircle(center, radius) {
+                self.isocircle_phase = IsocirclePhase::Center;
+            }
         } else if self.ellipse_phase == EllipsePhase::Center {
             self.ellipse_phase = EllipsePhase::RadiusX { center: world };
             self.command_log
                 .push("ELLIPSE: Specify radius from center".to_string());
         } else if let EllipsePhase::RadiusX { center } = self.ellipse_phase {
             let p = if self.ortho_enabled {
-                Self::snap_angle(center, world, self.ortho_increment_deg)
+                self.ortho_snap(center, world)
             } else {
                 world
             };
@@ -1491,7 +1597,7 @@ impl CadKitApp {
             }
         } else if let EllipsePhase::RadiusY { center, rx } = self.ellipse_phase {
             let p = if self.ortho_enabled {
-                Self::snap_angle(center, world, self.ortho_increment_deg)
+                self.ortho_snap(center, world)
             } else {
                 world
             };
@@ -1742,6 +1848,9 @@ impl CadKitApp {
     }
 
     fn snap_to_grid(&self, world: cadkit_types::Vec2) -> cadkit_types::Vec2 {
+        if self.iso_mode {
+            return self.snap_to_iso_grid(world);
+        }
         let s = self.grid_spacing;
         let gx = (world.x / s).round() * s;
         let gy = (world.y / s).round() * s;
@@ -1892,6 +2001,49 @@ impl CadKitApp {
             }
             PolygonPhase::Idle => {}
         }
+        match self.isocircle_phase {
+            IsocirclePhase::Center => return "ISOCIRCLE  Pick center point:".into(),
+            IsocirclePhase::Radius { .. } => {
+                return "ISOCIRCLE  Pick radius or type value:".into();
+            }
+            IsocirclePhase::Idle => {}
+        }
+        match self.isoextrude_phase {
+            IsoExtrudePhase::SelectingEntities => {
+                return "ISOEXTRUDE  Select entities, press Enter to continue:".into();
+            }
+            IsoExtrudePhase::EnteringDepth => {
+                return format!(
+                    "ISOEXTRUDE  Enter projection depth <{:.4}>:",
+                    self.isoextrude_depth
+                );
+            }
+            IsoExtrudePhase::PickingElevationOrigin => {
+                return "ISOEXTRUDE  Pick elevation origin point:".into();
+            }
+            IsoExtrudePhase::PickingIsoOrigin => {
+                return "ISOEXTRUDE  Pick isometric output origin point:".into();
+            }
+            IsoExtrudePhase::Idle => {}
+        }
+        match self.dwiso_side_phase {
+            DwIsoSidePhase::SelectingFrontEntities => {
+                return "DWISO_SIDE  Select FRONT entities, press Enter to continue:".into();
+            }
+            DwIsoSidePhase::PickingFrontOrigin => {
+                return "DWISO_SIDE  Pick FRONT origin point:".into();
+            }
+            DwIsoSidePhase::SelectingSideEntities => {
+                return "DWISO_SIDE  Select SIDE entities, press Enter to continue:".into();
+            }
+            DwIsoSidePhase::PickingSideOrigin => {
+                return "DWISO_SIDE  Pick SIDE origin point:".into();
+            }
+            DwIsoSidePhase::PickingIsoOrigin => {
+                return "DWISO_SIDE  Pick ISO output origin point:".into();
+            }
+            DwIsoSidePhase::Idle => {}
+        }
         match self.ellipse_phase {
             EllipsePhase::Center => return "ELLIPSE  Specify center point:".into(),
             EllipsePhase::RadiusX { .. } => return "ELLIPSE  Specify radius from center:".into(),
@@ -2020,65 +2172,135 @@ impl CadKitApp {
             ActiveTool::None => match self.trim_phase {
                 TrimPhase::Idle => match self.offset_phase {
                     OffsetPhase::Idle => match self.move_phase {
-                        MovePhase::Idle => match self.extend_phase {
-                        ExtendPhase::Idle => match self.copy_phase {
-                            CopyPhase::Idle => match self.rotate_phase {
-                                RotatePhase::Idle => match self.scale_phase {
-                                    ScalePhase::Idle => match self.mirror_phase {
-                                        MirrorPhase::Idle => match self.fillet_phase {
-                                        FilletPhase::Idle => match self.dim_phase {
-                                        DimPhase::FirstPoint => "DIMALIGNED  Specify first extension line origin:".into(),
-                                        DimPhase::SecondPoint { .. } => "DIMALIGNED  Specify second extension line origin:".into(),
-                                        DimPhase::Placing { .. } => "DIMALIGNED  Specify dimension line location:".into(),
-                                        DimPhase::Idle => match self.dim_linear_phase {
-                                            DimLinearPhase::FirstPoint => "DIMLINEAR  Specify first extension line origin:".into(),
-                                            DimLinearPhase::SecondPoint { .. } => "DIMLINEAR  Specify second extension line origin:".into(),
-                                            DimLinearPhase::Placing { .. } => "DIMLINEAR  Drag to set H or V dimension line location:".into(),
-                                            DimLinearPhase::Idle => match self.dim_angular_phase {
-                                                DimAngularPhase::FirstEntity => "DIMANGULAR  Click the first line or polyline segment:".into(),
-                                                DimAngularPhase::SecondEntity { .. } => "DIMANGULAR  Click the second line or polyline segment:".into(),
-                                                DimAngularPhase::Placing { .. } => "DIMANGULAR  Drag to set arc radius, click to place:".into(),
-                                                DimAngularPhase::Idle => match self.dim_radial_phase {
-                                                    DimRadialPhase::SelectingEntity { is_diameter } => if is_diameter {
-                                                        "DIMDIAMETER  Click a circle or arc:".into()
-                                                    } else {
-                                                        "DIMRADIUS  Click a circle or arc:".into()
+                        MovePhase::Idle => match self.stretch_phase {
+                            StretchPhase::Idle => match self.extend_phase {
+                                ExtendPhase::Idle => match self.copy_phase {
+                                    CopyPhase::Idle => match self.rotate_phase {
+                                        RotatePhase::Idle => match self.scale_phase {
+                                            ScalePhase::Idle => match self.mirror_phase {
+                                                MirrorPhase::Idle => match self.fillet_phase {
+                                                    FilletPhase::Idle => match self.dim_phase {
+                                                        DimPhase::FirstPoint => {
+                                                            "DIMALIGNED  Specify first extension line origin:".into()
+                                                        }
+                                                        DimPhase::SecondPoint { .. } => {
+                                                            "DIMALIGNED  Specify second extension line origin:".into()
+                                                        }
+                                                        DimPhase::Placing { .. } => {
+                                                            "DIMALIGNED  Specify dimension line location:".into()
+                                                        }
+                                                        DimPhase::Idle => {
+                                                            match self.dim_linear_phase {
+                                                                DimLinearPhase::FirstPoint => {
+                                                                    "DIMLINEAR  Specify first extension line origin:".into()
+                                                                }
+                                                                DimLinearPhase::SecondPoint { .. } => {
+                                                                    "DIMLINEAR  Specify second extension line origin:".into()
+                                                                }
+                                                                DimLinearPhase::Placing { .. } => {
+                                                                    "DIMLINEAR  Drag to set H or V dimension line location:".into()
+                                                                }
+                                                                DimLinearPhase::Idle => {
+                                                                    match self.dim_angular_phase {
+                                                                        DimAngularPhase::FirstEntity => {
+                                                                            "DIMANGULAR  Click the first line or polyline segment:".into()
+                                                                        }
+                                                                        DimAngularPhase::SecondEntity { .. } => {
+                                                                            "DIMANGULAR  Click the second line or polyline segment:".into()
+                                                                        }
+                                                                        DimAngularPhase::Placing { .. } => {
+                                                                            "DIMANGULAR  Drag to set arc radius, click to place:".into()
+                                                                        }
+                                                                        DimAngularPhase::Idle => {
+                                                                            match self.dim_radial_phase {
+                                                                                DimRadialPhase::SelectingEntity { is_diameter } => {
+                                                                                    if is_diameter {
+                                                                                        "DIMDIAMETER  Click a circle or arc:".into()
+                                                                                    } else {
+                                                                                        "DIMRADIUS  Click a circle or arc:".into()
+                                                                                    }
+                                                                                }
+                                                                                DimRadialPhase::Placing { is_diameter, .. } => {
+                                                                                    if is_diameter {
+                                                                                        "DIMDIAMETER  Drag leader, click to place:".into()
+                                                                                    } else {
+                                                                                        "DIMRADIUS  Drag leader, click to place:".into()
+                                                                                    }
+                                                                                }
+                                                                                DimRadialPhase::Idle => "Command:".into(),
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
                                                     },
-                                                    DimRadialPhase::Placing { is_diameter, .. } => if is_diameter {
-                                                        "DIMDIAMETER  Drag leader, click to place:".into()
-                                                    } else {
-                                                        "DIMRADIUS  Drag leader, click to place:".into()
-                                                    },
-                                                    DimRadialPhase::Idle => "Command:".into(),
+                                                    FilletPhase::EnteringRadius => format!(
+                                                        "FILLET  Enter radius <{:.4}>:",
+                                                        self.fillet_radius
+                                                    ),
+                                                    FilletPhase::FirstEntity => {
+                                                        "FILLET  Select first line or polyline segment:".into()
+                                                    }
+                                                    FilletPhase::SecondEntity { .. } => {
+                                                        "FILLET  Select second line or polyline segment:".into()
+                                                    }
                                                 },
+                                                MirrorPhase::SelectingEntities => {
+                                                    "MIRROR  Select entities, press Enter to continue:".into()
+                                                }
+                                                MirrorPhase::FirstAxisPoint => {
+                                                    "MIRROR  Pick first axis point:".into()
+                                                }
+                                                MirrorPhase::SecondAxisPoint => {
+                                                    "MIRROR  Pick second axis point:".into()
+                                                }
                                             },
+                                            ScalePhase::SelectingEntities => {
+                                                "SCALE  Select entities, press Enter to continue:".into()
+                                            }
+                                            ScalePhase::BasePoint => "SCALE  Pick base point:".into(),
+                                            ScalePhase::ReferencePoint => {
+                                                "SCALE  Pick reference point:".into()
+                                            }
+                                            ScalePhase::Factor => {
+                                                "SCALE  Specify factor or pick point:".into()
+                                            }
                                         },
-                                        },
-                                        FilletPhase::EnteringRadius => format!("FILLET  Enter radius <{:.4}>:", self.fillet_radius),
-                                        FilletPhase::FirstEntity => "FILLET  Select first line or polyline segment:".into(),
-                                        FilletPhase::SecondEntity { .. } => "FILLET  Select second line or polyline segment:".into(),
-                                        },
-                                        MirrorPhase::SelectingEntities => "MIRROR  Select entities, press Enter to continue:".into(),
-                                        MirrorPhase::FirstAxisPoint => "MIRROR  Pick first axis point:".into(),
-                                        MirrorPhase::SecondAxisPoint => "MIRROR  Pick second axis point:".into(),
+                                        RotatePhase::SelectingEntities => {
+                                            "ROTATE  Select entities, press Enter to continue:".into()
+                                        }
+                                        RotatePhase::BasePoint => "ROTATE  Pick base point:".into(),
+                                        RotatePhase::Rotation => {
+                                            "ROTATE  Specify angle (degrees) or click:".into()
+                                        }
                                     },
-                                    ScalePhase::SelectingEntities => "SCALE  Select entities, press Enter to continue:".into(),
-                                    ScalePhase::BasePoint => "SCALE  Pick base point:".into(),
-                                    ScalePhase::ReferencePoint => "SCALE  Pick reference point:".into(),
-                                    ScalePhase::Factor => "SCALE  Specify factor or pick point:".into(),
+                                    CopyPhase::SelectingEntities => {
+                                        "COPY  Select entities, press Enter to continue:".into()
+                                    }
+                                    CopyPhase::BasePoint => "COPY  Pick base point:".into(),
+                                    CopyPhase::Destination => {
+                                        "COPY  Pick destination (Enter to finish):".into()
+                                    }
+                                },
+                                ExtendPhase::SelectingBoundaries => {
+                                    "EXTEND  Select boundary edges (Enter when done):".into()
                                 }
-                                RotatePhase::SelectingEntities => "ROTATE  Select entities, press Enter to continue:".into(),
-                                RotatePhase::BasePoint => "ROTATE  Pick base point:".into(),
-                                RotatePhase::Rotation => "ROTATE  Specify angle (degrees) or click:".into(),
+                                ExtendPhase::Extending => {
+                                    "EXTEND  Click near line or arc endpoint to extend:".into()
+                                }
                             },
-                            CopyPhase::SelectingEntities => "COPY  Select entities, press Enter to continue:".into(),
-                            CopyPhase::BasePoint => "COPY  Pick base point:".into(),
-                            CopyPhase::Destination => "COPY  Pick destination (Enter to finish):".into(),
+                            StretchPhase::SelectingEntities => {
+                                "STRETCH  Drag a crossing/window box, press Enter to continue:".into()
+                            }
+                            StretchPhase::BasePoint => "STRETCH  Pick base point:".into(),
+                            StretchPhase::Destination => {
+                                "STRETCH  Pick second point or displacement:".into()
+                            }
                         },
-                        ExtendPhase::SelectingBoundaries => "EXTEND  Select boundary edges (Enter when done):".into(),
-                        ExtendPhase::Extending => "EXTEND  Click near line or arc endpoint to extend:".into(),
-                    },
-                        MovePhase::SelectingEntities => "MOVE  Select entities, press Enter to continue:".into(),
+                        MovePhase::SelectingEntities => {
+                            "MOVE  Select entities, press Enter to continue:".into()
+                        }
                         MovePhase::BasePoint => "MOVE  Pick base point:".into(),
                         MovePhase::Destination => "MOVE  Pick destination point:".into(),
                     },
@@ -2086,7 +2308,9 @@ impl CadKitApp {
                     OffsetPhase::SelectingEntity => "OFFSET  Select entity to offset:".into(),
                     OffsetPhase::SelectingSide => "OFFSET  Click side to offset toward:".into(),
                 },
-                TrimPhase::SelectingEdges => "TRIM  Select cutting edges (Enter when done):".into(),
+                TrimPhase::SelectingEdges => {
+                    "TRIM  Select cutting edges (Enter when done):".into()
+                }
                 TrimPhase::Trimming => "TRIM  Click entity side to trim (Esc/Enter to exit):".into(),
             },
             ActiveTool::Line { start: None } => "LINE  Specify first point:".into(),
@@ -2155,7 +2379,7 @@ impl CadKitApp {
             return true;
         };
         if self.ortho_enabled {
-            hover = Self::snap_angle(base, hover, self.ortho_increment_deg);
+            hover = self.ortho_snap(base, hover);
         }
         let dx = hover.x - base.x;
         let dy = hover.y - base.y;
@@ -2195,6 +2419,737 @@ impl CadKitApp {
         self.move_phase = MovePhase::Idle;
         self.move_base_point = None;
         self.move_entities.clear();
+    }
+
+    /// Exit stretch mode, clearing all stretch state but leaving current selection intact.
+    fn exit_stretch(&mut self) {
+        self.stretch_phase = StretchPhase::Idle;
+        self.stretch_base_point = None;
+        self.stretch_entities.clear();
+        self.stretch_selection_box = None;
+    }
+
+    fn current_stretch_window(&self) -> Option<StretchWindow> {
+        self.stretch_selection_box
+            .map(|(a, b)| StretchWindow::new(a, b))
+    }
+
+    fn stretch_delta(&self, dest: Vec2) -> Option<Vec2> {
+        self.stretch_base_point
+            .map(|base| Vec2::new(dest.x - base.x, dest.y - base.y))
+    }
+
+    fn resolve_stretch_destination_from_text(&self, text: &str) -> Option<Vec2> {
+        let base = self.stretch_base_point?;
+        if let Some(world) = Self::resolve_typed_point(text, Some(base)) {
+            return Some(world);
+        }
+        let dist = text.trim().parse::<f64>().ok()?;
+        if dist <= f64::EPSILON {
+            return None;
+        }
+        let hover = self.hover_world_pos?;
+        let dx = hover.x - base.x;
+        let dy = hover.y - base.y;
+        let len = (dx * dx + dy * dy).sqrt();
+        if len <= f64::EPSILON {
+            return None;
+        }
+        let mut world = Vec2::new(base.x + dx / len * dist, base.y + dy / len * dist);
+        if self.ortho_enabled {
+            world = self.ortho_snap(base, world);
+        }
+        Some(world)
+    }
+
+    /// Reusable stretch engine for endpoint/vertex-based deformation.
+    /// TODO: Extend this helper for arcs/circles and sub-entity targets so dynamic blocks and
+    /// future grip editing can reuse the same geometry mutation path.
+    fn stretch_kind(kind: &EntityKind, window: StretchWindow, delta: Vec2) -> Option<EntityKind> {
+        let preserve_text_in_frame = |old_mid: Vec2,
+                                      old_dir: Vec2,
+                                      old_perp: Vec2,
+                                      new_mid: Vec2,
+                                      new_dir: Vec2,
+                                      new_perp: Vec2,
+                                      text_pos: Vec3| {
+            let text = Vec2::new(text_pos.x, text_pos.y);
+            let rel = Vec2::new(text.x - old_mid.x, text.y - old_mid.y);
+            let u = rel.x * old_dir.x + rel.y * old_dir.y;
+            let v = rel.x * old_perp.x + rel.y * old_perp.y;
+            Vec3::xy(
+                new_mid.x + new_dir.x * u + new_perp.x * v,
+                new_mid.y + new_dir.y * u + new_perp.y * v,
+            )
+        };
+
+        match kind {
+            EntityKind::Line { start, end } => {
+                let mut start2 = *start;
+                let mut end2 = *end;
+                let mut changed = false;
+                if window.contains((*start).into()) {
+                    start2.x += delta.x;
+                    start2.y += delta.y;
+                    changed = true;
+                }
+                if window.contains((*end).into()) {
+                    end2.x += delta.x;
+                    end2.y += delta.y;
+                    changed = true;
+                }
+                changed.then_some(EntityKind::Line {
+                    start: start2,
+                    end: end2,
+                })
+            }
+            EntityKind::Polyline { vertices, closed } => {
+                let mut vertices2 = vertices.clone();
+                let mut changed = false;
+                for v in vertices2.iter_mut() {
+                    if window.contains((*v).into()) {
+                        v.x += delta.x;
+                        v.y += delta.y;
+                        changed = true;
+                    }
+                }
+                changed.then_some(EntityKind::Polyline {
+                    vertices: vertices2,
+                    closed: *closed,
+                })
+            }
+            EntityKind::DimAligned {
+                start,
+                end,
+                offset,
+                text_override,
+                text_pos,
+                arrow_length,
+                arrow_half_width,
+            } => {
+                let mut start2 = *start;
+                let mut end2 = *end;
+                let mut changed = false;
+                if window.contains((*start).into()) {
+                    start2.x += delta.x;
+                    start2.y += delta.y;
+                    changed = true;
+                }
+                if window.contains((*end).into()) {
+                    end2.x += delta.x;
+                    end2.y += delta.y;
+                    changed = true;
+                }
+                if !changed {
+                    return None;
+                }
+
+                let old_start: Vec2 = (*start).into();
+                let old_end: Vec2 = (*end).into();
+                let new_start: Vec2 = start2.into();
+                let new_end: Vec2 = end2.into();
+                let old_mid = Vec2::new(
+                    (old_start.x + old_end.x) * 0.5,
+                    (old_start.y + old_end.y) * 0.5,
+                );
+                let new_mid = Vec2::new(
+                    (new_start.x + new_end.x) * 0.5,
+                    (new_start.y + new_end.y) * 0.5,
+                );
+                let old_dx = old_end.x - old_start.x;
+                let old_dy = old_end.y - old_start.y;
+                let new_dx = new_end.x - new_start.x;
+                let new_dy = new_end.y - new_start.y;
+                let old_len = (old_dx * old_dx + old_dy * old_dy).sqrt();
+                let new_len = (new_dx * new_dx + new_dy * new_dy).sqrt();
+                let text_pos2 = if old_len > 1e-9 && new_len > 1e-9 {
+                    let old_dir = Vec2::new(old_dx / old_len, old_dy / old_len);
+                    let old_perp = Vec2::new(-old_dir.y, old_dir.x);
+                    let new_dir = Vec2::new(new_dx / new_len, new_dy / new_len);
+                    let new_perp = Vec2::new(-new_dir.y, new_dir.x);
+                    preserve_text_in_frame(
+                        old_mid, old_dir, old_perp, new_mid, new_dir, new_perp, *text_pos,
+                    )
+                } else {
+                    Vec3::xy(
+                        text_pos.x + (new_mid.x - old_mid.x),
+                        text_pos.y + (new_mid.y - old_mid.y),
+                    )
+                };
+
+                Some(EntityKind::DimAligned {
+                    start: start2,
+                    end: end2,
+                    offset: *offset,
+                    text_override: text_override.clone(),
+                    text_pos: text_pos2,
+                    arrow_length: *arrow_length,
+                    arrow_half_width: *arrow_half_width,
+                })
+            }
+            EntityKind::DimLinear {
+                start,
+                end,
+                offset,
+                text_override,
+                text_pos,
+                horizontal,
+                arrow_length,
+                arrow_half_width,
+            } => {
+                let mut start2 = *start;
+                let mut end2 = *end;
+                let mut changed = false;
+                if window.contains((*start).into()) {
+                    start2.x += delta.x;
+                    start2.y += delta.y;
+                    changed = true;
+                }
+                if window.contains((*end).into()) {
+                    end2.x += delta.x;
+                    end2.y += delta.y;
+                    changed = true;
+                }
+                if !changed {
+                    return None;
+                }
+
+                let old_start: Vec2 = (*start).into();
+                let old_end: Vec2 = (*end).into();
+                let new_start: Vec2 = start2.into();
+                let new_end: Vec2 = end2.into();
+                let old_mid = Vec2::new(
+                    (old_start.x + old_end.x) * 0.5,
+                    (old_start.y + old_end.y) * 0.5,
+                );
+                let new_mid = Vec2::new(
+                    (new_start.x + new_end.x) * 0.5,
+                    (new_start.y + new_end.y) * 0.5,
+                );
+                let (dir, perp) = if *horizontal {
+                    (Vec2::new(1.0, 0.0), Vec2::new(0.0, 1.0))
+                } else {
+                    (Vec2::new(0.0, 1.0), Vec2::new(1.0, 0.0))
+                };
+                let text_pos2 =
+                    preserve_text_in_frame(old_mid, dir, perp, new_mid, dir, perp, *text_pos);
+
+                Some(EntityKind::DimLinear {
+                    start: start2,
+                    end: end2,
+                    offset: *offset,
+                    text_override: text_override.clone(),
+                    text_pos: text_pos2,
+                    horizontal: *horizontal,
+                    arrow_length: *arrow_length,
+                    arrow_half_width: *arrow_half_width,
+                })
+            }
+            EntityKind::DimAngular {
+                vertex,
+                line1_pt,
+                line2_pt,
+                radius,
+                text_override,
+                text_pos,
+                arrow_length,
+                arrow_half_width,
+            } => {
+                let mut vertex2 = *vertex;
+                let mut line1_pt2 = *line1_pt;
+                let mut line2_pt2 = *line2_pt;
+                let mut changed = false;
+                if window.contains((*vertex).into()) {
+                    vertex2.x += delta.x;
+                    vertex2.y += delta.y;
+                    changed = true;
+                }
+                if window.contains((*line1_pt).into()) {
+                    line1_pt2.x += delta.x;
+                    line1_pt2.y += delta.y;
+                    changed = true;
+                }
+                if window.contains((*line2_pt).into()) {
+                    line2_pt2.x += delta.x;
+                    line2_pt2.y += delta.y;
+                    changed = true;
+                }
+                if !changed {
+                    return None;
+                }
+
+                let old_v: Vec2 = (*vertex).into();
+                let old_p1: Vec2 = (*line1_pt).into();
+                let old_p2: Vec2 = (*line2_pt).into();
+                let new_v: Vec2 = vertex2.into();
+                let new_p1: Vec2 = line1_pt2.into();
+                let new_p2: Vec2 = line2_pt2.into();
+                let (old_a1, old_a2) = angular_arc_angles(old_v, old_p1, old_p2);
+                let (new_a1, new_a2) = angular_arc_angles(new_v, new_p1, new_p2);
+                let old_mid_angle = (old_a1 + old_a2) * 0.5;
+                let new_mid_angle = (new_a1 + new_a2) * 0.5;
+                let old_mid_dir = Vec2::new(old_mid_angle.cos(), old_mid_angle.sin());
+                let new_mid_dir = Vec2::new(new_mid_angle.cos(), new_mid_angle.sin());
+                let old_text = Vec2::new(text_pos.x, text_pos.y);
+                let old_r = Vec2::new(old_text.x - old_v.x, old_text.y - old_v.y);
+                let old_u = old_r.x * old_mid_dir.x + old_r.y * old_mid_dir.y;
+                let old_perp = Vec2::new(-old_mid_dir.y, old_mid_dir.x);
+                let old_vperp = old_r.x * old_perp.x + old_r.y * old_perp.y;
+                let new_text = Vec3::xy(
+                    new_v.x + new_mid_dir.x * old_u + (-new_mid_dir.y) * old_vperp,
+                    new_v.y + new_mid_dir.y * old_u + new_mid_dir.x * old_vperp,
+                );
+                Some(EntityKind::DimAngular {
+                    vertex: vertex2,
+                    line1_pt: line1_pt2,
+                    line2_pt: line2_pt2,
+                    radius: *radius,
+                    text_override: text_override.clone(),
+                    text_pos: new_text,
+                    arrow_length: *arrow_length,
+                    arrow_half_width: *arrow_half_width,
+                })
+            }
+            EntityKind::DimRadial {
+                center,
+                radius,
+                leader_pt,
+                is_diameter,
+                text_override,
+                text_pos,
+                arrow_length,
+                arrow_half_width,
+            } => {
+                let mut center2 = *center;
+                let mut leader_pt2 = *leader_pt;
+                let mut text_pos2 = *text_pos;
+                let mut changed = false;
+                if window.contains((*center).into()) {
+                    center2.x += delta.x;
+                    center2.y += delta.y;
+                    leader_pt2.x += delta.x;
+                    leader_pt2.y += delta.y;
+                    text_pos2.x += delta.x;
+                    text_pos2.y += delta.y;
+                    changed = true;
+                }
+                if window.contains((*leader_pt).into()) {
+                    leader_pt2.x += delta.x;
+                    leader_pt2.y += delta.y;
+                    text_pos2.x += delta.x;
+                    text_pos2.y += delta.y;
+                    changed = true;
+                }
+                if !changed {
+                    return None;
+                }
+                Some(EntityKind::DimRadial {
+                    center: center2,
+                    radius: *radius,
+                    leader_pt: leader_pt2,
+                    is_diameter: *is_diameter,
+                    text_override: text_override.clone(),
+                    text_pos: text_pos2,
+                    arrow_length: *arrow_length,
+                    arrow_half_width: *arrow_half_width,
+                })
+            }
+            EntityKind::Arc {
+                center,
+                radius,
+                start_angle,
+                end_angle,
+            } => {
+                let sweep = *end_angle - *start_angle;
+                let mid_angle = *start_angle + sweep * 0.5;
+                let mut start_pt = Vec2::new(
+                    center.x + *radius * start_angle.cos(),
+                    center.y + *radius * start_angle.sin(),
+                );
+                let mut mid_pt = Vec2::new(
+                    center.x + *radius * mid_angle.cos(),
+                    center.y + *radius * mid_angle.sin(),
+                );
+                let mut end_pt = Vec2::new(
+                    center.x + *radius * end_angle.cos(),
+                    center.y + *radius * end_angle.sin(),
+                );
+                let mut changed = false;
+                if window.contains(start_pt) {
+                    start_pt.x += delta.x;
+                    start_pt.y += delta.y;
+                    changed = true;
+                }
+                if window.contains(mid_pt) {
+                    mid_pt.x += delta.x;
+                    mid_pt.y += delta.y;
+                    changed = true;
+                }
+                if window.contains(end_pt) {
+                    end_pt.x += delta.x;
+                    end_pt.y += delta.y;
+                    changed = true;
+                }
+                if !changed {
+                    return None;
+                }
+                create_arc_from_three_points(start_pt, mid_pt, end_pt).map(|entity| entity.kind)
+            }
+            _ => None,
+        }
+    }
+
+    fn apply_stretch(&mut self, dest: Vec2) {
+        let Some(delta) = self.stretch_delta(dest) else {
+            return;
+        };
+        if delta.x.abs() < 1e-9 && delta.y.abs() < 1e-9 {
+            self.command_log
+                .push("STRETCH: Zero displacement, nothing changed".to_string());
+            self.exit_stretch();
+            return;
+        }
+        let Some(window) = self.current_stretch_window() else {
+            self.command_log
+                .push("STRETCH: First create a crossing/window selection".to_string());
+            self.exit_stretch();
+            return;
+        };
+        let requested = self.stretch_entities.clone();
+        let ids = self.filter_editable_entity_ids(&requested, "STRETCH");
+        if ids.is_empty() {
+            self.command_log
+                .push("STRETCH: No editable entities selected".to_string());
+            self.exit_stretch();
+            return;
+        }
+
+        let mut changed_ids = Vec::new();
+        let mut source_before: Vec<(Guid, EntityKind)> = Vec::new();
+        let mut unsupported = 0usize;
+        for id in &ids {
+            let Some(entity) = self.drawing.get_entity(id) else {
+                continue;
+            };
+            match Self::stretch_kind(&entity.kind, window, delta) {
+                Some(_) => {
+                    changed_ids.push(*id);
+                    source_before.push((*id, entity.kind.clone()));
+                }
+                None => {
+                    if matches!(
+                        entity.kind,
+                        EntityKind::Line { .. }
+                            | EntityKind::Polyline { .. }
+                            | EntityKind::Arc { .. }
+                            | EntityKind::DimAligned { .. }
+                            | EntityKind::DimLinear { .. }
+                            | EntityKind::DimAngular { .. }
+                            | EntityKind::DimRadial { .. }
+                    ) {
+                        // Supported entity type, but no vertices/endpoints were inside the stretch box.
+                    } else {
+                        unsupported += 1;
+                    }
+                }
+            }
+        }
+
+        if changed_ids.is_empty() {
+            if unsupported > 0 {
+                self.command_log.push(format!(
+                    "STRETCH: No supported endpoints/vertices found in box ({} unsupported entit{})",
+                    unsupported,
+                    if unsupported == 1 { "y" } else { "ies" }
+                ));
+            } else {
+                self.command_log.push(
+                    "STRETCH: No endpoints or vertices fell inside the stretch box".to_string(),
+                );
+            }
+            self.exit_stretch();
+            return;
+        }
+
+        self.push_undo();
+        for id in &changed_ids {
+            if let Some(entity) = self.drawing.get_entity_mut(id) {
+                if let Some(kind) = Self::stretch_kind(&entity.kind, window, delta) {
+                    entity.kind = kind;
+                }
+            }
+        }
+        let radial_changes: Vec<RadialSourceChange> = source_before
+            .iter()
+            .filter_map(|(id, old_kind)| {
+                let new_kind = self.drawing.get_entity(id).map(|e| &e.kind)?;
+                Self::radial_source_change(old_kind, new_kind)
+            })
+            .collect();
+        let radial_synced = self.sync_radial_dims_after_stretch(&radial_changes);
+        self.selected_entities = changed_ids.iter().copied().collect();
+        if unsupported > 0 {
+            self.command_log.push(format!(
+                "STRETCH: {} entit{} changed, {} unsupported skipped",
+                changed_ids.len(),
+                if changed_ids.len() == 1 { "y" } else { "ies" },
+                unsupported
+            ));
+        } else {
+            self.command_log.push(format!(
+                "STRETCH: {} entit{} updated",
+                changed_ids.len(),
+                if changed_ids.len() == 1 { "y" } else { "ies" }
+            ));
+        }
+        if radial_synced > 0 {
+            self.command_log.push(format!(
+                "STRETCH: {} radial dim{} updated from stretched arc/circle geometry",
+                radial_synced,
+                if radial_synced == 1 { "" } else { "s" }
+            ));
+        }
+        self.exit_stretch();
+    }
+
+    fn radial_source_center_radius(kind: &EntityKind) -> Option<(Vec2, f64)> {
+        match kind {
+            EntityKind::Circle { center, radius } | EntityKind::Arc { center, radius, .. } => {
+                Some((Vec2::new(center.x, center.y), *radius))
+            }
+            _ => None,
+        }
+    }
+
+    fn radial_source_change(
+        old_kind: &EntityKind,
+        new_kind: &EntityKind,
+    ) -> Option<RadialSourceChange> {
+        let (old_center, old_radius) = Self::radial_source_center_radius(old_kind)?;
+        let (new_center_v2, new_radius) = Self::radial_source_center_radius(new_kind)?;
+        if (old_center.x - new_center_v2.x).abs() <= 1e-9
+            && (old_center.y - new_center_v2.y).abs() <= 1e-9
+            && (old_radius - new_radius).abs() <= 1e-9
+        {
+            return None;
+        }
+        Some(RadialSourceChange {
+            old_center,
+            old_radius,
+            new_center: Vec3::xy(new_center_v2.x, new_center_v2.y),
+            new_radius,
+        })
+    }
+
+    fn sync_radial_dims_after_stretch(&mut self, changes: &[RadialSourceChange]) -> usize {
+        if changes.is_empty() {
+            return 0;
+        }
+        let mut synced = 0usize;
+        let dim_ids: Vec<Guid> = self
+            .drawing
+            .entities()
+            .filter_map(|entity| match entity.kind {
+                EntityKind::DimRadial { .. } => Some(entity.id),
+                _ => None,
+            })
+            .collect();
+
+        for id in dim_ids {
+            let Some(entity) = self.drawing.get_entity_mut(&id) else {
+                continue;
+            };
+            let EntityKind::DimRadial {
+                center,
+                radius,
+                leader_pt,
+                text_pos,
+                ..
+            } = &mut entity.kind
+            else {
+                continue;
+            };
+
+            let center_v2 = Vec2::new(center.x, center.y);
+            let mut matched = None;
+            for change in changes {
+                let center_match = center_v2.distance_to(&change.old_center) <= 1e-6;
+                let radius_match = (*radius - change.old_radius).abs() <= 1e-6;
+                if center_match && radius_match {
+                    matched = Some(*change);
+                    break;
+                }
+            }
+            let Some(change) = matched else {
+                continue;
+            };
+
+            let dx = change.new_center.x - center.x;
+            let dy = change.new_center.y - center.y;
+            center.x = change.new_center.x;
+            center.y = change.new_center.y;
+            *radius = change.new_radius;
+            leader_pt.x += dx;
+            leader_pt.y += dy;
+            text_pos.x += dx;
+            text_pos.y += dy;
+            synced += 1;
+        }
+
+        synced
+    }
+
+    fn draw_preview_entity_kind(
+        &self,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        viewport: &Viewport,
+        kind: &EntityKind,
+        stroke: egui::Stroke,
+    ) {
+        match kind {
+            EntityKind::Line { start, end } => {
+                let (x1, y1) = world_to_screen(start.x as f32, start.y as f32, viewport);
+                let (x2, y2) = world_to_screen(end.x as f32, end.y as f32, viewport);
+                painter.line_segment(
+                    [rect.min + egui::vec2(x1, y1), rect.min + egui::vec2(x2, y2)],
+                    stroke,
+                );
+            }
+            EntityKind::Arc {
+                center,
+                radius,
+                start_angle,
+                end_angle,
+            } => {
+                let sweep = *end_angle - *start_angle;
+                let steps = ((sweep.abs() * *radius).max(12.0) as usize).clamp(12, 128);
+                let mut last: Option<egui::Pos2> = None;
+                for i in 0..=steps {
+                    let t = i as f64 / steps as f64;
+                    let ang = *start_angle + sweep * t;
+                    let x = center.x + *radius * ang.cos();
+                    let y = center.y + *radius * ang.sin();
+                    let (sx, sy) = world_to_screen(x as f32, y as f32, viewport);
+                    let pos = rect.min + egui::vec2(sx, sy);
+                    if let Some(prev) = last {
+                        painter.line_segment([prev, pos], stroke);
+                    }
+                    last = Some(pos);
+                }
+            }
+            EntityKind::Polyline { vertices, closed } => {
+                if vertices.len() < 2 {
+                    return;
+                }
+                let pts: Vec<egui::Pos2> = vertices
+                    .iter()
+                    .map(|v| {
+                        let (sx, sy) = world_to_screen(v.x as f32, v.y as f32, viewport);
+                        rect.min + egui::vec2(sx, sy)
+                    })
+                    .collect();
+                for w in pts.windows(2) {
+                    painter.line_segment([w[0], w[1]], stroke);
+                }
+                if *closed {
+                    painter.line_segment([*pts.last().unwrap(), pts[0]], stroke);
+                }
+            }
+            EntityKind::DimAligned {
+                start, end, offset, ..
+            } => {
+                let s = Vec2::new(start.x, start.y);
+                let e = Vec2::new(end.x, end.y);
+                let dx = e.x - s.x;
+                let dy = e.y - s.y;
+                let len = (dx * dx + dy * dy).sqrt();
+                if len <= 1e-9 {
+                    return;
+                }
+                let perp = Vec2::new(-dy / len, dx / len);
+                let ds = Vec2::new(s.x + perp.x * *offset, s.y + perp.y * *offset);
+                let de = Vec2::new(e.x + perp.x * *offset, e.y + perp.y * *offset);
+                let to_screen = |p: Vec2| {
+                    let (sx, sy) = world_to_screen(p.x as f32, p.y as f32, viewport);
+                    rect.min + egui::vec2(sx, sy)
+                };
+                painter.line_segment([to_screen(s), to_screen(ds)], stroke);
+                painter.line_segment([to_screen(e), to_screen(de)], stroke);
+                painter.line_segment([to_screen(ds), to_screen(de)], stroke);
+            }
+            EntityKind::DimLinear {
+                start,
+                end,
+                offset,
+                horizontal,
+                ..
+            } => {
+                let s = Vec2::new(start.x, start.y);
+                let e = Vec2::new(end.x, end.y);
+                let mid_x = (s.x + e.x) * 0.5;
+                let mid_y = (s.y + e.y) * 0.5;
+                let (ds, de) = if *horizontal {
+                    (
+                        Vec2::new(s.x, mid_y + *offset),
+                        Vec2::new(e.x, mid_y + *offset),
+                    )
+                } else {
+                    (
+                        Vec2::new(mid_x + *offset, s.y),
+                        Vec2::new(mid_x + *offset, e.y),
+                    )
+                };
+                let to_screen = |p: Vec2| {
+                    let (sx, sy) = world_to_screen(p.x as f32, p.y as f32, viewport);
+                    rect.min + egui::vec2(sx, sy)
+                };
+                painter.line_segment([to_screen(s), to_screen(ds)], stroke);
+                painter.line_segment([to_screen(e), to_screen(de)], stroke);
+                painter.line_segment([to_screen(ds), to_screen(de)], stroke);
+            }
+            EntityKind::DimAngular {
+                vertex,
+                line1_pt,
+                line2_pt,
+                radius,
+                ..
+            } => {
+                let v = Vec2::new(vertex.x, vertex.y);
+                let p1 = Vec2::new(line1_pt.x, line1_pt.y);
+                let p2 = Vec2::new(line2_pt.x, line2_pt.y);
+                let (a1, a2) = angular_arc_angles(v, p1, p2);
+                let pts = angular_arc_pts(v, a1, a2, *radius);
+                let to_screen = |p: Vec2| {
+                    let (sx, sy) = world_to_screen(p.x as f32, p.y as f32, viewport);
+                    rect.min + egui::vec2(sx, sy)
+                };
+                painter.line_segment([to_screen(v), to_screen(p1)], stroke);
+                painter.line_segment([to_screen(v), to_screen(p2)], stroke);
+                for w in pts.windows(2) {
+                    painter.line_segment([to_screen(w[0]), to_screen(w[1])], stroke);
+                }
+            }
+            EntityKind::DimRadial {
+                center,
+                radius,
+                leader_pt,
+                ..
+            } => {
+                let c = Vec2::new(center.x, center.y);
+                let l = Vec2::new(leader_pt.x, leader_pt.y);
+                let to_screen = |p: Vec2| {
+                    let (sx, sy) = world_to_screen(p.x as f32, p.y as f32, viewport);
+                    rect.min + egui::vec2(sx, sy)
+                };
+                let (cx, cy) = world_to_screen(center.x as f32, center.y as f32, viewport);
+                let (rx, _) =
+                    world_to_screen((center.x + radius) as f32, center.y as f32, viewport);
+                painter.circle_stroke(rect.min + egui::vec2(cx, cy), (rx - cx).abs(), stroke);
+                painter.line_segment([to_screen(c), to_screen(l)], stroke);
+            }
+            _ => {}
+        }
     }
 
     /// Translate all `move_entities` by `dest - move_base_point`.
@@ -2302,6 +3257,48 @@ impl CadKitApp {
         self.selected_entities = ids.into_iter().collect();
         self.command_log.push("MOVE: Complete".to_string());
         self.exit_move();
+    }
+
+    fn draw_stretch_preview(
+        &self,
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        viewport: &Viewport,
+        world_cursor: Vec2,
+    ) {
+        if self.stretch_phase != StretchPhase::Destination {
+            return;
+        }
+        let Some(window) = self.current_stretch_window() else {
+            return;
+        };
+        let Some(base) = self.stretch_base_point else {
+            return;
+        };
+        let delta = Vec2::new(world_cursor.x - base.x, world_cursor.y - base.y);
+        let painter = ui.painter_at(rect);
+        let (bx, by) = world_to_screen(base.x as f32, base.y as f32, viewport);
+        let (cx, cy) = world_to_screen(world_cursor.x as f32, world_cursor.y as f32, viewport);
+        painter.line_segment(
+            [rect.min + egui::vec2(bx, by), rect.min + egui::vec2(cx, cy)],
+            egui::Stroke::new(
+                1.5,
+                egui::Color32::from_rgba_premultiplied(180, 180, 180, 140),
+            ),
+        );
+
+        let ghost_stroke = egui::Stroke::new(
+            1.5,
+            egui::Color32::from_rgba_premultiplied(120, 160, 210, 140),
+        );
+        for id in &self.stretch_entities {
+            let Some(entity) = self.drawing.get_entity(id) else {
+                continue;
+            };
+            if let Some(kind) = Self::stretch_kind(&entity.kind, window, delta) {
+                self.draw_preview_entity_kind(&painter, rect, viewport, &kind, ghost_stroke);
+            }
+        }
     }
 
     /// Draw the MOVE rubber-band line and ghost entities during Destination phase.
@@ -3107,7 +4104,7 @@ impl CadKitApp {
             return false;
         }
         let dir = if self.ortho_enabled {
-            Self::snap_angle(base, direction, self.ortho_increment_deg)
+            self.ortho_snap(base, direction)
         } else {
             direction
         };
@@ -3255,7 +4252,7 @@ impl CadKitApp {
 
     fn apply_array_polar(&mut self, center: Vec2, base: Vec2) -> bool {
         let base = if self.ortho_enabled {
-            Self::snap_angle(center, base, self.ortho_increment_deg)
+            self.ortho_snap(center, base)
         } else {
             base
         };
@@ -4686,7 +5683,7 @@ impl CadKitApp {
             return;
         };
         let p2 = if self.ortho_enabled {
-            Self::snap_angle(p1, world_cursor, self.ortho_increment_deg)
+            self.ortho_snap(p1, world_cursor)
         } else {
             world_cursor
         };
@@ -7229,7 +8226,7 @@ impl CadKitApp {
                     return;
                 }
                 let cursor = if self.ortho_enabled {
-                    Self::snap_angle(center, world_cursor, self.ortho_increment_deg)
+                    self.ortho_snap(center, world_cursor)
                 } else {
                     world_cursor
                 };
@@ -7269,6 +8266,53 @@ impl CadKitApp {
         }
     }
 
+    /// Isocircle rubber-band preview during ISOCIRCLE phases.
+    fn draw_isocircle_preview(
+        &self,
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        viewport: &Viewport,
+        world_cursor: Vec2,
+    ) {
+        let painter = ui.painter_at(rect);
+        let ghost = egui::Stroke::new(
+            1.8,
+            egui::Color32::from_rgba_premultiplied(160, 255, 200, 180),
+        );
+        match self.isocircle_phase {
+            IsocirclePhase::Center => {
+                let (sx, sy) = world_to_screen(world_cursor.x as f32, world_cursor.y as f32, viewport);
+                let c = rect.min + egui::vec2(sx, sy);
+                let r = 6.0_f32;
+                painter.line_segment([c - egui::vec2(r, 0.0), c + egui::vec2(r, 0.0)], ghost);
+                painter.line_segment([c - egui::vec2(0.0, r), c + egui::vec2(0.0, r)], ghost);
+            }
+            IsocirclePhase::Radius { center } => {
+                let radius = center.distance_to(&world_cursor);
+                if radius <= 1e-9 { return; }
+                let axes = self.iso_plane.axes();
+                let a1 = axes[0];
+                let a2 = axes[1];
+                const N: usize = 64;
+                let mut pts: Vec<egui::Pos2> = Vec::with_capacity(N);
+                for i in 0..N {
+                    let t = std::f64::consts::TAU * i as f64 / N as f64;
+                    let wx = center.x + radius * t.cos() * a1.x + radius * t.sin() * a2.x;
+                    let wy = center.y + radius * t.cos() * a1.y + radius * t.sin() * a2.y;
+                    let (sx, sy) = world_to_screen(wx as f32, wy as f32, viewport);
+                    pts.push(rect.min + egui::vec2(sx, sy));
+                }
+                for w in pts.windows(2) {
+                    painter.line_segment([w[0], w[1]], ghost);
+                }
+                if let (Some(first), Some(last)) = (pts.first(), pts.last()) {
+                    painter.line_segment([*last, *first], ghost);
+                }
+            }
+            IsocirclePhase::Idle => {}
+        }
+    }
+
     /// Ellipse rubber-band preview during ELLIPSE phases.
     fn draw_ellipse_preview(
         &self,
@@ -7294,7 +8338,7 @@ impl CadKitApp {
             }
             EllipsePhase::RadiusX { center } => {
                 let p = if self.ortho_enabled {
-                    Self::snap_angle(center, world_cursor, self.ortho_increment_deg)
+                    self.ortho_snap(center, world_cursor)
                 } else {
                     world_cursor
                 };
@@ -7307,7 +8351,7 @@ impl CadKitApp {
             }
             EllipsePhase::RadiusY { center, rx } => {
                 let p = if self.ortho_enabled {
-                    Self::snap_angle(center, world_cursor, self.ortho_increment_deg)
+                    self.ortho_snap(center, world_cursor)
                 } else {
                     world_cursor
                 };
@@ -7479,7 +8523,7 @@ impl CadKitApp {
         match self.array_phase {
             ArrayPhase::RectXSpacingGrip => {
                 let dir = if self.ortho_enabled {
-                    Self::snap_angle(base, world, self.ortho_increment_deg)
+                    self.ortho_snap(base, world)
                 } else {
                     world
                 };
@@ -7698,7 +8742,7 @@ impl CadKitApp {
                     .unwrap_or_else(|| Vec2::new(base.x + dx_step, base.y));
                 if self.array_phase == ArrayPhase::RectXSpacingGrip {
                     dir = if self.ortho_enabled {
-                        Self::snap_angle(base, world_cursor, self.ortho_increment_deg)
+                        self.ortho_snap(base, world_cursor)
                     } else {
                         world_cursor
                     };
@@ -7826,7 +8870,7 @@ impl CadKitApp {
             ArrayPhase::PolarBasePoint => {
                 if let Some(center) = self.array_center {
                     let p = if self.ortho_enabled {
-                        Self::snap_angle(center, world_cursor, self.ortho_increment_deg)
+                        self.ortho_snap(center, world_cursor)
                     } else {
                         world_cursor
                     };
@@ -8438,6 +9482,16 @@ impl eframe::App for CadKitApp {
                 if self.snap_enabled { "ON" } else { "OFF" }
             ));
         }
+        // F5: cycle iso plane (only meaningful when iso_mode is on)
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F5)) {
+            if self.iso_mode {
+                self.iso_plane = self.iso_plane.cycle();
+                self.command_log
+                    .push(format!("Isoplane: {}", self.iso_plane.label()));
+            } else {
+                self.command_log.push("ISO mode is off — use ISOPLANE to enable".to_string());
+            }
+        }
         // F8: ortho toggle
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F8)) {
             self.ortho_enabled = !self.ortho_enabled;
@@ -8462,6 +9516,9 @@ impl eframe::App for CadKitApp {
             } else if !matches!(self.move_phase, MovePhase::Idle) {
                 self.exit_move();
                 self.command_log.push("*Cancel*".to_string());
+            } else if !matches!(self.stretch_phase, StretchPhase::Idle) {
+                self.exit_stretch();
+                self.command_log.push("*Cancel*".to_string());
             } else if !matches!(self.copy_phase, CopyPhase::Idle) {
                 self.exit_copy();
                 self.command_log.push("*Cancel*".to_string());
@@ -8483,6 +9540,9 @@ impl eframe::App for CadKitApp {
             } else if !matches!(self.polygon_phase, PolygonPhase::Idle) {
                 self.exit_polygon();
                 self.command_log.push("*Cancel*".to_string());
+            } else if !matches!(self.isocircle_phase, IsocirclePhase::Idle) {
+                self.exit_isocircle();
+                self.command_log.push("*Cancel*".to_string());
             } else if !matches!(self.ellipse_phase, EllipsePhase::Idle) {
                 self.exit_ellipse();
                 self.command_log.push("*Cancel*".to_string());
@@ -8500,6 +9560,12 @@ impl eframe::App for CadKitApp {
                 self.command_log.push("*Cancel*".to_string());
             } else if !matches!(self.hatch_phase, HatchPhase::Idle) {
                 self.exit_hatch();
+                self.command_log.push("*Cancel*".to_string());
+            } else if !matches!(self.isoextrude_phase, IsoExtrudePhase::Idle) {
+                self.exit_isoextrude();
+                self.command_log.push("*Cancel*".to_string());
+            } else if !matches!(self.dwiso_side_phase, DwIsoSidePhase::Idle) {
+                self.exit_dwiso_side();
                 self.command_log.push("*Cancel*".to_string());
             } else if !matches!(self.block_phase, BlockPhase::Idle) {
                 self.exit_block();
@@ -9104,6 +10170,7 @@ impl eframe::App for CadKitApp {
                                 ("BO / BOUNDARY",  "",          "Pick inside closed area to generate boundary polyline"),
                                 ("O / OFFSET",     "",          "Offset entity by distance"),
                                 ("M / MOVE",       "",          "Move entities"),
+                                ("S / STRETCH",    "",          "Stretch endpoints/vertices inside crossing/window box"),
                                 ("CO / COPY",      "",          "Copy entities"),
                                 ("RO / ROTATE",    "",          "Rotate entities"),
                                 ("SC / SCALE",     "",          "Scale entities from base/reference"),
@@ -9945,7 +11012,11 @@ impl eframe::App for CadKitApp {
 
                     if let Some(viewport) = self.viewport.as_ref() {
                         if self.grid_visible {
-                            Self::draw_grid_overlay(ui, response.rect, viewport, self.grid_spacing);
+                            if self.iso_mode {
+                                Self::draw_iso_grid_overlay(ui, response.rect, viewport, self.grid_spacing);
+                            } else {
+                                Self::draw_grid_overlay(ui, response.rect, viewport, self.grid_spacing);
+                            }
                         }
                         self.draw_selected_entities_overlay(ui, response.rect, viewport);
                         self.draw_arc_input_ticks(ui, response.rect, viewport);
@@ -10228,6 +11299,61 @@ impl eframe::App for CadKitApp {
                                         } else {
                                             self.apply_move(world);
                                         }
+                                    } else if matches!(
+                                        self.stretch_phase,
+                                        StretchPhase::BasePoint | StretchPhase::Destination
+                                    ) {
+                                        // STRETCH point pick — same snap chain as MOVE, with ortho support
+                                        // available once the base point is known.
+                                        let local = click_pos - response.rect.min;
+                                        let raw_world = screen_to_world(local.x, local.y, viewport);
+                                        let ortho_base = if self.stretch_phase == StretchPhase::Destination {
+                                            self.stretch_base_point
+                                        } else {
+                                            None
+                                        };
+                                        let pick = if ortho_base.is_none() {
+                                            self.pick_entity_point(viewport, response.rect, click_pos)
+                                        } else {
+                                            None
+                                        };
+                                        let mut world = if let Some(base) = ortho_base {
+                                            self.resolve_ortho_snap_for_line_like(
+                                                viewport,
+                                                response.rect,
+                                                click_pos,
+                                                base,
+                                                raw_world,
+                                            )
+                                            .0
+                                        } else {
+                                            pick.as_ref().map(|(s, _)| s.world).unwrap_or_else(|| {
+                                                if self.snap_enabled && self.grid_visible {
+                                                    self.snap_to_grid(raw_world)
+                                                } else {
+                                                    raw_world
+                                                }
+                                            })
+                                        };
+                                        if pick.is_none() {
+                                            if let Some(snap_pt) = self.snap_intersection_point {
+                                                world = snap_pt;
+                                            } else if self.hover_snap_kind.is_some() {
+                                                if let Some(hw) = self.hover_world_pos {
+                                                    world = hw;
+                                                }
+                                            }
+                                        }
+                                        if self.stretch_phase == StretchPhase::BasePoint {
+                                            self.stretch_base_point = Some(world);
+                                            self.stretch_phase = StretchPhase::Destination;
+                                            self.command_log.push(
+                                                "STRETCH: Pick second point or displacement"
+                                                    .to_string(),
+                                            );
+                                        } else {
+                                            self.apply_stretch(world);
+                                        }
                                     } else if matches!(self.copy_phase, CopyPhase::BasePoint | CopyPhase::Destination) {
                                         // COPY point pick — same snap logic as MOVE.
                                         let local = click_pos - response.rect.min;
@@ -10341,7 +11467,7 @@ impl eframe::App for CadKitApp {
                                             self.command_log.push("MIRROR: Pick second axis point".to_string());
                                         } else if let Some(p1) = self.mirror_axis_p1 {
                                             let axis_p2 = if self.ortho_enabled {
-                                                Self::snap_angle(p1, world, self.ortho_increment_deg)
+                                                self.ortho_snap(p1, world)
                                             } else {
                                                 world
                                             };
@@ -10490,6 +11616,34 @@ impl eframe::App for CadKitApp {
                                             }
                                         }
                                     } else if matches!(
+                                        self.isocircle_phase,
+                                        IsocirclePhase::Center | IsocirclePhase::Radius { .. }
+                                    ) {
+                                        let local = click_pos - response.rect.min;
+                                        let raw_world = screen_to_world(local.x, local.y, viewport);
+                                        let pick = self.pick_entity_point(viewport, response.rect, click_pos);
+                                        let mut world = pick.as_ref().map(|(s, _)| s.world).unwrap_or_else(|| {
+                                            if self.snap_enabled && self.grid_visible { self.snap_to_grid(raw_world) } else { raw_world }
+                                        });
+                                        if pick.is_none() {
+                                            if let Some(snap_pt) = self.snap_intersection_point {
+                                                world = snap_pt;
+                                            } else if self.hover_snap_kind.is_some() {
+                                                if let Some(hw) = self.hover_world_pos {
+                                                    world = hw;
+                                                }
+                                            }
+                                        }
+                                        if self.isocircle_phase == IsocirclePhase::Center {
+                                            self.isocircle_phase = IsocirclePhase::Radius { center: world };
+                                            self.command_log.push("ISOCIRCLE: Pick radius or type value:".to_string());
+                                        } else if let IsocirclePhase::Radius { center } = self.isocircle_phase {
+                                            let radius = center.distance_to(&world);
+                                            if self.apply_isocircle(center, radius) {
+                                                self.isocircle_phase = IsocirclePhase::Center;
+                                            }
+                                        }
+                                    } else if matches!(
                                         self.ellipse_phase,
                                         EllipsePhase::Center | EllipsePhase::RadiusX { .. } | EllipsePhase::RadiusY { .. }
                                     ) {
@@ -10513,7 +11667,7 @@ impl eframe::App for CadKitApp {
                                             self.command_log.push("ELLIPSE: Specify radius from center".to_string());
                                         } else if let EllipsePhase::RadiusX { center } = self.ellipse_phase {
                                             let p = if self.ortho_enabled {
-                                                Self::snap_angle(center, world, self.ortho_increment_deg)
+                                                self.ortho_snap(center, world)
                                             } else {
                                                 world
                                             };
@@ -10526,7 +11680,7 @@ impl eframe::App for CadKitApp {
                                             }
                                         } else if let EllipsePhase::RadiusY { center, rx } = self.ellipse_phase {
                                             let p = if self.ortho_enabled {
-                                                Self::snap_angle(center, world, self.ortho_increment_deg)
+                                                self.ortho_snap(center, world)
                                             } else {
                                                 world
                                             };
@@ -10646,6 +11800,83 @@ impl eframe::App for CadKitApp {
                                             }
                                         }
                                         self.apply_hatch_pick(world);
+                                    } else if matches!(
+                                        self.isoextrude_phase,
+                                        IsoExtrudePhase::PickingElevationOrigin | IsoExtrudePhase::PickingIsoOrigin
+                                    ) {
+                                        let local = click_pos - response.rect.min;
+                                        let raw_world = screen_to_world(local.x, local.y, viewport);
+                                        let pick = self.pick_entity_point(viewport, response.rect, click_pos);
+                                        let mut world = pick.as_ref().map(|(s, _)| s.world).unwrap_or_else(|| {
+                                            if self.snap_enabled && self.grid_visible { self.snap_to_grid(raw_world) } else { raw_world }
+                                        });
+                                        if pick.is_none() {
+                                            if let Some(snap_pt) = self.snap_intersection_point {
+                                                world = snap_pt;
+                                            } else if self.hover_snap_kind.is_some() {
+                                                if let Some(hw) = self.hover_world_pos {
+                                                    world = hw;
+                                                }
+                                            }
+                                        }
+                                        if self.isoextrude_phase == IsoExtrudePhase::PickingElevationOrigin {
+                                            self.isoextrude_elevation_origin = Some(world);
+                                            self.isoextrude_phase = IsoExtrudePhase::PickingIsoOrigin;
+                                            self.command_log.push(format!(
+                                                "ISOEXTRUDE: Elevation origin ({:.4}, {:.4})",
+                                                world.x, world.y
+                                            ));
+                                            self.command_log.push(
+                                                "ISOEXTRUDE: Pick isometric output origin point".to_string(),
+                                            );
+                                        } else {
+                                            self.isoextrude_output_origin = Some(world);
+                                            self.apply_isoextrude(self.isoextrude_depth);
+                                        }
+                                    } else if matches!(
+                                        self.dwiso_side_phase,
+                                        DwIsoSidePhase::PickingFrontOrigin
+                                            | DwIsoSidePhase::PickingSideOrigin
+                                            | DwIsoSidePhase::PickingIsoOrigin
+                                    ) {
+                                        let local = click_pos - response.rect.min;
+                                        let raw_world = screen_to_world(local.x, local.y, viewport);
+                                        let pick = self.pick_entity_point(viewport, response.rect, click_pos);
+                                        let mut world = pick.as_ref().map(|(s, _)| s.world).unwrap_or_else(|| {
+                                            if self.snap_enabled && self.grid_visible { self.snap_to_grid(raw_world) } else { raw_world }
+                                        });
+                                        if pick.is_none() {
+                                            if let Some(snap_pt) = self.snap_intersection_point {
+                                                world = snap_pt;
+                                            } else if self.hover_snap_kind.is_some() {
+                                                if let Some(hw) = self.hover_world_pos {
+                                                    world = hw;
+                                                }
+                                            }
+                                        }
+                                        if self.dwiso_side_phase == DwIsoSidePhase::PickingFrontOrigin {
+                                            self.dwiso_side_front_origin = Some(world);
+                                            self.dwiso_side_phase = DwIsoSidePhase::SelectingSideEntities;
+                                            self.selected_entities.clear();
+                                            self.command_log.push(format!(
+                                                "DWISO_SIDE: FRONT origin ({:.4}, {:.4})",
+                                                world.x, world.y
+                                            ));
+                                            self.command_log
+                                                .push("DWISO_SIDE: Select SIDE entities, press Enter to continue".to_string());
+                                        } else if self.dwiso_side_phase == DwIsoSidePhase::PickingSideOrigin {
+                                            self.dwiso_side_side_origin = Some(world);
+                                            self.dwiso_side_phase = DwIsoSidePhase::PickingIsoOrigin;
+                                            self.command_log.push(format!(
+                                                "DWISO_SIDE: SIDE origin ({:.4}, {:.4})",
+                                                world.x, world.y
+                                            ));
+                                            self.command_log
+                                                .push("DWISO_SIDE: Pick ISO output origin point".to_string());
+                                        } else {
+                                            self.dwiso_side_output_origin = Some(world);
+                                            self.apply_dwiso_side();
+                                        }
                                     } else if matches!(self.block_phase, BlockPhase::PickBase { .. }) {
                                         let local = click_pos - response.rect.min;
                                         let raw_world = screen_to_world(local.x, local.y, viewport);
@@ -10953,6 +12184,7 @@ impl eframe::App for CadKitApp {
                                 // Allow drag selection when idle or in MOVE SelectingEntities.
                                 let allow = matches!(self.offset_phase, OffsetPhase::Idle)
                                     && !matches!(self.move_phase, MovePhase::BasePoint | MovePhase::Destination)
+                                    && !matches!(self.stretch_phase, StretchPhase::BasePoint | StretchPhase::Destination)
                                     && !matches!(self.copy_phase, CopyPhase::BasePoint | CopyPhase::Destination)
                                     && !matches!(self.rotate_phase, RotatePhase::BasePoint | RotatePhase::Rotation)
                                     && !matches!(self.scale_phase, ScalePhase::BasePoint | ScalePhase::ReferencePoint | ScalePhase::Factor)
@@ -11025,6 +12257,9 @@ impl eframe::App for CadKitApp {
                             } else if !matches!(self.move_phase, MovePhase::Idle) {
                                 self.exit_move();
                                 self.command_log.push("*Cancel*".to_string());
+                            } else if !matches!(self.stretch_phase, StretchPhase::Idle) {
+                                self.exit_stretch();
+                                self.command_log.push("*Cancel*".to_string());
                             } else if !matches!(self.copy_phase, CopyPhase::Idle) {
                                 self.exit_copy();
                                 self.command_log.push("*Cancel*".to_string());
@@ -11063,6 +12298,12 @@ impl eframe::App for CadKitApp {
                                 self.command_log.push("*Cancel*".to_string());
                             } else if !matches!(self.hatch_phase, HatchPhase::Idle) {
                                 self.exit_hatch();
+                                self.command_log.push("*Cancel*".to_string());
+                            } else if !matches!(self.isoextrude_phase, IsoExtrudePhase::Idle) {
+                                self.exit_isoextrude();
+                                self.command_log.push("*Cancel*".to_string());
+                            } else if !matches!(self.dwiso_side_phase, DwIsoSidePhase::Idle) {
+                                self.exit_dwiso_side();
                                 self.command_log.push("*Cancel*".to_string());
                             } else if !matches!(self.block_phase, BlockPhase::Idle) {
                                 self.exit_block();
@@ -11135,36 +12376,54 @@ impl eframe::App for CadKitApp {
                                         let max_x = w0.x.max(w1.x);
                                         let max_y = w0.y.max(w1.y);
                                         let window_mode = end.x >= start.x;
-                                        Some((self.entities_in_world_box(min_x, min_y, max_x, max_y, window_mode), None::<Selection>))
+                                        Some((
+                                            self.entities_in_world_box(
+                                                min_x, min_y, max_x, max_y, window_mode,
+                                            ),
+                                            None::<Selection>,
+                                            Some((w0, w1)),
+                                        ))
                                     } else {
-                                        Some((Vec::new(), None))
+                                        Some((Vec::new(), None, None))
                                     }
                                 } else {
                                     None
                                 };
 
-                                if let Some((hits, single_pick)) = selection_data {
+                                if let Some((hits, single_pick, box_points)) = selection_data {
                                     if let Some(pick) = single_pick {
                                         self.selection = None;
                                         self.select_entity_id(Some(pick.entity), shift);
                                     } else {
                                         if drag_len > 4.0 {
                                             self.selection = None;
-                                            if !shift {
-                                                self.selected_entities.clear();
-                                            }
-                                            for id in hits {
-                                                let group = self.expand_assoc_group_ids(id);
-                                                let any_selected = group
-                                                    .iter()
-                                                    .any(|gid| self.selected_entities.contains(gid));
-                                                if shift && any_selected {
-                                                    for gid in group {
-                                                        self.selected_entities.remove(&gid);
-                                                    }
-                                                } else {
-                                                    for gid in group {
-                                                        self.selected_entities.insert(gid);
+                                            if self.stretch_phase == StretchPhase::SelectingEntities {
+                                                self.stretch_entities = hits.clone();
+                                                self.selected_entities =
+                                                    hits.iter().copied().collect();
+                                                self.stretch_selection_box = box_points;
+                                                self.command_log.push(format!(
+                                                    "STRETCH: {} entit{} in selection box",
+                                                    hits.len(),
+                                                    if hits.len() == 1 { "y" } else { "ies" }
+                                                ));
+                                            } else {
+                                                if !shift {
+                                                    self.selected_entities.clear();
+                                                }
+                                                for id in hits {
+                                                    let group = self.expand_assoc_group_ids(id);
+                                                    let any_selected = group
+                                                        .iter()
+                                                        .any(|gid| self.selected_entities.contains(gid));
+                                                    if shift && any_selected {
+                                                        for gid in group {
+                                                            self.selected_entities.remove(&gid);
+                                                        }
+                                                    } else {
+                                                        for gid in group {
+                                                            self.selected_entities.insert(gid);
+                                                        }
                                                     }
                                                 }
                                             }
@@ -11260,7 +12519,7 @@ impl eframe::App for CadKitApp {
                                     ActiveTool::Line { start: Some(s) } => {
                                         if self.ortho_enabled {
                                             world =
-                                                Self::snap_angle(*s, world, self.ortho_increment_deg);
+                                                self.ortho_snap(*s, world);
                                         }
                                         if let Some(dist_world) = Self::apply_distance_override(
                                             *s,
@@ -11283,11 +12542,7 @@ impl eframe::App for CadKitApp {
                                     ActiveTool::Polyline { points } => {
                                         if let Some(last) = points.last() {
                                             if self.ortho_enabled {
-                                                world = Self::snap_angle(
-                                                    *last,
-                                                    world,
-                                                    self.ortho_increment_deg,
-                                                );
+                                                world = self.ortho_snap(*last, world);
                                             }
                                             if let Some(dist_world) = Self::apply_distance_override(
                                                 *last,
@@ -11446,7 +12701,7 @@ impl eframe::App for CadKitApp {
                                     && self.ortho_enabled
                                     && hover_pick.is_none()
                                 {
-                                    Self::snap_angle(base, world, self.ortho_increment_deg)
+                                    self.ortho_snap(base, world)
                                 } else {
                                     world
                                 };
@@ -11481,6 +12736,7 @@ impl eframe::App for CadKitApp {
 
                             // MOVE / COPY / ROTATE / DIMALIGNED / DIMLINEAR / TEXT ghost preview.
                             self.draw_move_preview(ui, response.rect, viewport, world);
+                            self.draw_stretch_preview(ui, response.rect, viewport, world);
                             self.draw_copy_preview(ui, response.rect, viewport, world);
                             self.draw_rotate_preview(ui, response.rect, viewport, world);
                             self.draw_scale_preview(ui, response.rect, viewport, world);
@@ -11492,18 +12748,28 @@ impl eframe::App for CadKitApp {
                             self.draw_text_preview(ui, response.rect, viewport, world);
                             self.draw_polygon_preview(ui, response.rect, viewport, world);
                             self.draw_ellipse_preview(ui, response.rect, viewport, world);
+                            if self.iso_mode { self.draw_isocircle_preview(ui, response.rect, viewport, world); }
                             self.draw_rectangle_preview(ui, response.rect, viewport, world);
                             self.draw_array_preview(ui, response.rect, viewport, world);
                             self.draw_insert_preview(ui, response.rect, viewport, world);
 
-                            // Grid-snap dot (suppress when any entity/intersection/nearest/perp/tangent snap active).
-                            if self.snap_enabled
+                            // Iso crosshair replaces the plain cursor dot in iso mode.
+                            if self.iso_mode {
+                                Self::draw_iso_crosshair(
+                                    ui,
+                                    response.rect,
+                                    viewport,
+                                    world,
+                                    self.iso_plane,
+                                );
+                            } else if self.snap_enabled
                                 && self.grid_visible
                                 && self.dim_grip_drag.is_none()
                                 && hover_pick.is_none()
                                 && self.snap_intersection_point.is_none()
                                 && self.hover_snap_kind.is_none()
                             {
+                                // Grid-snap dot (suppress when any entity/intersection/nearest/perp/tangent snap active).
                                 let (sx, sy) =
                                     world_to_screen(world.x as f32, world.y as f32, viewport);
                                 let marker = response.rect.min + egui::vec2(sx, sy);
@@ -11677,11 +12943,7 @@ impl eframe::App for CadKitApp {
                                         match &self.active_tool {
                                             ActiveTool::Line { start: Some(s) } => {
                                                 if self.ortho_enabled {
-                                                    world = Self::snap_angle(
-                                                        *s,
-                                                        world,
-                                                        self.ortho_increment_deg,
-                                                    );
+                                                    world = self.ortho_snap(*s, world);
                                                 }
                                                 if let Some(dist_world) = Self::apply_distance_override(
                                                     *s,
@@ -11704,11 +12966,7 @@ impl eframe::App for CadKitApp {
                                             ActiveTool::Polyline { points } => {
                                                 if let Some(last) = points.last() {
                                                     if self.ortho_enabled {
-                                                        world = Self::snap_angle(
-                                                            *last,
-                                                            world,
-                                                            self.ortho_increment_deg,
-                                                        );
+                                                        world = self.ortho_snap(*last, world);
                                                     }
                                                     if let Some(dist_world) = Self::apply_distance_override(
                                                         *last,
@@ -12635,6 +13893,67 @@ impl CadKitApp {
         let angle = dy.atan2(dx);
         let snapped = (angle / inc_rad).round() * inc_rad;
         Vec2::new(start.x + snapped.cos() * r, start.y + snapped.sin() * r)
+    }
+
+    /// Constrain `target` to the nearest of `plane`'s two iso axes, starting from `base`.
+    fn snap_iso_ortho(base: Vec2, target: Vec2, plane: IsoPlane) -> Vec2 {
+        let dx = target.x - base.x;
+        let dy = target.y - base.y;
+        if dx * dx + dy * dy <= f64::EPSILON {
+            return target;
+        }
+        let axes = plane.axes();
+        let mut best_t = 0.0f64;
+        let mut best_ax = axes[0];
+        let mut best_proj_sq = f64::NEG_INFINITY;
+        for ax in axes {
+            let proj = dx * ax.x + dy * ax.y;
+            if proj * proj > best_proj_sq {
+                best_proj_sq = proj * proj;
+                best_t = proj;
+                best_ax = ax;
+            }
+        }
+        Vec2::new(base.x + best_ax.x * best_t, base.y + best_ax.y * best_t)
+    }
+
+    /// Apply ortho or iso-ortho snap depending on the current mode.
+    /// Callers are responsible for checking `ortho_enabled` before calling.
+    fn ortho_snap(&self, base: Vec2, target: Vec2) -> Vec2 {
+        if self.iso_mode {
+            Self::snap_iso_ortho(base, target, self.iso_plane)
+        } else {
+            Self::snap_angle(base, target, self.ortho_increment_deg)
+        }
+    }
+
+    /// Snap `world` to the nearest isometric triangular-lattice point.
+    /// The lattice is generated by integer combinations of the two 30° iso axes scaled by `grid_spacing`.
+    fn snap_to_iso_grid(&self, world: Vec2) -> Vec2 {
+        let s = self.grid_spacing;
+        // Lattice basis: ax1 = s*(cos30, sin30), ax2 = s*(cos150, sin150)
+        let ax1x =  s * 0.8660254037844386;
+        let ax1y =  s * 0.5;
+        let ax2x = -s * 0.8660254037844386;
+        let ax2y =  s * 0.5;
+        // Inverse solve: i = wx/(s√3) + wy/s, j = -wx/(s√3) + wy/s
+        let inv_s3 = 1.0 / (s * 1.7320508075688772);
+        let fi = world.x * inv_s3 + world.y / s;
+        let fj = -world.x * inv_s3 + world.y / s;
+        let mut best = world;
+        let mut best_dist_sq = f64::INFINITY;
+        for di in [fi.floor(), fi.ceil()] {
+            for dj in [fj.floor(), fj.ceil()] {
+                let cx = di * ax1x + dj * ax2x;
+                let cy = di * ax1y + dj * ax2y;
+                let dsq = (world.x - cx).powi(2) + (world.y - cy).powi(2);
+                if dsq < best_dist_sq {
+                    best_dist_sq = dsq;
+                    best = Vec2::new(cx, cy);
+                }
+            }
+        }
+        best
     }
 
     /// Apply a typed distance to the current line direction, if possible.
@@ -13882,6 +15201,701 @@ impl CadKitApp {
         ));
     }
 
+    fn apply_isoextrude(&mut self, depth: f64) {
+        if !depth.is_finite() || depth <= 0.0 {
+            self.command_log
+                .push("ISOEXTRUDE: Depth must be > 0".to_string());
+            return;
+        }
+        let Some(elevation_origin) = self.isoextrude_elevation_origin else {
+            self.command_log
+                .push("ISOEXTRUDE: Pick elevation origin first".to_string());
+            return;
+        };
+        let Some(output_origin) = self.isoextrude_output_origin else {
+            self.command_log
+                .push("ISOEXTRUDE: Pick isometric output origin first".to_string());
+            return;
+        };
+
+        let angle = std::f64::consts::PI / 6.0;
+        let mut generated: Vec<Entity> = Vec::new();
+        let mut valid_polylines = 0usize;
+        let mut numeric_count = 0usize;
+        let mut fallback_count = 0usize;
+        let source_ids = self.isoextrude_entities.clone();
+
+        for id in &source_ids {
+            let Some(entity) = self.drawing.get_entity(id) else {
+                continue;
+            };
+            let source_layer_id = entity.layer;
+            let EntityKind::Polyline { vertices, closed } = &entity.kind else {
+                continue;
+            };
+            if !closed || vertices.len() < 2 {
+                continue;
+            }
+            let vertices = vertices.clone();
+            let numeric_layer_depth = self
+                .drawing
+                .get_layer(source_layer_id)
+                .and_then(|layer| layer.name.trim().parse::<f64>().ok())
+                .filter(|value| value.is_finite() && *value > 0.0);
+            let Some(output_layer_id) = self.ensure_iso_output_layer_for_source(source_layer_id)
+            else {
+                continue;
+            };
+            let hidden_layer_id = self.ensure_iso_hidden_layer();
+
+            valid_polylines += 1;
+            let layer_depth = numeric_layer_depth.unwrap_or(depth);
+            if numeric_layer_depth.is_some() {
+                numeric_count += 1;
+            } else {
+                fallback_count += 1;
+            }
+            let dx = layer_depth * angle.cos();
+            let dy = layer_depth * angle.sin();
+            let front_vertices: Vec<Vec3> = vertices
+                .iter()
+                .map(|v| {
+                    Vec3::new(
+                        output_origin.x + (v.x - elevation_origin.x),
+                        output_origin.y + (v.y - elevation_origin.y),
+                        v.z,
+                    )
+                })
+                .collect();
+            let back_vertices: Vec<Vec3> = front_vertices
+                .iter()
+                .map(|v| Vec3::new(v.x + dx, v.y + dy, v.z))
+                .collect();
+
+            let mut front_face = Entity::new(
+                EntityKind::Polyline {
+                    vertices: front_vertices.clone(),
+                    closed: true,
+                },
+                output_layer_id,
+            );
+            front_face.layer = output_layer_id;
+            generated.push(front_face);
+
+            let rect_corners = if front_vertices.len() == 4 {
+                let min_x = front_vertices
+                    .iter()
+                    .map(|v| v.x)
+                    .fold(f64::INFINITY, f64::min);
+                let max_x = front_vertices
+                    .iter()
+                    .map(|v| v.x)
+                    .fold(f64::NEG_INFINITY, f64::max);
+                let min_y = front_vertices
+                    .iter()
+                    .map(|v| v.y)
+                    .fold(f64::INFINITY, f64::min);
+                let max_y = front_vertices
+                    .iter()
+                    .map(|v| v.y)
+                    .fold(f64::NEG_INFINITY, f64::max);
+                let tol = ((max_x - min_x).abs().max((max_y - min_y).abs()) * 1e-6).max(1e-6);
+
+                let axis_aligned = front_vertices
+                    .iter()
+                    .all(|v| {
+                        ((v.x - min_x).abs() <= tol || (v.x - max_x).abs() <= tol)
+                            && ((v.y - min_y).abs() <= tol || (v.y - max_y).abs() <= tol)
+                    })
+                    && front_vertices.iter().zip(
+                        front_vertices
+                            .iter()
+                            .cycle()
+                            .skip(1)
+                            .take(front_vertices.len()),
+                    )
+                    .all(|(a, b)| (a.x - b.x).abs() <= tol || (a.y - b.y).abs() <= tol);
+
+                if axis_aligned {
+                    let pick_corner = |x: f64, y: f64| {
+                        front_vertices
+                            .iter()
+                            .copied()
+                            .find(|v| (v.x - x).abs() <= tol && (v.y - y).abs() <= tol)
+                    };
+                    match (
+                        pick_corner(min_x, min_y),
+                        pick_corner(max_x, min_y),
+                        pick_corner(max_x, max_y),
+                        pick_corner(min_x, max_y),
+                    ) {
+                        (Some(bl), Some(br), Some(tr), Some(tl)) => Some((bl, br, tr, tl)),
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            if let Some((front_bl, front_br, front_tr, front_tl)) = rect_corners {
+                let back_bl = Vec3::new(front_bl.x + dx, front_bl.y + dy, front_bl.z);
+                let back_br = Vec3::new(front_br.x + dx, front_br.y + dy, front_br.z);
+                let back_tr = Vec3::new(front_tr.x + dx, front_tr.y + dy, front_tr.z);
+                let back_tl = Vec3::new(front_tl.x + dx, front_tl.y + dy, front_tl.z);
+
+                let visible_edges = [
+                    (back_tl, back_tr),
+                    (back_br, back_tr),
+                    (front_tl, back_tl),
+                    (front_tr, back_tr),
+                    (front_br, back_br),
+                ];
+                let hidden_edges = [
+                    (back_bl, back_br),
+                    (back_bl, back_tl),
+                    (front_bl, back_bl),
+                ];
+
+                for (start, end) in visible_edges {
+                    let mut edge = Entity::new(EntityKind::Line { start, end }, output_layer_id);
+                    edge.layer = output_layer_id;
+                    generated.push(edge);
+                }
+                for (start, end) in hidden_edges {
+                    let mut edge = Entity::new(EntityKind::Line { start, end }, hidden_layer_id);
+                    edge.layer = hidden_layer_id;
+                    generated.push(edge);
+                }
+            } else {
+                let mut back_face = Entity::new(
+                    EntityKind::Polyline {
+                        vertices: back_vertices.clone(),
+                        closed: true,
+                    },
+                    hidden_layer_id,
+                );
+                back_face.layer = hidden_layer_id;
+                generated.push(back_face);
+
+                for (front, back) in front_vertices.iter().zip(back_vertices.iter()) {
+                    let mut connector = Entity::new(
+                        EntityKind::Line {
+                            start: *front,
+                            end: *back,
+                        },
+                        hidden_layer_id,
+                    );
+                    connector.layer = hidden_layer_id;
+                    generated.push(connector);
+                }
+            }
+        }
+
+        if valid_polylines == 0 {
+            self.command_log.push(
+                "ISOEXTRUDE: No editable closed polylines in selection".to_string(),
+            );
+            return;
+        }
+
+        self.push_undo();
+        let created = generated.len();
+        for entity in generated {
+            self.drawing.add_entity(entity);
+        }
+        self.isoextrude_depth = depth;
+        self.exit_isoextrude();
+        self.command_log.push(format!(
+            "ISOEXTRUDE: Extruded {} polyline(s), created {} entit{}, numeric layer depth {}, fallback {}",
+            valid_polylines,
+            created,
+            if created == 1 { "y" } else { "ies" },
+            numeric_count,
+            fallback_count
+        ));
+    }
+
+    fn axis_aligned_rect_bounds(vertices: &[Vec3]) -> Option<(f64, f64, f64, f64)> {
+        if vertices.len() != 4 {
+            return None;
+        }
+        let min_x = vertices.iter().map(|v| v.x).fold(f64::INFINITY, f64::min);
+        let max_x = vertices
+            .iter()
+            .map(|v| v.x)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let min_y = vertices.iter().map(|v| v.y).fold(f64::INFINITY, f64::min);
+        let max_y = vertices
+            .iter()
+            .map(|v| v.y)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let tol = ((max_x - min_x).abs().max((max_y - min_y).abs()) * 1e-6).max(1e-6);
+        let axis_aligned = vertices
+            .iter()
+            .all(|v| {
+                ((v.x - min_x).abs() <= tol || (v.x - max_x).abs() <= tol)
+                    && ((v.y - min_y).abs() <= tol || (v.y - max_y).abs() <= tol)
+            })
+            && vertices
+                .iter()
+                .zip(vertices.iter().cycle().skip(1).take(vertices.len()))
+                .all(|(a, b)| (a.x - b.x).abs() <= tol || (a.y - b.y).abs() <= tol);
+        if axis_aligned && (max_x - min_x).abs() > tol && (max_y - min_y).abs() > tol {
+            Some((min_x, max_x, min_y, max_y))
+        } else {
+            None
+        }
+    }
+
+    fn canonical_segment_key(start: Vec3, end: Vec3) -> ((i64, i64, i64), (i64, i64, i64)) {
+        fn q(v: f64) -> i64 {
+            (v * 1_000_000.0).round() as i64
+        }
+
+        let a = (q(start.x), q(start.y), q(start.z));
+        let b = (q(end.x), q(end.y), q(end.z));
+        if a <= b {
+            (a, b)
+        } else {
+            (b, a)
+        }
+    }
+
+    fn polygon_edges(vertices: &[Vec3]) -> Vec<(Vec3, Vec3)> {
+        if vertices.len() < 2 {
+            return Vec::new();
+        }
+        vertices
+            .iter()
+            .copied()
+            .zip(vertices.iter().copied().cycle().skip(1).take(vertices.len()))
+            .collect()
+    }
+
+    fn dwiso_right_view_silhouette_edges(
+        front_face: &[Vec3; 4],
+        top_face: &[Vec3; 4],
+        right_face: &[Vec3; 4],
+    ) -> HashSet<((i64, i64, i64), (i64, i64, i64))> {
+        let mut edges = HashSet::new();
+        let candidates = [
+            (front_face[0], front_face[1]),
+            (front_face[1], front_face[2]),
+            (front_face[2], front_face[3]),
+            (front_face[3], front_face[0]),
+            (top_face[1], top_face[2]),
+            (top_face[2], top_face[3]),
+            (top_face[3], top_face[0]),
+            (right_face[2], right_face[3]),
+            (right_face[3], right_face[0]),
+        ];
+        for (start, end) in candidates {
+            edges.insert(Self::canonical_segment_key(start, end));
+        }
+        edges
+    }
+
+    fn dwiso_box_edges(
+        x0: f64,
+        x1: f64,
+        y0: f64,
+        y1: f64,
+        z0: f64,
+        z1: f64,
+    ) -> [(Vec3, Vec3); 12] {
+        let fbl = Vec3::new(x0, y0, z0);
+        let fbr = Vec3::new(x1, y0, z0);
+        let ftr = Vec3::new(x1, y0, z1);
+        let ftl = Vec3::new(x0, y0, z1);
+        let bbl = Vec3::new(x0, y1, z0);
+        let bbr = Vec3::new(x1, y1, z0);
+        let btr = Vec3::new(x1, y1, z1);
+        let btl = Vec3::new(x0, y1, z1);
+        [
+            (fbl, fbr),
+            (fbr, ftr),
+            (ftr, ftl),
+            (ftl, fbl),
+            (bbl, bbr),
+            (bbr, btr),
+            (btr, btl),
+            (btl, bbl),
+            (fbl, bbl),
+            (fbr, bbr),
+            (ftr, btr),
+            (ftl, btl),
+        ]
+    }
+
+    fn project_dwiso_model_point(model: Vec3, output_origin: Vec2, ux: f64, uy: f64) -> Vec3 {
+        Vec3::xy(
+            output_origin.x + model.x + model.y * ux,
+            output_origin.y + model.z + model.y * uy,
+        )
+    }
+
+    fn screen_triangle_aabb(tri: &[Vec2; 3]) -> (f64, f64, f64, f64) {
+        (
+            tri.iter().map(|p| p.x).fold(f64::INFINITY, f64::min),
+            tri.iter().map(|p| p.x).fold(f64::NEG_INFINITY, f64::max),
+            tri.iter().map(|p| p.y).fold(f64::INFINITY, f64::min),
+            tri.iter().map(|p| p.y).fold(f64::NEG_INFINITY, f64::max),
+        )
+    }
+
+    fn barycentric_screen_triangle(
+        tri: &[Vec2; 3],
+        p: Vec2,
+        eps: f64,
+    ) -> Option<[f64; 3]> {
+        let a = tri[0];
+        let b = tri[1];
+        let c = tri[2];
+        let denom = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
+        if denom.abs() <= eps {
+            return None;
+        }
+        let w0 = ((b.y - c.y) * (p.x - c.x) + (c.x - b.x) * (p.y - c.y)) / denom;
+        let w1 = ((c.y - a.y) * (p.x - c.x) + (a.x - c.x) * (p.y - c.y)) / denom;
+        let w2 = 1.0 - w0 - w1;
+        if w0 >= -eps && w1 >= -eps && w2 >= -eps {
+            Some([w0, w1, w2])
+        } else {
+            None
+        }
+    }
+
+    fn edge_visibility_counts_dwiso_triangles(
+        start: Vec3,
+        end: Vec3,
+        occluders: &[([Vec2; 3], [f64; 3], (f64, f64, f64, f64))],
+        output_origin: Vec2,
+        ux: f64,
+        uy: f64,
+        eps: f64,
+    ) -> (usize, usize) {
+        let samples = [0.05_f64, 0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85, 0.95];
+        let mut hidden = 0usize;
+        for t in samples {
+            let model = Vec3::new(
+                start.x + (end.x - start.x) * t,
+                start.y + (end.y - start.y) * t,
+                start.z + (end.z - start.z) * t,
+            );
+            let screen = Self::project_dwiso_model_point(model, output_origin, ux, uy);
+            let p = Vec2::new(screen.x, screen.y);
+            let mut occluded = false;
+            for (tri, depths, aabb) in occluders {
+                if p.x < aabb.0 - eps || p.x > aabb.1 + eps || p.y < aabb.2 - eps || p.y > aabb.3 + eps {
+                    continue;
+                }
+                let Some(weights) = Self::barycentric_screen_triangle(tri, p, eps) else {
+                    continue;
+                };
+                let tri_depth =
+                    weights[0] * depths[0] + weights[1] * depths[1] + weights[2] * depths[2];
+                if tri_depth < model.y - eps {
+                    occluded = true;
+                    break;
+                }
+            }
+            if occluded {
+                hidden += 1;
+            }
+        }
+        (samples.len() - hidden, hidden)
+    }
+
+    fn apply_dwiso_side(&mut self) {
+        let Some(front_origin) = self.dwiso_side_front_origin else {
+            self.command_log
+                .push("DWISO_SIDE: Pick FRONT origin first".to_string());
+            return;
+        };
+        let Some(side_origin) = self.dwiso_side_side_origin else {
+            self.command_log
+                .push("DWISO_SIDE: Pick SIDE origin first".to_string());
+            return;
+        };
+        let Some(output_origin) = self.dwiso_side_output_origin else {
+            self.command_log
+                .push("DWISO_SIDE: Pick ISO output origin first".to_string());
+            return;
+        };
+
+        let mut front_map: HashMap<String, (u32, String, (f64, f64, f64, f64))> = HashMap::new();
+        let mut side_map: HashMap<String, (u32, String, (f64, f64, f64, f64))> = HashMap::new();
+
+        for id in self.dwiso_side_front_entities.clone() {
+            let Some(entity) = self.drawing.get_entity(&id) else {
+                continue;
+            };
+            let EntityKind::Polyline { vertices, closed } = &entity.kind else {
+                continue;
+            };
+            if !closed {
+                continue;
+            }
+            let Some(bounds) = Self::axis_aligned_rect_bounds(vertices) else {
+                continue;
+            };
+            let Some(layer) = self.drawing.get_layer(entity.layer) else {
+                continue;
+            };
+            front_map
+                .entry(layer.name.to_ascii_lowercase())
+                .or_insert((entity.layer, layer.name.clone(), bounds));
+        }
+
+        for id in self.dwiso_side_side_entities.clone() {
+            let Some(entity) = self.drawing.get_entity(&id) else {
+                continue;
+            };
+            let EntityKind::Polyline { vertices, closed } = &entity.kind else {
+                continue;
+            };
+            if !closed {
+                continue;
+            }
+            let Some(bounds) = Self::axis_aligned_rect_bounds(vertices) else {
+                continue;
+            };
+            let Some(layer) = self.drawing.get_layer(entity.layer) else {
+                continue;
+            };
+            side_map
+                .entry(layer.name.to_ascii_lowercase())
+                .or_insert((entity.layer, layer.name.clone(), bounds));
+        }
+
+        let angle = std::f64::consts::PI / 6.0;
+        let ux = angle.cos();
+        let uy = angle.sin();
+        let hidden_layer_id = self.ensure_iso_hidden_layer();
+        let mut generated: Vec<Entity> = Vec::new();
+        let mut matched = 0usize;
+        let mut parts: Vec<(
+            f64,
+            u32,
+            [[Vec3; 4]; 3],
+            Vec<(Vec3, Vec3)>,
+            HashSet<((i64, i64, i64), (i64, i64, i64))>,
+        )> = Vec::new();
+
+        for (key, (front_layer_id, _front_name, (fx0, fx1, fy0, fy1))) in &front_map {
+            let Some((_side_layer_id, _side_name, (sx0, sx1, _sy0, _sy1))) = side_map.get(key)
+            else {
+                continue;
+            };
+            let depth = sx1 - sx0;
+            if !depth.is_finite() || depth <= 1e-9 {
+                continue;
+            }
+            let Some(output_layer_id) = self.ensure_iso_output_layer_for_source(*front_layer_id)
+            else {
+                continue;
+            };
+
+            matched += 1;
+            let x0 = fx0 - front_origin.x;
+            let x1 = fx1 - front_origin.x;
+            let z0 = fy0 - front_origin.y;
+            let z1 = fy1 - front_origin.y;
+            let y0 = sx0 - side_origin.x;
+            let y1 = sx1 - side_origin.x;
+
+            let front_face = [
+                Vec3::new(x0, y0, z0),
+                Vec3::new(x1, y0, z0),
+                Vec3::new(x1, y0, z1),
+                Vec3::new(x0, y0, z1),
+            ];
+            let top_face = [
+                Vec3::new(x0, y0, z1),
+                Vec3::new(x1, y0, z1),
+                Vec3::new(x1, y1, z1),
+                Vec3::new(x0, y1, z1),
+            ];
+            let right_face = [
+                Vec3::new(x1, y0, z0),
+                Vec3::new(x1, y0, z1),
+                Vec3::new(x1, y1, z1),
+                Vec3::new(x1, y1, z0),
+            ];
+
+            let silhouette_edges =
+                Self::dwiso_right_view_silhouette_edges(&front_face, &top_face, &right_face);
+            let all_edges = Self::dwiso_box_edges(x0, x1, y0, y1, z0, z1).to_vec();
+
+            parts.push((
+                y0,
+                output_layer_id,
+                [front_face, top_face, right_face],
+                all_edges,
+                silhouette_edges,
+            ));
+        }
+
+        parts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        let mut occluders: Vec<([Vec2; 3], [f64; 3], (f64, f64, f64, f64))> = Vec::new();
+
+        for (_depth_offset, output_layer_id, faces, all_edges, silhouette_edges) in parts {
+            let mut allowed_edges: HashMap<((i64, i64, i64), (i64, i64, i64)), (Vec3, Vec3)> = HashMap::new();
+            for face in &faces {
+                for (start, end) in Self::polygon_edges(face) {
+                    let key = Self::canonical_segment_key(start, end);
+                    allowed_edges.entry(key).or_insert((start, end));
+                }
+            }
+
+            let eps = 1e-6;
+            for (start, end) in all_edges {
+                let key = Self::canonical_segment_key(start, end);
+                if allowed_edges.contains_key(&key) {
+                    continue;
+                }
+                let start_2d = Self::project_dwiso_model_point(start, output_origin, ux, uy);
+                let end_2d = Self::project_dwiso_model_point(end, output_origin, ux, uy);
+                let mut edge = Entity::new(
+                    EntityKind::Line {
+                        start: start_2d,
+                        end: end_2d,
+                    },
+                    hidden_layer_id,
+                );
+                edge.layer = hidden_layer_id;
+                generated.push(edge);
+            }
+
+            for (key, (start, end)) in allowed_edges {
+                let (visible_samples, occluded_samples) = Self::edge_visibility_counts_dwiso_triangles(
+                    start,
+                    end,
+                    &occluders,
+                    output_origin,
+                    ux,
+                    uy,
+                    eps,
+                );
+                let is_silhouette = silhouette_edges.contains(&key);
+                let total_samples = visible_samples + occluded_samples;
+                let hidden = if is_silhouette {
+                    total_samples > 0
+                        && (occluded_samples as f64) / (total_samples as f64) >= 0.9
+                } else {
+                    visible_samples <= occluded_samples
+                };
+                let start_2d = Self::project_dwiso_model_point(start, output_origin, ux, uy);
+                let end_2d = Self::project_dwiso_model_point(end, output_origin, ux, uy);
+                let layer_id = if hidden {
+                    hidden_layer_id
+                } else {
+                    output_layer_id
+                };
+                let mut edge = Entity::new(
+                    EntityKind::Line {
+                        start: start_2d,
+                        end: end_2d,
+                    },
+                    layer_id,
+                );
+                edge.layer = layer_id;
+                generated.push(edge);
+            }
+
+            for face in faces {
+                let projected = [
+                    Vec2::from(Self::project_dwiso_model_point(face[0], output_origin, ux, uy)),
+                    Vec2::from(Self::project_dwiso_model_point(face[1], output_origin, ux, uy)),
+                    Vec2::from(Self::project_dwiso_model_point(face[2], output_origin, ux, uy)),
+                    Vec2::from(Self::project_dwiso_model_point(face[3], output_origin, ux, uy)),
+                ];
+                for tri_indices in [[0usize, 1usize, 2usize], [0usize, 2usize, 3usize]] {
+                    let tri = [
+                        projected[tri_indices[0]],
+                        projected[tri_indices[1]],
+                        projected[tri_indices[2]],
+                    ];
+                    let depths = [
+                        face[tri_indices[0]].y,
+                        face[tri_indices[1]].y,
+                        face[tri_indices[2]].y,
+                    ];
+                    occluders.push((tri, depths, Self::screen_triangle_aabb(&tri)));
+                }
+            }
+        }
+
+        if matched == 0 {
+            self.command_log.push(
+                "DWISO_SIDE: No matching rectangular FRONT/SIDE layer pairs found".to_string(),
+            );
+            return;
+        }
+
+        self.push_undo();
+        let created = generated.len();
+        for entity in generated {
+            self.drawing.add_entity(entity);
+        }
+        self.exit_dwiso_side();
+        self.command_log.push(format!(
+            "DWISO_SIDE: Matched {} layer pair(s), created {} entit{}",
+            matched,
+            created,
+            if created == 1 { "y" } else { "ies" }
+        ));
+    }
+
+    fn ensure_iso_output_layer_for_source(&mut self, source_layer_id: u32) -> Option<u32> {
+        let source = self.drawing.get_layer(source_layer_id)?;
+        let source_name = source.name.trim().to_string();
+        let source_color = source.color;
+        let source_linetype = source.linetype;
+        let source_linetype_scale = source.linetype_scale;
+        let derived_name = format!("ISO-{source_name}");
+
+        if let Some(existing) = self
+            .drawing
+            .layers()
+            .find(|layer| layer.name.eq_ignore_ascii_case(&derived_name))
+            .map(|layer| layer.id)
+        {
+            return Some(existing);
+        }
+
+        let id = self
+            .drawing
+            .add_layer_with_color(derived_name, source_color);
+        if let Some(layer) = self.drawing.get_layer_mut(id) {
+            layer.linetype = source_linetype;
+            layer.linetype_scale = source_linetype_scale;
+        }
+        Some(id)
+    }
+
+    fn ensure_iso_hidden_layer(&mut self) -> u32 {
+        if let Some(existing) = self
+            .drawing
+            .layers()
+            .find(|layer| layer.name.eq_ignore_ascii_case("ISO-HIDDEN"))
+            .map(|layer| layer.id)
+        {
+            return existing;
+        }
+
+        let id = self
+            .drawing
+            .add_layer_with_color("ISO-HIDDEN".to_string(), [170, 170, 170]);
+        if let Some(layer) = self.drawing.get_layer_mut(id) {
+            layer.linetype = Linetype::Hidden;
+            layer.linetype_scale = 1.0;
+        }
+        id
+    }
+
     /// Compute a trim operation (read-only).  Returns a `TrimResult` describing
     /// what should happen; the caller applies any mutations.
     ///
@@ -14433,7 +16447,7 @@ impl CadKitApp {
             return false;
         }
         let edge_point = if self.ortho_enabled {
-            Self::snap_angle(center, edge_point, self.ortho_increment_deg)
+            self.ortho_snap(center, edge_point)
         } else {
             edge_point
         };
@@ -14460,6 +16474,35 @@ impl CadKitApp {
         ));
         self.command_log
             .push(format!("POLYGON: {} sides, r={:.4}", self.polygon_sides, r));
+        true
+    }
+
+    fn apply_isocircle(&mut self, center: Vec2, radius: f64) -> bool {
+        if radius <= 1e-9 || !radius.is_finite() {
+            self.command_log.push("ISOCIRCLE: Radius too small".to_string());
+            return false;
+        }
+        let axes = self.iso_plane.axes();
+        let a1 = axes[0];
+        let a2 = axes[1];
+        const N: usize = 64;
+        let mut verts: Vec<Vec3> = Vec::with_capacity(N);
+        for i in 0..N {
+            let t = std::f64::consts::TAU * i as f64 / N as f64;
+            let x = center.x + radius * t.cos() * a1.x + radius * t.sin() * a2.x;
+            let y = center.y + radius * t.cos() * a1.y + radius * t.sin() * a2.y;
+            verts.push(Vec3::xy(x, y));
+        }
+        self.push_undo();
+        self.drawing.add_entity(Entity::new(
+            EntityKind::Polyline { vertices: verts, closed: true },
+            self.current_layer,
+        ));
+        self.command_log.push(format!(
+            "ISOCIRCLE: r={:.4} plane={}",
+            radius,
+            self.iso_plane.label()
+        ));
         true
     }
 
@@ -14490,7 +16533,7 @@ impl CadKitApp {
             return None;
         }
         let dir = if self.ortho_enabled {
-            Self::snap_angle(first, direction, self.ortho_increment_deg)
+            self.ortho_snap(first, direction)
         } else {
             direction
         };
@@ -14689,17 +16732,31 @@ impl CadKitApp {
         match &self.active_tool {
             ActiveTool::Line { start: Some(s) } => Some(*s),
             ActiveTool::Polyline { points } if !points.is_empty() => points.last().copied(),
+            ActiveTool::None => {
+                if self.stretch_phase == StretchPhase::Destination {
+                    self.stretch_base_point
+                } else {
+                    None
+                }
+            }
             _ => None,
         }
     }
 
     fn ortho_snap_base_point(&self) -> Option<Vec2> {
-        if !self.ortho_enabled {
+        if !self.ortho_enabled || self.iso_mode {
             return None;
         }
         match &self.active_tool {
             ActiveTool::Line { start: Some(s) } => Some(*s),
             ActiveTool::Polyline { points } if !points.is_empty() => points.last().copied(),
+            ActiveTool::None => {
+                if self.stretch_phase == StretchPhase::Destination {
+                    self.stretch_base_point
+                } else {
+                    None
+                }
+            }
             _ => None,
         }
     }
@@ -15570,7 +17627,7 @@ impl CadKitApp {
                 let (sx, sy) = world_to_screen(w.x as f32, w.y as f32, viewport);
                 let sp = rect.min + egui::vec2(sx, sy);
                 let d = sp.distance(screen_pos);
-                if d <= Self::PICK_RADIUS {
+                if d <= Self::NEAREST_SNAP_RADIUS {
                     match best {
                         Some((bd, _)) if d >= bd => {}
                         _ => best = Some((d, w)),

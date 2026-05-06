@@ -1,9 +1,9 @@
 use super::state::{
     ActiveTool, ArrayMode, ArrayPhase, BlockPhase, BoundaryPhase, ChamferPhase, CopyPhase,
-    DimAngularPhase, DimLinearPhase, DimPhase, DimRadialPhase, EditDimPhase, EditTextPhase,
-    EllipsePhase, ExtendPhase, FilletPhase, FromPhase, HatchPhase, InsertPhase, MirrorPhase,
-    MovePhase, OffsetPhase, PeditPhase, PolygonPhase, RectanglePhase, RotatePhase, ScalePhase,
-    TextPhase, TrimPhase,
+    DimAngularPhase, DimLinearPhase, DimPhase, DimRadialPhase, DwIsoSidePhase, EditDimPhase,
+    EditTextPhase, EllipsePhase, ExtendPhase, FilletPhase, FromPhase, HatchPhase, InsertPhase,
+    IsocirclePhase, IsoExtrudePhase, IsoPlane, MirrorPhase, MovePhase, OffsetPhase, PeditPhase, PolygonPhase,
+    RectanglePhase, RotatePhase, ScalePhase, StretchPhase, TextPhase, TrimPhase,
 };
 use super::{create_arc_from_three_points, AiBackendMode, AiModelProfile, CadKitApp};
 use cadkit_2d_core::{
@@ -190,6 +190,11 @@ impl CadKitApp {
         if !keeps_mirror_context {
             self.exit_mirror();
         }
+        let keeps_stretch_context = matches!(cmd.as_str(), "s" | "stretch" | "from" | "fr")
+            || self.stretch_phase != StretchPhase::Idle;
+        if !keeps_stretch_context {
+            self.exit_stretch();
+        }
         let keeps_fillet_context = matches!(cmd.as_str(), "fi" | "fillet" | "from" | "fr")
             || self.fillet_phase != FilletPhase::Idle;
         if !keeps_fillet_context {
@@ -204,6 +209,12 @@ impl CadKitApp {
             || self.polygon_phase != PolygonPhase::Idle;
         if !keeps_polygon_context {
             self.exit_polygon();
+        }
+        let keeps_isocircle_context =
+            matches!(cmd.as_str(), "ic" | "isocircle" | "from" | "fr")
+                || self.isocircle_phase != IsocirclePhase::Idle;
+        if !keeps_isocircle_context {
+            self.exit_isocircle();
         }
         let keeps_ellipse_context =
             matches!(cmd.as_str(), "el" | "ellipse" | "elipse" | "from" | "fr")
@@ -236,6 +247,18 @@ impl CadKitApp {
             || self.hatch_phase != HatchPhase::Idle;
         if !keeps_hatch_context {
             self.exit_hatch();
+        }
+        let keeps_isoextrude_context =
+            matches!(cmd.as_str(), "isoextrude" | "isodraft" | "from" | "fr")
+                || self.isoextrude_phase != IsoExtrudePhase::Idle;
+        if !keeps_isoextrude_context {
+            self.exit_isoextrude();
+        }
+        let keeps_dwiso_side_context =
+            matches!(cmd.as_str(), "dwiso_side" | "from" | "fr")
+                || self.dwiso_side_phase != DwIsoSidePhase::Idle;
+        if !keeps_dwiso_side_context {
+            self.exit_dwiso_side();
         }
         let keeps_block_context = matches!(
             cmd.as_str(),
@@ -1171,6 +1194,31 @@ impl CadKitApp {
                 log::info!("Command: POLYGON");
                 true
             }
+            "ic" | "isocircle" => {
+                if !self.iso_mode {
+                    self.command_log
+                        .push("ISOCIRCLE: Enable ISO mode first (ISO command or status bar)".to_string());
+                    return true;
+                }
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.exit_scale();
+                self.exit_mirror();
+                self.exit_fillet();
+                self.exit_chamfer();
+                self.exit_polygon();
+                self.exit_ellipse();
+                self.exit_pedit();
+                self.isocircle_phase = IsocirclePhase::Center;
+                self.command_log.push("ISOCIRCLE: Pick center point:".to_string());
+                log::info!("Command: ISOCIRCLE");
+                true
+            }
             "rec" | "rect" | "rectangle" => {
                 self.cancel_active_tool();
                 self.exit_trim();
@@ -1303,6 +1351,27 @@ impl CadKitApp {
                 log::info!("Command: MIRROR");
                 true
             }
+            "s" | "stretch" => {
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.exit_scale();
+                self.exit_mirror();
+                self.stretch_phase = StretchPhase::SelectingEntities;
+                self.stretch_base_point = None;
+                self.stretch_entities.clear();
+                self.stretch_selection_box = None;
+                self.command_log.push(
+                    "STRETCH: Drag a crossing/window box over geometry, then press Enter"
+                        .to_string(),
+                );
+                log::info!("Command: STRETCH");
+                true
+            }
             "fi" | "fillet" => {
                 self.cancel_active_tool();
                 self.exit_trim();
@@ -1416,6 +1485,86 @@ impl CadKitApp {
                     "HATCH: Dialog open. Click internal point or adjust settings first"
                 ));
                 log::info!("Command: HATCH");
+                true
+            }
+            "isoextrude" | "isodraft" => {
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.exit_scale();
+                self.exit_mirror();
+                self.exit_fillet();
+                self.exit_chamfer();
+                self.exit_polygon();
+                self.exit_ellipse();
+                self.exit_rectangle();
+                self.exit_array();
+                self.exit_pedit();
+                self.exit_boundary();
+                self.exit_hatch();
+                let requested: Vec<Guid> = self.selected_entities.iter().copied().collect();
+                let ids = self.filter_editable_entity_ids(&requested, "ISOEXTRUDE");
+                self.isoextrude_entities.clear();
+                self.isoextrude_elevation_origin = None;
+                self.isoextrude_output_origin = None;
+                if ids.is_empty() {
+                    self.isoextrude_phase = IsoExtrudePhase::SelectingEntities;
+                    self.command_log
+                        .push("ISOEXTRUDE: Select entities, press Enter to continue".to_string());
+                } else {
+                    self.isoextrude_entities = ids;
+                    self.isoextrude_phase = IsoExtrudePhase::EnteringDepth;
+                    self.command_log.push(format!(
+                        "ISOEXTRUDE: Enter projection depth <{:.4}>",
+                        self.isoextrude_depth
+                    ));
+                }
+                log::info!("Command: ISOEXTRUDE");
+                true
+            }
+            "dwiso_side" => {
+                self.cancel_active_tool();
+                self.exit_trim();
+                self.exit_offset();
+                self.exit_move();
+                self.exit_extend();
+                self.exit_copy();
+                self.exit_rotate();
+                self.exit_scale();
+                self.exit_mirror();
+                self.exit_fillet();
+                self.exit_chamfer();
+                self.exit_polygon();
+                self.exit_ellipse();
+                self.exit_rectangle();
+                self.exit_array();
+                self.exit_pedit();
+                self.exit_boundary();
+                self.exit_hatch();
+                self.exit_isoextrude();
+                self.dwiso_side_front_entities.clear();
+                self.dwiso_side_side_entities.clear();
+                self.dwiso_side_front_origin = None;
+                self.dwiso_side_side_origin = None;
+                self.dwiso_side_output_origin = None;
+
+                let requested: Vec<Guid> = self.selected_entities.iter().copied().collect();
+                let ids = self.filter_editable_entity_ids(&requested, "DWISO_SIDE");
+                if ids.is_empty() {
+                    self.dwiso_side_phase = DwIsoSidePhase::SelectingFrontEntities;
+                    self.command_log
+                        .push("DWISO_SIDE: Select FRONT entities, press Enter to continue".to_string());
+                } else {
+                    self.dwiso_side_front_entities = ids;
+                    self.dwiso_side_phase = DwIsoSidePhase::PickingFrontOrigin;
+                    self.command_log
+                        .push("DWISO_SIDE: Pick FRONT origin point".to_string());
+                }
+                log::info!("Command: DWISO_SIDE");
                 true
             }
             "bmake" | "block" => {
@@ -1727,6 +1876,40 @@ impl CadKitApp {
                 ));
                 true
             }
+            "isoplane" | "iso" => {
+                // Optional arg: L/Left, R/Right, T/Top — or no arg to cycle
+                let arg = raw.trim().split_whitespace().nth(1).unwrap_or("").to_ascii_lowercase();
+                let new_plane = match arg.as_str() {
+                    "l" | "left"  => Some(IsoPlane::Left),
+                    "r" | "right" => Some(IsoPlane::Right),
+                    "t" | "top"   => Some(IsoPlane::Top),
+                    "" => None,
+                    _ => {
+                        self.command_log.push("ISOPLANE: use L, R, or T".to_string());
+                        return true;
+                    }
+                };
+                if let Some(plane) = new_plane {
+                    self.iso_mode = true;
+                    self.iso_plane = plane;
+                } else if self.iso_mode {
+                    self.iso_plane = self.iso_plane.cycle();
+                } else {
+                    self.iso_mode = true;
+                }
+                self.command_log.push(format!(
+                    "Isoplane: {} (iso mode {})",
+                    self.iso_plane.label(),
+                    if self.iso_mode { "ON" } else { "OFF" }
+                ));
+                log::info!("Command: ISOPLANE {}", self.iso_plane.label());
+                true
+            }
+            "isooff" => {
+                self.iso_mode = false;
+                self.command_log.push("Iso mode OFF".to_string());
+                true
+            }
             "help" | "?" => {
                 self.help_open = true;
                 true
@@ -1868,6 +2051,7 @@ impl CadKitApp {
             ActiveTool::Line { start: Some(_) } => true,
             ActiveTool::Circle { center: Some(_) } => true,
             ActiveTool::Polyline { points } => !points.is_empty(),
+            ActiveTool::None => self.stretch_phase == StretchPhase::Destination,
             _ => false,
         }
     }

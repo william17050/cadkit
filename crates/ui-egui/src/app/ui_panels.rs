@@ -1,9 +1,9 @@
 use super::state::{
     ActiveTool, ArrayMode, ArrayPhase, BlockPhase, BoundaryPhase, ChamferPhase, CopyPhase,
-    DimAngularPhase, DimLinearPhase, DimPhase, DimRadialPhase, EditDimPhase, EditTextPhase,
-    EllipsePhase, ExtendPhase, FilletPhase, FromPhase, HatchPhase, InsertPhase, MirrorPhase,
-    MovePhase, OffsetPhase, PeditPhase, PolygonPhase, RectanglePhase, RotatePhase, ScalePhase,
-    TextPhase, TrimPhase,
+    DimAngularPhase, DimLinearPhase, DimPhase, DimRadialPhase, DwIsoSidePhase, EditDimPhase,
+    EditTextPhase, EllipsePhase, ExtendPhase, FilletPhase, FromPhase, HatchPhase, InsertPhase,
+    IsocirclePhase, IsoExtrudePhase, IsoPlane, MirrorPhase, MovePhase, OffsetPhase, PeditPhase, PolygonPhase,
+    RectanglePhase, RotatePhase, ScalePhase, StretchPhase, TextPhase, TrimPhase,
 };
 use super::CadKitApp;
 use cadkit_2d_core::{EntityKind, Linetype};
@@ -250,6 +250,12 @@ impl CadKitApp {
                         "POLYGON: Enter number of sides <{}>",
                         self.polygon_sides
                     ));
+                }
+                if self.iso_mode && ui.button("⬭ Isocircle").clicked() {
+                    self.exit_dim();
+                    self.cancel_active_tool();
+                    self.isocircle_phase = IsocirclePhase::Center;
+                    self.command_log.push("ISOCIRCLE: Pick center point:".to_string());
                 }
                 if ui.button("T Text").clicked() {
                     self.exit_dim();
@@ -503,6 +509,9 @@ impl CadKitApp {
                     self.move_entities.clear();
                     self.command_log
                         .push("MOVE: Select entities to move, press Enter to continue".to_string());
+                }
+                if ui.button("⇱ Stretch").clicked() {
+                    let _ = self.execute_command_alias("stretch");
                 }
                 if ui.button("📋 Copy").clicked() {
                     self.exit_dim();
@@ -1462,16 +1471,32 @@ impl CadKitApp {
                             }
                             ui.separator();
                             ui.checkbox(&mut self.ortho_enabled, "Ortho");
-                            ui.add(
-                                egui::DragValue::new(&mut self.ortho_increment_deg)
-                                    .clamp_range(0.1..=360.0)
-                                    .speed(1.0)
-                                    .suffix("°"),
-                            );
-                            for preset in [90.0_f64, 45.0, 22.5] {
-                                if ui.small_button(format!("{preset:.1}°")).clicked() {
-                                    self.ortho_increment_deg = preset;
-                                    self.ortho_enabled = true;
+                            if !self.iso_mode {
+                                ui.add(
+                                    egui::DragValue::new(&mut self.ortho_increment_deg)
+                                        .clamp_range(0.1..=360.0)
+                                        .speed(1.0)
+                                        .suffix("°"),
+                                );
+                                for preset in [90.0_f64, 45.0, 22.5] {
+                                    if ui.small_button(format!("{preset:.1}°")).clicked() {
+                                        self.ortho_increment_deg = preset;
+                                        self.ortho_enabled = true;
+                                    }
+                                }
+                            }
+                            ui.separator();
+                            ui.checkbox(&mut self.iso_mode, "ISO");
+                            if self.iso_mode {
+                                for (plane, label) in [
+                                    (IsoPlane::Right, "R"),
+                                    (IsoPlane::Left, "L"),
+                                    (IsoPlane::Top, "T"),
+                                ] {
+                                    let selected = self.iso_plane == plane;
+                                    if ui.selectable_label(selected, label).clicked() {
+                                        self.iso_plane = plane;
+                                    }
                                 }
                             }
                             if let ActiveTool::Circle { center: Some(_) } = self.active_tool {
@@ -1577,7 +1602,7 @@ impl CadKitApp {
                                 ) {
                                     let mut target = hover;
                                     if self.ortho_enabled {
-                                        target = Self::snap_angle(base, hover, self.ortho_increment_deg);
+                                        target = self.ortho_snap(base, hover);
                                     }
                                     self.apply_from_result_point(target);
                                 } else {
@@ -1802,7 +1827,7 @@ impl CadKitApp {
                             } else if self.mirror_phase == MirrorPhase::SecondAxisPoint {
                                 if let (Some(world), Some(p1)) = (self.hover_world_pos, self.mirror_axis_p1) {
                                     let axis_p2 = if self.ortho_enabled {
-                                        Self::snap_angle(p1, world, self.ortho_increment_deg)
+                                        self.ortho_snap(p1, world)
                                     } else {
                                         world
                                     };
@@ -1861,6 +1886,24 @@ impl CadKitApp {
                                     self.polygon_phase = PolygonPhase::Center;
                                     self.command_log.push("POLYGON: Specify center point".to_string());
                                 }
+                            } else if self.isocircle_phase == IsocirclePhase::Center {
+                                if let Some(world) = self.hover_world_pos {
+                                    self.isocircle_phase = IsocirclePhase::Radius { center: world };
+                                    self.command_log.push("ISOCIRCLE: Pick radius or type value:".to_string());
+                                } else {
+                                    self.exit_isocircle();
+                                    self.command_log.push("ISOCIRCLE cancelled.".to_string());
+                                }
+                            } else if let IsocirclePhase::Radius { center } = self.isocircle_phase {
+                                if let Some(world) = self.hover_world_pos {
+                                    let radius = center.distance_to(&world);
+                                    if self.apply_isocircle(center, radius) {
+                                        self.isocircle_phase = IsocirclePhase::Center;
+                                    }
+                                } else {
+                                    self.isocircle_phase = IsocirclePhase::Center;
+                                    self.command_log.push("ISOCIRCLE: Specify center point".to_string());
+                                }
                             } else if self.ellipse_phase == EllipsePhase::Center {
                                 if let Some(world) = self.hover_world_pos {
                                     self.ellipse_phase = EllipsePhase::RadiusX { center: world };
@@ -1872,7 +1915,7 @@ impl CadKitApp {
                             } else if let EllipsePhase::RadiusX { center } = self.ellipse_phase {
                                 if let Some(world) = self.hover_world_pos {
                                     let p = if self.ortho_enabled {
-                                        Self::snap_angle(center, world, self.ortho_increment_deg)
+                                        self.ortho_snap(center, world)
                                     } else {
                                         world
                                     };
@@ -1890,7 +1933,7 @@ impl CadKitApp {
                             } else if let EllipsePhase::RadiusY { center, rx } = self.ellipse_phase {
                                 if let Some(world) = self.hover_world_pos {
                                     let p = if self.ortho_enabled {
-                                        Self::snap_angle(center, world, self.ortho_increment_deg)
+                                        self.ortho_snap(center, world)
                                     } else {
                                         world
                                     };
@@ -1953,6 +1996,114 @@ impl CadKitApp {
                                 } else {
                                     self.exit_hatch();
                                     self.command_log.push("HATCH cancelled.".to_string());
+                                }
+                            } else if self.isoextrude_phase == IsoExtrudePhase::SelectingEntities {
+                                if self.selected_entities.is_empty() {
+                                    self.command_log
+                                        .push("ISOEXTRUDE: No entities selected".to_string());
+                                } else {
+                                    let requested: Vec<Guid> =
+                                        self.selected_entities.iter().copied().collect();
+                                    self.isoextrude_entities =
+                                        self.filter_editable_entity_ids(&requested, "ISOEXTRUDE");
+                                    if self.isoextrude_entities.is_empty() {
+                                        self.command_log.push(
+                                            "ISOEXTRUDE: No editable entities selected".to_string(),
+                                        );
+                                    } else {
+                                        self.isoextrude_phase = IsoExtrudePhase::EnteringDepth;
+                                        self.command_log.push(format!(
+                                            "ISOEXTRUDE: Enter projection depth <{:.4}>",
+                                            self.isoextrude_depth
+                                        ));
+                                    }
+                                }
+                            } else if self.isoextrude_phase == IsoExtrudePhase::EnteringDepth {
+                                self.isoextrude_phase = IsoExtrudePhase::PickingElevationOrigin;
+                                self.command_log
+                                    .push("ISOEXTRUDE: Pick elevation origin point".to_string());
+                            } else if self.isoextrude_phase == IsoExtrudePhase::PickingElevationOrigin {
+                                if let Some(world) = self.hover_world_pos {
+                                    self.isoextrude_elevation_origin = Some(world);
+                                    self.isoextrude_phase = IsoExtrudePhase::PickingIsoOrigin;
+                                    self.command_log.push(format!(
+                                        "ISOEXTRUDE: Elevation origin ({:.4}, {:.4})",
+                                        world.x, world.y
+                                    ));
+                                    self.command_log.push(
+                                        "ISOEXTRUDE: Pick isometric output origin point".to_string(),
+                                    );
+                                }
+                            } else if self.isoextrude_phase == IsoExtrudePhase::PickingIsoOrigin {
+                                if let Some(world) = self.hover_world_pos {
+                                    self.isoextrude_output_origin = Some(world);
+                                    self.apply_isoextrude(self.isoextrude_depth);
+                                }
+                            } else if self.dwiso_side_phase == DwIsoSidePhase::SelectingFrontEntities {
+                                if self.selected_entities.is_empty() {
+                                    self.command_log
+                                        .push("DWISO_SIDE: No FRONT entities selected".to_string());
+                                } else {
+                                    let requested: Vec<Guid> =
+                                        self.selected_entities.iter().copied().collect();
+                                    self.dwiso_side_front_entities =
+                                        self.filter_editable_entity_ids(&requested, "DWISO_SIDE");
+                                    if self.dwiso_side_front_entities.is_empty() {
+                                        self.command_log.push(
+                                            "DWISO_SIDE: No editable FRONT entities selected".to_string(),
+                                        );
+                                    } else {
+                                        self.dwiso_side_phase = DwIsoSidePhase::PickingFrontOrigin;
+                                        self.command_log
+                                            .push("DWISO_SIDE: Pick FRONT origin point".to_string());
+                                    }
+                                }
+                            } else if self.dwiso_side_phase == DwIsoSidePhase::PickingFrontOrigin {
+                                if let Some(world) = self.hover_world_pos {
+                                    self.dwiso_side_front_origin = Some(world);
+                                    self.dwiso_side_phase = DwIsoSidePhase::SelectingSideEntities;
+                                    self.selected_entities.clear();
+                                    self.command_log.push(format!(
+                                        "DWISO_SIDE: FRONT origin ({:.4}, {:.4})",
+                                        world.x, world.y
+                                    ));
+                                    self.command_log
+                                        .push("DWISO_SIDE: Select SIDE entities, press Enter to continue".to_string());
+                                }
+                            } else if self.dwiso_side_phase == DwIsoSidePhase::SelectingSideEntities {
+                                if self.selected_entities.is_empty() {
+                                    self.command_log
+                                        .push("DWISO_SIDE: No SIDE entities selected".to_string());
+                                } else {
+                                    let requested: Vec<Guid> =
+                                        self.selected_entities.iter().copied().collect();
+                                    self.dwiso_side_side_entities =
+                                        self.filter_editable_entity_ids(&requested, "DWISO_SIDE");
+                                    if self.dwiso_side_side_entities.is_empty() {
+                                        self.command_log.push(
+                                            "DWISO_SIDE: No editable SIDE entities selected".to_string(),
+                                        );
+                                    } else {
+                                        self.dwiso_side_phase = DwIsoSidePhase::PickingSideOrigin;
+                                        self.command_log
+                                            .push("DWISO_SIDE: Pick SIDE origin point".to_string());
+                                    }
+                                }
+                            } else if self.dwiso_side_phase == DwIsoSidePhase::PickingSideOrigin {
+                                if let Some(world) = self.hover_world_pos {
+                                    self.dwiso_side_side_origin = Some(world);
+                                    self.dwiso_side_phase = DwIsoSidePhase::PickingIsoOrigin;
+                                    self.command_log.push(format!(
+                                        "DWISO_SIDE: SIDE origin ({:.4}, {:.4})",
+                                        world.x, world.y
+                                    ));
+                                    self.command_log
+                                        .push("DWISO_SIDE: Pick ISO output origin point".to_string());
+                                }
+                            } else if self.dwiso_side_phase == DwIsoSidePhase::PickingIsoOrigin {
+                                if let Some(world) = self.hover_world_pos {
+                                    self.dwiso_side_output_origin = Some(world);
+                                    self.apply_dwiso_side();
                                 }
                             } else if matches!(self.block_phase, BlockPhase::PickBase { .. }) {
                                 if let Some(world) = self.hover_world_pos {
@@ -2056,6 +2207,24 @@ impl CadKitApp {
                             } else if self.extend_phase == ExtendPhase::Extending {
                                 self.exit_extend();
                                 self.command_log.push("EXTEND done.".to_string());
+                            } else if self.stretch_phase == StretchPhase::SelectingEntities {
+                                if self.stretch_entities.is_empty() || self.stretch_selection_box.is_none() {
+                                    self.command_log.push(
+                                        "STRETCH: Drag a crossing/window box first".to_string(),
+                                    );
+                                } else {
+                                    self.stretch_phase = StretchPhase::BasePoint;
+                                    self.command_log.push("STRETCH: Pick base point".to_string());
+                                }
+                            } else if self.stretch_phase == StretchPhase::Destination {
+                                if let Some(world) = self.hover_world_pos {
+                                    self.apply_stretch(world);
+                                } else {
+                                    self.command_log.push(
+                                        "STRETCH: Pick second point or type displacement"
+                                            .to_string(),
+                                    );
+                                }
                             }
                         } else {
                             // Echo typed command to log for visibility.
@@ -2094,7 +2263,7 @@ impl CadKitApp {
                                         let mut target = hover;
                                         if self.ortho_enabled {
                                             target =
-                                                Self::snap_angle(base, hover, self.ortho_increment_deg);
+                                                self.ortho_snap(base, hover);
                                         }
                                         let dx = target.x - base.x;
                                         let dy = target.y - base.y;
@@ -2150,6 +2319,100 @@ impl CadKitApp {
                                     self.command_log.push(
                                         "HATCH: Enter point x,y or spacing,angle".to_string(),
                                     );
+                                }
+                                handled = true;
+                            } else if self.isoextrude_phase == IsoExtrudePhase::SelectingEntities {
+                                self.command_log.push(
+                                    "ISOEXTRUDE: Select entities, then press Enter".to_string(),
+                                );
+                                handled = true;
+                            } else if self.isoextrude_phase == IsoExtrudePhase::EnteringDepth {
+                                if let Ok(depth) = cmd.trim().parse::<f64>() {
+                                    self.isoextrude_depth = depth;
+                                    self.isoextrude_phase = IsoExtrudePhase::PickingElevationOrigin;
+                                    self.command_log
+                                        .push("ISOEXTRUDE: Pick elevation origin point".to_string());
+                                } else {
+                                    self.command_log.push(
+                                        "ISOEXTRUDE: Enter numeric depth".to_string(),
+                                    );
+                                }
+                                handled = true;
+                            } else if self.isoextrude_phase == IsoExtrudePhase::PickingElevationOrigin {
+                                if let Some(world) = Self::resolve_typed_point(&cmd, None) {
+                                    self.isoextrude_elevation_origin = Some(world);
+                                    self.isoextrude_phase = IsoExtrudePhase::PickingIsoOrigin;
+                                    self.command_log.push(format!(
+                                        "ISOEXTRUDE: Elevation origin ({:.4}, {:.4})",
+                                        world.x, world.y
+                                    ));
+                                    self.command_log.push(
+                                        "ISOEXTRUDE: Pick isometric output origin point".to_string(),
+                                    );
+                                } else {
+                                    self.command_log.push(
+                                        "ISOEXTRUDE: Enter elevation origin as x,y or click".to_string(),
+                                    );
+                                }
+                                handled = true;
+                            } else if self.isoextrude_phase == IsoExtrudePhase::PickingIsoOrigin {
+                                if let Some(world) = Self::resolve_typed_point(&cmd, None) {
+                                    self.isoextrude_output_origin = Some(world);
+                                    self.apply_isoextrude(self.isoextrude_depth);
+                                } else {
+                                    self.command_log.push(
+                                        "ISOEXTRUDE: Enter isometric output origin as x,y or click"
+                                            .to_string(),
+                                    );
+                                }
+                                handled = true;
+                            } else if self.dwiso_side_phase == DwIsoSidePhase::SelectingFrontEntities {
+                                self.command_log.push(
+                                    "DWISO_SIDE: Select FRONT entities, then press Enter".to_string(),
+                                );
+                                handled = true;
+                            } else if self.dwiso_side_phase == DwIsoSidePhase::PickingFrontOrigin {
+                                if let Some(world) = Self::resolve_typed_point(&cmd, None) {
+                                    self.dwiso_side_front_origin = Some(world);
+                                    self.dwiso_side_phase = DwIsoSidePhase::SelectingSideEntities;
+                                    self.command_log.push(format!(
+                                        "DWISO_SIDE: FRONT origin ({:.4}, {:.4})",
+                                        world.x, world.y
+                                    ));
+                                    self.command_log
+                                        .push("DWISO_SIDE: Select SIDE entities, press Enter to continue".to_string());
+                                } else {
+                                    self.command_log
+                                        .push("DWISO_SIDE: Enter FRONT origin as x,y or click".to_string());
+                                }
+                                handled = true;
+                            } else if self.dwiso_side_phase == DwIsoSidePhase::SelectingSideEntities {
+                                self.command_log.push(
+                                    "DWISO_SIDE: Select SIDE entities, then press Enter".to_string(),
+                                );
+                                handled = true;
+                            } else if self.dwiso_side_phase == DwIsoSidePhase::PickingSideOrigin {
+                                if let Some(world) = Self::resolve_typed_point(&cmd, None) {
+                                    self.dwiso_side_side_origin = Some(world);
+                                    self.dwiso_side_phase = DwIsoSidePhase::PickingIsoOrigin;
+                                    self.command_log.push(format!(
+                                        "DWISO_SIDE: SIDE origin ({:.4}, {:.4})",
+                                        world.x, world.y
+                                    ));
+                                    self.command_log
+                                        .push("DWISO_SIDE: Pick ISO output origin point".to_string());
+                                } else {
+                                    self.command_log
+                                        .push("DWISO_SIDE: Enter SIDE origin as x,y or click".to_string());
+                                }
+                                handled = true;
+                            } else if self.dwiso_side_phase == DwIsoSidePhase::PickingIsoOrigin {
+                                if let Some(world) = Self::resolve_typed_point(&cmd, None) {
+                                    self.dwiso_side_output_origin = Some(world);
+                                    self.apply_dwiso_side();
+                                } else {
+                                    self.command_log
+                                        .push("DWISO_SIDE: Enter ISO output origin as x,y or click".to_string());
                                 }
                                 handled = true;
                             } else if matches!(self.block_phase, BlockPhase::PickBase { .. }) {
@@ -2239,6 +2502,16 @@ impl CadKitApp {
                                 } else {
                                     self.command_log
                                         .push("  *POLYGON: enter integer side count*".to_string());
+                                }
+                                handled = true;
+                            } else if let IsocirclePhase::Radius { center } = self.isocircle_phase {
+                                if let Ok(r) = cmd.trim().parse::<f64>() {
+                                    if self.apply_isocircle(center, r) {
+                                        self.isocircle_phase = IsocirclePhase::Center;
+                                    }
+                                } else {
+                                    self.command_log
+                                        .push("  *ISOCIRCLE: enter numeric radius*".to_string());
                                 }
                                 handled = true;
                             } else if self.array_phase == ArrayPhase::ChoosingType {
@@ -2363,7 +2636,7 @@ impl CadKitApp {
                                     (Self::resolve_typed_point(&cmd, None), self.array_center)
                                 {
                                     let dir = if self.ortho_enabled {
-                                        Self::snap_angle(base, world, self.ortho_increment_deg)
+                                        self.ortho_snap(base, world)
                                     } else {
                                         world
                                     };
@@ -2722,6 +2995,30 @@ impl CadKitApp {
                                     self.apply_scale_factor(factor);
                                 } else {
                                     self.command_log.push("  *SCALE: enter numeric factor (e.g. 2.0)*".to_string());
+                                }
+                                handled = true;
+                            } else if self.stretch_phase == StretchPhase::BasePoint {
+                                if let Some(world) = Self::resolve_typed_point(&cmd, None) {
+                                    self.stretch_base_point = Some(world);
+                                    self.stretch_phase = StretchPhase::Destination;
+                                    self.command_log.push(
+                                        "STRETCH: Pick second point or displacement".to_string(),
+                                    );
+                                } else {
+                                    self.command_log.push(
+                                        "  *STRETCH: enter x,y for base point*".to_string(),
+                                    );
+                                }
+                                handled = true;
+                            } else if self.stretch_phase == StretchPhase::Destination {
+                                if let Some(world) = self.resolve_stretch_destination_from_text(&cmd)
+                                {
+                                    self.apply_stretch(world);
+                                } else {
+                                    self.command_log.push(
+                                        "  *STRETCH: enter x,y, @dx,dy, @dist<angle, or distance*"
+                                            .to_string(),
+                                    );
                                 }
                                 handled = true;
                             } else if self.mirror_phase == MirrorPhase::FirstAxisPoint {

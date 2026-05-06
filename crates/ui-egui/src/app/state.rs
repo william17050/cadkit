@@ -48,6 +48,14 @@ pub enum MovePhase {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum StretchPhase {
+    Idle,
+    SelectingEntities,
+    BasePoint,
+    Destination,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum ExtendPhase {
     Idle,
     SelectingBoundaries,
@@ -209,6 +217,32 @@ pub enum HatchPhase {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum IsoExtrudePhase {
+    Idle,
+    SelectingEntities,
+    EnteringDepth,
+    PickingElevationOrigin,
+    PickingIsoOrigin,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum DwIsoSidePhase {
+    Idle,
+    SelectingFrontEntities,
+    PickingFrontOrigin,
+    SelectingSideEntities,
+    PickingSideOrigin,
+    PickingIsoOrigin,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum IsocirclePhase {
+    Idle,
+    Center,
+    Radius { center: Vec2 },
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum BlockPhase {
     Idle,
     PickBase { ids: Vec<Guid> },
@@ -219,6 +253,43 @@ pub enum BlockPhase {
 pub enum InsertPhase {
     Idle,
     PickPoint { name: String },
+}
+
+/// Which isometric plane is currently active.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum IsoPlane {
+    #[default]
+    Right,
+    Left,
+    Top,
+}
+
+impl IsoPlane {
+    pub fn cycle(self) -> Self {
+        match self {
+            IsoPlane::Right => IsoPlane::Left,
+            IsoPlane::Left => IsoPlane::Top,
+            IsoPlane::Top => IsoPlane::Right,
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            IsoPlane::Right => "Right",
+            IsoPlane::Left => "Left",
+            IsoPlane::Top => "Top",
+        }
+    }
+    /// The two axis unit-vectors (world space, y-up) for this iso plane.
+    pub fn axes(self) -> [Vec2; 2] {
+        let a30  = Vec2::new( 0.8660254037844386,  0.5);
+        let a150 = Vec2::new(-0.8660254037844386,  0.5);
+        let a90  = Vec2::new( 0.0,                 1.0);
+        match self {
+            IsoPlane::Right => [a30,  a90],
+            IsoPlane::Left  => [a150, a90],
+            IsoPlane::Top   => [a30,  a150],
+        }
+    }
 }
 
 /// FROM tracking: lets the user pick a base snap point then type an offset from it.
