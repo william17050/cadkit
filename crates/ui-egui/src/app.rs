@@ -2304,9 +2304,14 @@ impl CadKitApp {
                         MovePhase::BasePoint => "MOVE  Pick base point:".into(),
                         MovePhase::Destination => "MOVE  Pick destination point:".into(),
                     },
-                    OffsetPhase::EnteringDistance => "OFFSET  Enter distance:".into(),
+                    OffsetPhase::EnteringDistance => "OFFSET  Enter distance  or click two points  or Enter for through-point:".into(),
+                    OffsetPhase::PickingDistanceB { .. } => "OFFSET  Pick second point (distance = A→B):".into(),
                     OffsetPhase::SelectingEntity => "OFFSET  Select entity to offset:".into(),
-                    OffsetPhase::SelectingSide => "OFFSET  Click side to offset toward:".into(),
+                    OffsetPhase::SelectingSide => if self.offset_distance.is_some() {
+                        "OFFSET  Click side to offset toward:".into()
+                    } else {
+                        "OFFSET  Click through-point or snap to position:".into()
+                    },
                 },
                 TrimPhase::SelectingEdges => {
                     "TRIM  Select cutting edges (Enter when done):".into()
@@ -9140,10 +9145,6 @@ impl CadKitApp {
     /// Compute an offset entity from the currently selected entity toward `world_click`.
     /// Returns the new entity on success, or an error message string on failure.
     fn apply_offset(&self, world_click: Vec2) -> Result<cadkit_2d_core::Entity, String> {
-        let dist = match self.offset_distance {
-            Some(d) => d,
-            None => return Err("OFFSET: No distance set".to_string()),
-        };
         let eid = match self.offset_selected_entity {
             Some(id) => id,
             None => return Err("OFFSET: Select an entity first".to_string()),
@@ -9165,12 +9166,15 @@ impl CadKitApp {
                 if len < 1e-9 {
                     return Err("OFFSET: Line is degenerate".to_string());
                 }
-                // Left-normal of line direction (CCW 90°): (-dy/len, dx/len)
                 let nx = -dy / len;
                 let ny = dx / len;
-                // Cross product determines which side of the line the click is on.
                 let cp = dx * (world_click.y - start.y) - dy * (world_click.x - start.x);
                 let sign = if cp >= 0.0 { 1.0 } else { -1.0 };
+                // Through-point mode: perp distance from click to line.
+                let dist = self.offset_distance.unwrap_or_else(|| (cp / len).abs());
+                if dist < 1e-9 {
+                    return Err("OFFSET: Click is on the line — pick a point to one side".to_string());
+                }
                 let new_start = Vec2::new(start.x + sign * dist * nx, start.y + sign * dist * ny);
                 let new_end = Vec2::new(end.x + sign * dist * nx, end.y + sign * dist * ny);
                 let mut e = create_line(new_start, new_end);
@@ -9178,18 +9182,19 @@ impl CadKitApp {
                 Ok(e)
             }
             EntityKind::Circle { center, radius } => {
-                let dx = world_click.x - center.x;
-                let dy = world_click.y - center.y;
-                let d = (dx * dx + dy * dy).sqrt();
-                let new_radius = if d > *radius {
-                    radius + dist
-                } else {
-                    radius - dist
+                let c = Vec2::new(center.x, center.y);
+                let dx = world_click.x - c.x;
+                let dy = world_click.y - c.y;
+                let click_dist = (dx * dx + dy * dy).sqrt();
+                let new_radius = match self.offset_distance {
+                    Some(dist) => if click_dist > *radius { radius + dist } else { radius - dist },
+                    // Through-point: new circle passes through click point.
+                    None => click_dist,
                 };
                 if new_radius <= 0.0 {
                     return Err("OFFSET: Result would be invalid".to_string());
                 }
-                let mut e = create_circle(Vec2::new(center.x, center.y), new_radius);
+                let mut e = create_circle(c, new_radius);
                 e.layer = layer;
                 Ok(e)
             }
@@ -9199,23 +9204,18 @@ impl CadKitApp {
                 start_angle,
                 end_angle,
             } => {
-                let dx = world_click.x - center.x;
-                let dy = world_click.y - center.y;
-                let d = (dx * dx + dy * dy).sqrt();
-                let new_radius = if d > *radius {
-                    radius + dist
-                } else {
-                    radius - dist
+                let c = Vec2::new(center.x, center.y);
+                let dx = world_click.x - c.x;
+                let dy = world_click.y - c.y;
+                let click_dist = (dx * dx + dy * dy).sqrt();
+                let new_radius = match self.offset_distance {
+                    Some(dist) => if click_dist > *radius { radius + dist } else { radius - dist },
+                    None => click_dist,
                 };
                 if new_radius <= 0.0 {
                     return Err("OFFSET: Result would be invalid".to_string());
                 }
-                let mut e = create_arc(
-                    Vec2::new(center.x, center.y),
-                    new_radius,
-                    *start_angle,
-                    *end_angle,
-                );
+                let mut e = create_arc(c, new_radius, *start_angle, *end_angle);
                 e.layer = layer;
                 Ok(e)
             }
@@ -9323,6 +9323,26 @@ impl CadKitApp {
 
     /// Draw cyan highlight overlay for the OFFSET selected entity.
     fn draw_offset_overlay(&self, ui: &egui::Ui, rect: egui::Rect, viewport: &Viewport) {
+        let painter = ui.painter_at(rect);
+
+        // A→B distance rubber-band: line from A to cursor.
+        if let OffsetPhase::PickingDistanceB { a } = self.offset_phase {
+            if let Some(cursor) = self.hover_world_pos {
+                let (ax, ay) = world_to_screen(a.x as f32, a.y as f32, viewport);
+                let (bx, by) = world_to_screen(cursor.x as f32, cursor.y as f32, viewport);
+                let dim_line = egui::Stroke::new(1.2, egui::Color32::from_rgba_premultiplied(255, 220, 80, 200));
+                painter.line_segment(
+                    [rect.min + egui::vec2(ax, ay), rect.min + egui::vec2(bx, by)],
+                    dim_line,
+                );
+                let dist = a.distance_to(&cursor);
+                let mid = rect.min + egui::vec2((ax + bx) * 0.5, (ay + by) * 0.5);
+                painter.text(mid, egui::Align2::CENTER_BOTTOM, format!("{:.3}", dist),
+                    egui::FontId::proportional(11.0), egui::Color32::from_rgb(255, 220, 80));
+            }
+            return;
+        }
+
         let id = match self.offset_selected_entity {
             Some(id) if self.offset_phase == OffsetPhase::SelectingSide => id,
             _ => return,
@@ -9331,7 +9351,6 @@ impl CadKitApp {
             return;
         };
         let stroke = egui::Stroke::new(2.5, egui::Color32::from_rgb(40, 220, 255));
-        let painter = ui.painter_at(rect);
         match &entity.kind {
             EntityKind::Line { start, end } => {
                 let (x1, y1) = world_to_screen(start.x as f32, start.y as f32, viewport);
@@ -9401,6 +9420,46 @@ impl CadKitApp {
             | EntityKind::DimRadial { .. }
             | EntityKind::Text { .. }
             | EntityKind::Insert { .. } => {}
+        }
+
+        // Draw live offset preview following the cursor.
+        let Some(cursor) = self.hover_world_pos else { return };
+        let preview_stroke = egui::Stroke::new(1.5, egui::Color32::from_rgba_premultiplied(40, 220, 255, 160));
+        match self.apply_offset(cursor) {
+            Ok(preview) => match &preview.kind {
+                EntityKind::Line { start, end } => {
+                    let (x1, y1) = world_to_screen(start.x as f32, start.y as f32, viewport);
+                    let (x2, y2) = world_to_screen(end.x as f32, end.y as f32, viewport);
+                    painter.line_segment(
+                        [rect.min + egui::vec2(x1, y1), rect.min + egui::vec2(x2, y2)],
+                        preview_stroke,
+                    );
+                }
+                EntityKind::Circle { center, radius } => {
+                    let c: Vec2 = (*center).into();
+                    let (cx, cy) = world_to_screen(c.x as f32, c.y as f32, viewport);
+                    let (rx, _) = world_to_screen((c.x + radius) as f32, c.y as f32, viewport);
+                    painter.circle_stroke(rect.min + egui::vec2(cx, cy), (rx - cx).abs(), preview_stroke);
+                }
+                EntityKind::Arc { center, radius, start_angle, end_angle } => {
+                    let c: Vec2 = (*center).into();
+                    let sweep = *end_angle - *start_angle;
+                    let steps = ((sweep.abs() * *radius).max(12.0) as usize).clamp(12, 128);
+                    let mut last: Option<egui::Pos2> = None;
+                    for i in 0..=steps {
+                        let t = i as f64 / steps as f64;
+                        let ang = *start_angle + sweep * t;
+                        let px = c.x + *radius * ang.cos();
+                        let py = c.y + *radius * ang.sin();
+                        let (sx, sy) = world_to_screen(px as f32, py as f32, viewport);
+                        let pos = rect.min + egui::vec2(sx, sy);
+                        if let Some(prev) = last { painter.line_segment([prev, pos], preview_stroke); }
+                        last = Some(pos);
+                    }
+                }
+                _ => {}
+            },
+            Err(_) => {}
         }
     }
 
@@ -9510,6 +9569,9 @@ impl eframe::App for CadKitApp {
             } else if !matches!(self.trim_phase, TrimPhase::Idle) {
                 self.exit_trim();
                 self.command_log.push("*Cancel*".to_string());
+            } else if matches!(self.offset_phase, OffsetPhase::PickingDistanceB { .. }) {
+                self.offset_phase = OffsetPhase::EnteringDistance;
+                self.command_log.push("OFFSET: Enter distance or click two points:".to_string());
             } else if !matches!(self.offset_phase, OffsetPhase::Idle) {
                 self.exit_offset();
                 self.command_log.push("*Cancel*".to_string());
@@ -12123,6 +12185,39 @@ impl eframe::App for CadKitApp {
                                         }
                                     } else {
                                         match self.offset_phase {
+                                            OffsetPhase::EnteringDistance => {
+                                                // Click to pick first reference point for A→B distance.
+                                                let local = click_pos - response.rect.min;
+                                                let raw = screen_to_world(local.x, local.y, viewport);
+                                                let pick = self.pick_entity_point(viewport, response.rect, click_pos);
+                                                let a = pick.as_ref().map(|(s, _)| s.world).unwrap_or_else(|| {
+                                                    if self.snap_enabled && self.grid_visible { self.snap_to_grid(raw) } else { raw }
+                                                });
+                                                self.offset_phase = OffsetPhase::PickingDistanceB { a };
+                                                self.command_log.push(format!(
+                                                    "OFFSET: First point ({:.3},{:.3}). Pick second point:",
+                                                    a.x, a.y
+                                                ));
+                                            }
+                                            OffsetPhase::PickingDistanceB { a } => {
+                                                let local = click_pos - response.rect.min;
+                                                let raw = screen_to_world(local.x, local.y, viewport);
+                                                let pick = self.pick_entity_point(viewport, response.rect, click_pos);
+                                                let b = pick.as_ref().map(|(s, _)| s.world).unwrap_or_else(|| {
+                                                    if self.snap_enabled && self.grid_visible { self.snap_to_grid(raw) } else { raw }
+                                                });
+                                                let dist = a.distance_to(&b);
+                                                if dist > 1e-9 {
+                                                    self.offset_distance = Some(dist);
+                                                    self.offset_phase = OffsetPhase::SelectingEntity;
+                                                    self.command_log.push(format!(
+                                                        "OFFSET: Distance {:.4}. Select entity to offset:",
+                                                        dist
+                                                    ));
+                                                } else {
+                                                    self.command_log.push("OFFSET: Points are the same — pick a different second point".to_string());
+                                                }
+                                            }
                                             OffsetPhase::SelectingEntity => {
                                                 match self.entity_at_screen_pos(viewport, response.rect, click_pos) {
                                                     Some(id) => {
@@ -12133,7 +12228,8 @@ impl eframe::App for CadKitApp {
                                                         } else {
                                                             self.offset_selected_entity = Some(id);
                                                             self.offset_phase = OffsetPhase::SelectingSide;
-                                                            self.command_log.push("OFFSET: Click side to offset toward".to_string());
+                                                            let mode = if self.offset_distance.is_some() { "Click side to offset toward" } else { "Click through-point or snap position" };
+                                                            self.command_log.push(format!("OFFSET: {}", mode));
                                                         }
                                                     }
                                                     None => {
@@ -12142,8 +12238,12 @@ impl eframe::App for CadKitApp {
                                                 }
                                             }
                                             OffsetPhase::SelectingSide => {
-                                                let rel = click_pos - response.rect.min;
-                                                let world_click = screen_to_world(rel.x, rel.y, viewport);
+                                                let local = click_pos - response.rect.min;
+                                                let raw = screen_to_world(local.x, local.y, viewport);
+                                                let pick = self.pick_entity_point(viewport, response.rect, click_pos);
+                                                let world_click = pick.as_ref().map(|(s, _)| s.world).unwrap_or_else(|| {
+                                                    if self.snap_enabled && self.grid_visible { self.snap_to_grid(raw) } else { raw }
+                                                });
                                                 match self.apply_offset(world_click) {
                                                     Ok(entity) => {
                                                         self.push_undo();

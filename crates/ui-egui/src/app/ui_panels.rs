@@ -2187,6 +2187,12 @@ impl CadKitApp {
                                 // Empty Enter in content phase = cancel.
                                 self.exit_text();
                                 self.command_log.push("*Cancel*".to_string());
+                            } else if self.offset_phase == OffsetPhase::EnteringDistance {
+                                // Empty Enter = through-point mode: skip distance, pick entity then click through-point.
+                                self.offset_distance = None;
+                                self.offset_phase = OffsetPhase::SelectingEntity;
+                                self.offset_selected_entity = None;
+                                self.command_log.push("OFFSET: Through-point mode. Select entity:".to_string());
                             } else if self.trim_phase == TrimPhase::SelectingEdges {
                                 if self.trim_cutting_edges.is_empty() {
                                     self.command_log.push("TRIM: No cutting edges selected".to_string());

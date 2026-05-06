@@ -35,6 +35,8 @@ pub enum TrimPhase {
 pub enum OffsetPhase {
     Idle,
     EnteringDistance,
+    /// User clicked first reference point; waiting for second to compute A→B distance.
+    PickingDistanceB { a: Vec2 },
     SelectingEntity,
     SelectingSide,
 }
