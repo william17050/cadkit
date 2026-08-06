@@ -40,7 +40,7 @@
 - Python: Partial
 
 ## Next Recommended Work
-- Execute `CK-0003_H002` to confirm the new bridge Ortho control removes the prefs workaround, then resolve the perpendicular precedence question.
+- Execute `CK-0003_H003` to validate the perpendicular precedence change and confirm tangent/nearest remain stable.
 
 ## Last Updated
-- 2026-08-06 20:20:00Z
+- 2026-08-06 20:35:00Z

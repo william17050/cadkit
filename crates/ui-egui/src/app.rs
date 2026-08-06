@@ -12742,7 +12742,26 @@ impl eframe::App for CadKitApp {
                                 }
                             }
 
-                            // Parallel/perpendicular tracking (priority 3).
+                            // Perpendicular snap (priority 3: exact foot on entity from last placed point).
+                            if hover_pick.is_none()
+                                && self.dim_grip_drag.is_none()
+                                && ortho_base.is_none()
+                                && self.snap_intersection_point.is_none()
+                                && self.hover_snap_kind.is_none()
+                                && self.snap_enabled
+                                && self.snap_perpendicular
+                            {
+                                if let Some(from_pt) = self.current_from_point() {
+                                    if let Some(pt) =
+                                        self.perpendicular_snap(viewport, response.rect, pointer_pos, from_pt)
+                                    {
+                                        world = pt;
+                                        self.hover_snap_kind = Some(SnapKind::Perpendicular);
+                                    }
+                                }
+                            }
+
+                            // Parallel/perpendicular tracking (priority 4: construction guide fallback).
                             if hover_pick.is_none()
                                 && self.dim_grip_drag.is_none()
                                 && ortho_base.is_none()
@@ -12757,23 +12776,6 @@ impl eframe::App for CadKitApp {
                                     {
                                         world = pt;
                                         self.hover_snap_kind = Some(kind);
-                                    }
-                                }
-                            }
-
-                            // Perpendicular snap (priority 4: foot on entity from last placed point).
-                            if hover_pick.is_none()
-                                && self.dim_grip_drag.is_none()
-                                && ortho_base.is_none()
-                                && self.snap_intersection_point.is_none()
-                                && self.hover_snap_kind.is_none()
-                                && self.snap_enabled
-                                && self.snap_perpendicular
-                            {
-                                if let Some(from_pt) = self.current_from_point() {
-                                    if let Some(pt) = self.perpendicular_snap(viewport, response.rect, pointer_pos, from_pt) {
-                                        world = pt;
-                                        self.hover_snap_kind = Some(SnapKind::Perpendicular);
                                     }
                                 }
                             }

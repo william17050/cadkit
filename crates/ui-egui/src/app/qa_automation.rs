@@ -643,14 +643,12 @@ impl CadKitApp {
             && self.snap_intersection_point.is_none()
             && self.hover_snap_kind.is_none()
             && self.snap_enabled
-            && (self.snap_parallel || self.snap_perpendicular)
+            && self.snap_perpendicular
         {
             if let Some(from_pt) = self.current_from_point() {
-                if let Some((pt, kind)) =
-                    self.tracking_snap(viewport, rect, screen_pos, from_pt)
-                {
+                if let Some(pt) = self.perpendicular_snap(viewport, rect, screen_pos, from_pt) {
                     world = pt;
-                    self.hover_snap_kind = Some(kind);
+                    self.hover_snap_kind = Some(SnapKind::Perpendicular);
                 }
             }
         }
@@ -661,12 +659,14 @@ impl CadKitApp {
             && self.snap_intersection_point.is_none()
             && self.hover_snap_kind.is_none()
             && self.snap_enabled
-            && self.snap_perpendicular
+            && (self.snap_parallel || self.snap_perpendicular)
         {
             if let Some(from_pt) = self.current_from_point() {
-                if let Some(pt) = self.perpendicular_snap(viewport, rect, screen_pos, from_pt) {
+                if let Some((pt, kind)) =
+                    self.tracking_snap(viewport, rect, screen_pos, from_pt)
+                {
                     world = pt;
-                    self.hover_snap_kind = Some(SnapKind::Perpendicular);
+                    self.hover_snap_kind = Some(kind);
                 }
             }
         }
