@@ -25,6 +25,7 @@
 ## QA Automation Status
 - QA Bridge: COMPLETE
 - Snap Automation: COMPLETE
+- Ortho Bridge Control: COMPLETE
 - Wayland Behavioral Testing: COMPLETE via in-app bridge
 
 ## Major Systems
@@ -39,7 +40,7 @@
 - Python: Partial
 
 ## Next Recommended Work
-- Execute `CK-0003_H001` and verify quadrant, perpendicular, tangent, and nearest behavior through the existing QA bridge.
+- Execute `CK-0003_H002` to confirm the new bridge Ortho control removes the prefs workaround, then resolve the perpendicular precedence question.
 
 ## Last Updated
-- 2026-08-06 20:05:00Z
+- 2026-08-06 20:20:00Z

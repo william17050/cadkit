@@ -1760,6 +1760,19 @@ impl CadKitApp {
         }
     }
 
+    fn set_ortho_enabled(&mut self, enabled: bool) -> bool {
+        self.ortho_enabled = enabled;
+        self.command_log.push(format!(
+            "Ortho {}",
+            if self.ortho_enabled { "ON" } else { "OFF" }
+        ));
+        self.ortho_enabled
+    }
+
+    fn toggle_ortho_enabled(&mut self) -> bool {
+        self.set_ortho_enabled(!self.ortho_enabled)
+    }
+
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let mut app = Self::default();
         let initial_w = 800;
@@ -9683,11 +9696,7 @@ impl eframe::App for CadKitApp {
         }
         // F8: ortho toggle
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F8)) {
-            self.ortho_enabled = !self.ortho_enabled;
-            self.command_log.push(format!(
-                "Ortho {}",
-                if self.ortho_enabled { "ON" } else { "OFF" }
-            ));
+            self.toggle_ortho_enabled();
         }
         // ESC: clear command input if non-empty; else cancel FROM, then tool, trim, etc.
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {

@@ -18,6 +18,7 @@ pub(super) struct QaAutomationBridge {
 enum QaAutomationCommand {
     Status,
     RunCommand { text: String },
+    Ortho { enabled: Option<bool> },
     HoverWorldSnapped { x: f64, y: f64 },
     ClickWorldSnapped { x: f64, y: f64, additive: Option<bool> },
     ClickWorld { x: f64, y: f64, additive: Option<bool> },
@@ -267,6 +268,22 @@ impl CadKitApp {
                 } else {
                     Err(format!("Command was not recognized: {trimmed}"))
                 }
+            }
+            QaAutomationCommand::Ortho { enabled } => {
+                if self.recovery_prompt_open {
+                    return Err(
+                        "Recovery prompt is open; send a recovery command before other actions"
+                            .to_string(),
+                    );
+                }
+                let state = match enabled {
+                    Some(enabled) => self.set_ortho_enabled(enabled),
+                    None => self.toggle_ortho_enabled(),
+                };
+                Ok(format!(
+                    "Ortho {}",
+                    if state { "ON" } else { "OFF" }
+                ))
             }
             QaAutomationCommand::HoverWorldSnapped { x, y } => {
                 if self.recovery_prompt_open {

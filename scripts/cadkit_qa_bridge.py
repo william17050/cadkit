@@ -69,6 +69,15 @@ def build_parser() -> argparse.ArgumentParser:
     run_command.add_argument("root")
     run_command.add_argument("text")
 
+    ortho = subparsers.add_parser("ortho", help="set or toggle Ortho mode")
+    ortho.add_argument("root")
+    ortho.add_argument(
+        "mode",
+        nargs="?",
+        choices=["on", "off", "toggle"],
+        default="toggle",
+    )
+
     hover_world_snapped = subparsers.add_parser(
         "hover-world-snapped",
         help="resolve a snapped hover near a world-space location",
@@ -143,6 +152,11 @@ def main() -> int:
     match args.subcommand:
         case "run-command":
             payload = {"action": "run_command", "text": args.text}
+        case "ortho":
+            if args.mode == "toggle":
+                payload = {"action": "ortho"}
+            else:
+                payload = {"action": "ortho", "enabled": args.mode == "on"}
         case "hover-world-snapped":
             payload = {"action": "hover_world_snapped", "x": args.x, "y": args.y}
         case "click-world-snapped":

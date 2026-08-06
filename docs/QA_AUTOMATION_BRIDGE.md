@@ -28,6 +28,7 @@ The bridge is intentionally explicit and file-based so it works in constrained L
 
 ## Supported Commands
 - `run_command`
+- `ortho`
 - `hover_world_snapped`
 - `click_world_snapped`
 - `click_world`
@@ -51,6 +52,7 @@ Examples:
 python scripts/cadkit_qa_bridge.py status qa/runtime/CK-0001
 python scripts/cadkit_qa_bridge.py recovery qa/runtime/CK-0001 discard
 python scripts/cadkit_qa_bridge.py run-command qa/runtime/CK-0001 line
+python scripts/cadkit_qa_bridge.py ortho qa/runtime/CK-0001 off
 python scripts/cadkit_qa_bridge.py hover-world-snapped qa/runtime/CK-0001 19.2 0.3
 python scripts/cadkit_qa_bridge.py click-world-snapped qa/runtime/CK-0001 19.2 0.3
 python scripts/cadkit_qa_bridge.py click-world qa/runtime/CK-0001 0 0
@@ -79,6 +81,7 @@ The bridge covers the `CK-0001` baseline scenarios plus snap-aware follow-up tes
 - launch handling
 - recovery-prompt handling
 - viewport zoom and pan
+- ortho state control
 - command-line command execution
 - line creation via point delivery
 - snap-aware hover and click resolution
