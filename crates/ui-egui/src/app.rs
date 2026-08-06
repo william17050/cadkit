@@ -1786,6 +1786,13 @@ impl CadKitApp {
         self.set_polar_enabled(!self.ortho_enabled)
     }
 
+    fn set_polar_angle_deg(&mut self, angle_deg: f64) -> f64 {
+        self.ortho_increment_deg = angle_deg.clamp(0.1, 360.0);
+        self.command_log
+            .push(format!("Polar angle {:.1}°", self.ortho_increment_deg));
+        self.ortho_increment_deg
+    }
+
     fn directional_snap_enabled(&self) -> bool {
         self.axis_ortho_enabled || self.ortho_enabled
     }

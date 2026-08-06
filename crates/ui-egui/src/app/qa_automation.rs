@@ -20,6 +20,7 @@ enum QaAutomationCommand {
     RunCommand { text: String },
     Ortho { enabled: Option<bool> },
     Polar { enabled: Option<bool> },
+    PolarAngle { degrees: f64 },
     HoverWorldSnapped { x: f64, y: f64 },
     ClickWorldSnapped { x: f64, y: f64, additive: Option<bool> },
     ClickWorld { x: f64, y: f64, additive: Option<bool> },
@@ -74,6 +75,7 @@ struct QaStateSnapshot {
     snap_enabled: bool,
     ortho_enabled: bool,
     polar_enabled: bool,
+    polar_angle_deg: f64,
     grid_visible: bool,
     hover_world: Option<[f64; 2]>,
     hover_snap_kind: Option<String>,
@@ -302,6 +304,16 @@ impl CadKitApp {
                     "Polar {}",
                     if state { "ON" } else { "OFF" }
                 ))
+            }
+            QaAutomationCommand::PolarAngle { degrees } => {
+                if self.recovery_prompt_open {
+                    return Err(
+                        "Recovery prompt is open; send a recovery command before other actions"
+                            .to_string(),
+                    );
+                }
+                let value = self.set_polar_angle_deg(degrees);
+                Ok(format!("Polar angle {:.1}°", value))
             }
             QaAutomationCommand::HoverWorldSnapped { x, y } => {
                 if self.recovery_prompt_open {
@@ -815,6 +827,7 @@ impl CadKitApp {
             snap_enabled: self.snap_enabled,
             ortho_enabled: self.axis_ortho_enabled,
             polar_enabled: self.ortho_enabled,
+            polar_angle_deg: self.ortho_increment_deg,
             grid_visible: self.grid_visible,
             hover_world: self
                 .hover_world_pos

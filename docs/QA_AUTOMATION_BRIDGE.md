@@ -30,6 +30,7 @@ The bridge is intentionally explicit and file-based so it works in constrained L
 - `run_command`
 - `ortho`
 - `polar`
+- `polar_angle`
 - `hover_world_snapped`
 - `click_world_snapped`
 - `click_world`
@@ -55,6 +56,7 @@ python scripts/cadkit_qa_bridge.py recovery qa/runtime/CK-0001 discard
 python scripts/cadkit_qa_bridge.py run-command qa/runtime/CK-0001 line
 python scripts/cadkit_qa_bridge.py ortho qa/runtime/CK-0001 on
 python scripts/cadkit_qa_bridge.py polar qa/runtime/CK-0001 off
+python scripts/cadkit_qa_bridge.py polar-angle qa/runtime/CK-0001 45
 python scripts/cadkit_qa_bridge.py hover-world-snapped qa/runtime/CK-0001 19.2 0.3
 python scripts/cadkit_qa_bridge.py click-world-snapped qa/runtime/CK-0001 19.2 0.3
 python scripts/cadkit_qa_bridge.py click-world qa/runtime/CK-0001 0 0
@@ -74,7 +76,7 @@ python scripts/cadkit_qa_bridge.py quit qa/runtime/CK-0001
 - entity count and entity kinds
 - command log tail
 - current layer
-- snap/ortho/polar/grid flags
+- snap/ortho/polar/grid flags and current polar angle
 - resolved hover world and snap kind
 - viewport size, zoom, and pan
 
@@ -85,6 +87,7 @@ The bridge covers the `CK-0001` baseline scenarios plus snap-aware follow-up tes
 - viewport zoom and pan
 - ortho state control
 - polar state control
+- polar angle control
 - command-line command execution
 - line creation via point delivery
 - snap-aware hover and click resolution

@@ -87,6 +87,13 @@ def build_parser() -> argparse.ArgumentParser:
         default="toggle",
     )
 
+    polar_angle = subparsers.add_parser(
+        "polar-angle",
+        help="set the Polar tracking angle in degrees",
+    )
+    polar_angle.add_argument("root")
+    polar_angle.add_argument("degrees", type=float)
+
     hover_world_snapped = subparsers.add_parser(
         "hover-world-snapped",
         help="resolve a snapped hover near a world-space location",
@@ -171,6 +178,8 @@ def main() -> int:
                 payload = {"action": "polar"}
             else:
                 payload = {"action": "polar", "enabled": args.mode == "on"}
+        case "polar-angle":
+            payload = {"action": "polar_angle", "degrees": args.degrees}
         case "hover-world-snapped":
             payload = {"action": "hover_world_snapped", "x": args.x, "y": args.y}
         case "click-world-snapped":
