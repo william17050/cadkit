@@ -13,7 +13,7 @@
 - Current handoff/report: `qa/handoffs/CK-0002_H002.md`, `qa/reports/CK-0002_R002.md`
 
 ## Active Work Item
-- None
+- `CK-0003` - Extended snap-mode behavioral verification
 
 ## Open Engineering Issues
 - `AUTOMATION-001` - OS-level input injection on Wayland remains unavailable; the in-app QA bridge is the current workaround.
@@ -39,7 +39,7 @@
 - Python: Partial
 
 ## Next Recommended Work
-- Expand snap QA coverage beyond endpoint/midpoint/intersection to perpendicular, tangent, nearest, and quadrant behaviors using the existing bridge path.
+- Execute `CK-0003_H001` and verify quadrant, perpendicular, tangent, and nearest behavior through the existing QA bridge.
 
 ## Last Updated
-- 2026-08-06 19:58:17Z
+- 2026-08-06 20:05:00Z
