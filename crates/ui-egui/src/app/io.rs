@@ -1,4 +1,4 @@
-use super::{AppPrefs, CadKitApp};
+use super::{AppPrefs, CadKitApp, QaSessionPrefsSnapshot};
 use cadkit_2d_core::Drawing;
 use cadkit_2d_core::DxfImportResult;
 use cadkit_2d_core::EntityKind;
@@ -45,6 +45,66 @@ impl CadKitApp {
             recent_files: self.recent_files.clone(),
             dim_style: self.dim_style.clone(),
         }
+    }
+
+    pub(crate) fn collect_qa_session_preferences(&self) -> QaSessionPrefsSnapshot {
+        QaSessionPrefsSnapshot {
+            snap_enabled: self.snap_enabled,
+            snap_endpoint: self.snap_endpoint,
+            snap_midpoint: self.snap_midpoint,
+            snap_center: self.snap_center,
+            snap_quadrant: self.snap_quadrant,
+            snap_intersection: self.snap_intersection,
+            snap_parallel: self.snap_parallel,
+            snap_perpendicular: self.snap_perpendicular,
+            snap_tangent: self.snap_tangent,
+            snap_nearest: self.snap_nearest,
+            axis_ortho_enabled: self.axis_ortho_enabled,
+            ortho_enabled: self.ortho_enabled,
+            ortho_increment_deg: self.ortho_increment_deg,
+            grid_visible: self.grid_visible,
+            grid_spacing: self.grid_spacing,
+        }
+    }
+
+    fn apply_preferences(&mut self, prefs: &AppPrefs) {
+        self.snap_enabled = prefs.snap_enabled;
+        self.snap_endpoint = prefs.snap_endpoint;
+        self.snap_midpoint = prefs.snap_midpoint;
+        self.snap_center = prefs.snap_center;
+        self.snap_quadrant = prefs.snap_quadrant;
+        self.snap_intersection = prefs.snap_intersection;
+        self.snap_parallel = prefs.snap_parallel;
+        self.snap_perpendicular = prefs.snap_perpendicular;
+        self.snap_tangent = prefs.snap_tangent;
+        self.snap_nearest = prefs.snap_nearest;
+        self.axis_ortho_enabled = prefs.axis_ortho_enabled;
+        self.ortho_enabled = prefs.ortho_enabled;
+        self.ortho_increment_deg = prefs.ortho_increment_deg.clamp(0.1, 360.0);
+        self.grid_visible = prefs.grid_visible;
+        self.grid_spacing = prefs.grid_spacing.max(0.5);
+        self.current_file = prefs.current_file.clone();
+        self.recent_files = prefs.recent_files.clone();
+        self.dim_style = prefs.dim_style.clone();
+        self.prune_recent_files();
+    }
+
+    pub(crate) fn apply_qa_session_preferences(&mut self, snapshot: &QaSessionPrefsSnapshot) {
+        self.snap_enabled = snapshot.snap_enabled;
+        self.snap_endpoint = snapshot.snap_endpoint;
+        self.snap_midpoint = snapshot.snap_midpoint;
+        self.snap_center = snapshot.snap_center;
+        self.snap_quadrant = snapshot.snap_quadrant;
+        self.snap_intersection = snapshot.snap_intersection;
+        self.snap_parallel = snapshot.snap_parallel;
+        self.snap_perpendicular = snapshot.snap_perpendicular;
+        self.snap_tangent = snapshot.snap_tangent;
+        self.snap_nearest = snapshot.snap_nearest;
+        self.axis_ortho_enabled = snapshot.axis_ortho_enabled;
+        self.ortho_enabled = snapshot.ortho_enabled;
+        self.ortho_increment_deg = snapshot.ortho_increment_deg.clamp(0.1, 360.0);
+        self.grid_visible = snapshot.grid_visible;
+        self.grid_spacing = snapshot.grid_spacing.max(0.5);
     }
 
     fn touch_recent_file(&mut self, path: &str) {
@@ -95,25 +155,7 @@ impl CadKitApp {
         match std::fs::read_to_string(&path) {
             Ok(json) => match serde_json::from_str::<AppPrefs>(&json) {
                 Ok(prefs) => {
-                    self.snap_enabled = prefs.snap_enabled;
-                    self.snap_endpoint = prefs.snap_endpoint;
-                    self.snap_midpoint = prefs.snap_midpoint;
-                    self.snap_center = prefs.snap_center;
-                    self.snap_quadrant = prefs.snap_quadrant;
-                    self.snap_intersection = prefs.snap_intersection;
-                    self.snap_parallel = prefs.snap_parallel;
-                    self.snap_perpendicular = prefs.snap_perpendicular;
-                    self.snap_tangent = prefs.snap_tangent;
-                    self.snap_nearest = prefs.snap_nearest;
-                    self.axis_ortho_enabled = prefs.axis_ortho_enabled;
-                    self.ortho_enabled = prefs.ortho_enabled;
-                    self.ortho_increment_deg = prefs.ortho_increment_deg.clamp(0.1, 360.0);
-                    self.grid_visible = prefs.grid_visible;
-                    self.grid_spacing = prefs.grid_spacing.max(0.5);
-                    self.current_file = prefs.current_file.clone();
-                    self.recent_files = prefs.recent_files;
-                    self.dim_style = prefs.dim_style;
-                    self.prune_recent_files();
+                    self.apply_preferences(&prefs);
                     self.last_saved_prefs = Some(self.collect_preferences());
                 }
                 Err(e) => {

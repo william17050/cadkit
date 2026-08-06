@@ -189,6 +189,25 @@ pub(crate) struct AppPrefs {
     pub dim_style: DimStyle,
 }
 
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct QaSessionPrefsSnapshot {
+    pub snap_enabled: bool,
+    pub snap_endpoint: bool,
+    pub snap_midpoint: bool,
+    pub snap_center: bool,
+    pub snap_quadrant: bool,
+    pub snap_intersection: bool,
+    pub snap_parallel: bool,
+    pub snap_perpendicular: bool,
+    pub snap_tangent: bool,
+    pub snap_nearest: bool,
+    pub axis_ortho_enabled: bool,
+    pub ortho_enabled: bool,
+    pub ortho_increment_deg: f64,
+    pub grid_visible: bool,
+    pub grid_spacing: f64,
+}
+
 impl Default for AppPrefs {
     fn default() -> Self {
         Self {
@@ -468,6 +487,7 @@ pub struct CadKitApp {
     dyn_block_source_entity_map: HashMap<String, HashMap<Guid, Guid>>,
     bgcolor_picker_open: bool,
     last_saved_prefs: Option<AppPrefs>,
+    qa_prefs_snapshot_active: bool,
     autosave_last_at: Instant,
     recovery_prompt_open: bool,
     qa_automation: Option<QaAutomationBridge>,
@@ -646,11 +666,17 @@ impl Default for CadKitApp {
             dyn_block_source_entity_map: HashMap::new(),
             bgcolor_picker_open: false,
             last_saved_prefs: None,
+            qa_prefs_snapshot_active: false,
             autosave_last_at: Instant::now(),
             recovery_prompt_open: false,
             qa_automation: QaAutomationBridge::from_env(),
         };
         app.load_preferences();
+        app.qa_prefs_snapshot_active = app
+            .qa_automation
+            .as_ref()
+            .map(|bridge| bridge.prefs_snapshot_exists())
+            .unwrap_or(false);
         app
     }
 }

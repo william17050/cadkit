@@ -94,6 +94,18 @@ def build_parser() -> argparse.ArgumentParser:
     polar_angle.add_argument("root")
     polar_angle.add_argument("degrees", type=float)
 
+    prefs_snapshot = subparsers.add_parser(
+        "prefs-snapshot",
+        help="capture a QA-session snapshot of persisted preference-backed settings",
+    )
+    prefs_snapshot.add_argument("root")
+
+    prefs_restore = subparsers.add_parser(
+        "prefs-restore",
+        help="restore the captured QA-session preference snapshot",
+    )
+    prefs_restore.add_argument("root")
+
     hover_world_snapped = subparsers.add_parser(
         "hover-world-snapped",
         help="resolve a snapped hover near a world-space location",
@@ -180,6 +192,10 @@ def main() -> int:
                 payload = {"action": "polar", "enabled": args.mode == "on"}
         case "polar-angle":
             payload = {"action": "polar_angle", "degrees": args.degrees}
+        case "prefs-snapshot":
+            payload = {"action": "prefs_snapshot"}
+        case "prefs-restore":
+            payload = {"action": "prefs_restore"}
         case "hover-world-snapped":
             payload = {"action": "hover_world_snapped", "x": args.x, "y": args.y}
         case "click-world-snapped":

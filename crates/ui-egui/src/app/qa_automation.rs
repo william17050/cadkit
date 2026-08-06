@@ -11,6 +11,7 @@ pub(super) struct QaAutomationBridge {
     processed_dir: PathBuf,
     results_dir: PathBuf,
     state_path: PathBuf,
+    prefs_snapshot_path: PathBuf,
 }
 
 #[derive(Debug, Deserialize)]
@@ -21,6 +22,8 @@ enum QaAutomationCommand {
     Ortho { enabled: Option<bool> },
     Polar { enabled: Option<bool> },
     PolarAngle { degrees: f64 },
+    PrefsSnapshot,
+    PrefsRestore,
     HoverWorldSnapped { x: f64, y: f64 },
     ClickWorldSnapped { x: f64, y: f64, additive: Option<bool> },
     ClickWorld { x: f64, y: f64, additive: Option<bool> },
@@ -76,6 +79,7 @@ struct QaStateSnapshot {
     ortho_enabled: bool,
     polar_enabled: bool,
     polar_angle_deg: f64,
+    qa_prefs_snapshot_active: bool,
     grid_visible: bool,
     hover_world: Option<[f64; 2]>,
     hover_snap_kind: Option<String>,
@@ -126,6 +130,7 @@ impl QaAutomationBridge {
             .map_err(|e| format!("failed to create results dir: {e}"))?;
         Ok(Self {
             state_path: root_dir.join("state.json"),
+            prefs_snapshot_path: root_dir.join("prefs_snapshot.json"),
             root_dir,
             commands_dir,
             processed_dir,
@@ -190,6 +195,31 @@ impl QaAutomationBridge {
     fn write_state(&self, snapshot: &QaStateSnapshot) {
         if let Ok(text) = serde_json::to_string_pretty(snapshot) {
             let _ = fs::write(&self.state_path, text + "\n");
+        }
+    }
+
+    pub(super) fn prefs_snapshot_exists(&self) -> bool {
+        self.prefs_snapshot_path.is_file()
+    }
+
+    fn write_prefs_snapshot(&self, snapshot: &QaSessionPrefsSnapshot) -> Result<(), String> {
+        let text = serde_json::to_string_pretty(snapshot)
+            .map_err(|e| format!("failed to serialize prefs snapshot: {e}"))?;
+        fs::write(&self.prefs_snapshot_path, text + "\n")
+            .map_err(|e| format!("failed to write prefs snapshot: {e}"))
+    }
+
+    fn read_prefs_snapshot(&self) -> Result<QaSessionPrefsSnapshot, String> {
+        let raw = fs::read_to_string(&self.prefs_snapshot_path)
+            .map_err(|e| format!("failed to read prefs snapshot: {e}"))?;
+        serde_json::from_str(&raw).map_err(|e| format!("failed to parse prefs snapshot: {e}"))
+    }
+
+    fn delete_prefs_snapshot(&self) -> Result<(), String> {
+        match fs::remove_file(&self.prefs_snapshot_path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(format!("failed to delete prefs snapshot: {e}")),
         }
     }
 }
@@ -315,6 +345,8 @@ impl CadKitApp {
                 let value = self.set_polar_angle_deg(degrees);
                 Ok(format!("Polar angle {:.1}°", value))
             }
+            QaAutomationCommand::PrefsSnapshot => self.qa_capture_preferences_snapshot(),
+            QaAutomationCommand::PrefsRestore => self.qa_restore_preferences_snapshot(),
             QaAutomationCommand::HoverWorldSnapped { x, y } => {
                 if self.recovery_prompt_open {
                     return Err(
@@ -460,10 +492,46 @@ impl CadKitApp {
                 }
             },
             QaAutomationCommand::Quit => {
+                if self.qa_prefs_snapshot_active {
+                    self.qa_restore_preferences_snapshot()?;
+                }
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 Ok("Close command sent".to_string())
             }
         }
+    }
+
+    fn qa_capture_preferences_snapshot(&mut self) -> Result<String, String> {
+        let Some(bridge) = self.qa_automation.as_ref() else {
+            return Err("QA automation bridge is not active".to_string());
+        };
+        let snapshot = self.collect_qa_session_preferences();
+        bridge.write_prefs_snapshot(&snapshot)?;
+        self.qa_prefs_snapshot_active = true;
+        Ok("QA preference snapshot captured".to_string())
+    }
+
+    fn qa_restore_preferences_snapshot(&mut self) -> Result<String, String> {
+        let snapshot = {
+            let Some(bridge) = self.qa_automation.as_ref() else {
+                return Err("QA automation bridge is not active".to_string());
+            };
+            if !bridge.prefs_snapshot_exists() {
+                self.qa_prefs_snapshot_active = false;
+                return Err("No QA preference snapshot is currently stored".to_string());
+            }
+            bridge.read_prefs_snapshot()?
+        };
+        self.apply_qa_session_preferences(&snapshot);
+        {
+            let Some(bridge) = self.qa_automation.as_ref() else {
+                return Err("QA automation bridge is not active".to_string());
+            };
+            bridge.delete_prefs_snapshot()?;
+        }
+        self.qa_prefs_snapshot_active = false;
+        self.persist_preferences_if_changed();
+        Ok("QA preference snapshot restored".to_string())
     }
 
     fn qa_click_world(&mut self, world: Vec2, additive: bool) -> Result<String, String> {
@@ -828,6 +896,7 @@ impl CadKitApp {
             ortho_enabled: self.axis_ortho_enabled,
             polar_enabled: self.ortho_enabled,
             polar_angle_deg: self.ortho_increment_deg,
+            qa_prefs_snapshot_active: self.qa_prefs_snapshot_active,
             grid_visible: self.grid_visible,
             hover_world: self
                 .hover_world_pos

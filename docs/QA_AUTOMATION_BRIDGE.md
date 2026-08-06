@@ -31,6 +31,8 @@ The bridge is intentionally explicit and file-based so it works in constrained L
 - `ortho`
 - `polar`
 - `polar_angle`
+- `prefs_snapshot`
+- `prefs_restore`
 - `hover_world_snapped`
 - `click_world_snapped`
 - `click_world`
@@ -57,6 +59,7 @@ python scripts/cadkit_qa_bridge.py run-command qa/runtime/CK-0001 line
 python scripts/cadkit_qa_bridge.py ortho qa/runtime/CK-0001 on
 python scripts/cadkit_qa_bridge.py polar qa/runtime/CK-0001 off
 python scripts/cadkit_qa_bridge.py polar-angle qa/runtime/CK-0001 45
+python scripts/cadkit_qa_bridge.py prefs-snapshot qa/runtime/CK-0001
 python scripts/cadkit_qa_bridge.py hover-world-snapped qa/runtime/CK-0001 19.2 0.3
 python scripts/cadkit_qa_bridge.py click-world-snapped qa/runtime/CK-0001 19.2 0.3
 python scripts/cadkit_qa_bridge.py click-world qa/runtime/CK-0001 0 0
@@ -65,6 +68,7 @@ python scripts/cadkit_qa_bridge.py escape qa/runtime/CK-0001
 python scripts/cadkit_qa_bridge.py drag-select-world qa/runtime/CK-0001 -5 -5 25 5
 python scripts/cadkit_qa_bridge.py delete qa/runtime/CK-0001
 python scripts/cadkit_qa_bridge.py undo qa/runtime/CK-0001
+python scripts/cadkit_qa_bridge.py prefs-restore qa/runtime/CK-0001
 python scripts/cadkit_qa_bridge.py quit qa/runtime/CK-0001
 ```
 
@@ -77,6 +81,7 @@ python scripts/cadkit_qa_bridge.py quit qa/runtime/CK-0001
 - command log tail
 - current layer
 - snap/ortho/polar/grid flags and current polar angle
+- whether a QA prefs snapshot is currently active
 - resolved hover world and snap kind
 - viewport size, zoom, and pan
 
@@ -88,6 +93,7 @@ The bridge covers the `CK-0001` baseline scenarios plus snap-aware follow-up tes
 - ortho state control
 - polar state control
 - polar angle control
+- preference snapshot capture/restore
 - command-line command execution
 - line creation via point delivery
 - snap-aware hover and click resolution
@@ -115,3 +121,9 @@ This is intended for validating snap correctness:
 - Raw `click_world` still bypasses snapping by design and is useful for exact-coordinate regression checks.
 - Snap-aware actions validate CadKit's snap logic, but not literal desktop hover ergonomics such as cursor icons or OS cursor motion.
 - It does not yet automate every interaction mode in CadKit. Unsupported modes return explicit errors in the result JSON rather than silently mutating state.
+
+## QA Session Preference Safety
+`prefs_snapshot` captures the current persisted QA-relevant preference state inside
+the active QA runtime root. `prefs_restore` reapplies it and deletes the snapshot.
+If a snapshot is still active when the bridge `quit` command is used, CadKit restores
+it automatically before closing.
