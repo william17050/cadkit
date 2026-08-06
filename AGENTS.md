@@ -70,6 +70,10 @@ Primary integration surface:
 - Begin each new work item by reading:
   - `AGENTS.md`
   - `CURRENT_STATE.md`
+- User-facing summaries may be shorter than the underlying QA artifacts, but the
+  versioned handoff/report trail must always contain the same or greater level of
+  detail needed for Codex and Claude Code to continue work without relying on chat
+  history.
 - Read only the newest applicable handoff or report for a work item unless historical investigation is required.
 - Use the helper scripts in `scripts/` to resolve the newest handoff or report before reading older artifacts manually.
 - Act through the human path; verify through the machine path.
