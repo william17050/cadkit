@@ -53,3 +53,4 @@
 ## Escalation Guidance
 - If Claude Code encounters a blocker caused by missing setup information, report it explicitly rather than guessing.
 - If Codex identifies tooling or observability gaps that prevent efficient playtesting, document them separately from the requested functional work.
+- If OS-level input injection is unavailable, prefer the in-app bridge documented in `docs/QA_AUTOMATION_BRIDGE.md` over privileged host-side workarounds.

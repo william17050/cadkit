@@ -11,13 +11,15 @@ use cadkit_types::{Guid, Vec2, Vec3};
 use eframe::egui;
 use egui_wgpu::wgpu;
 use std::collections::{HashMap, HashSet};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 mod commands;
 mod io;
 mod overlays;
+mod qa_automation;
 mod state;
 mod ui_panels;
+use qa_automation::QaAutomationBridge;
 use state::*;
 
 // ── Angular dimension geometry helpers ──────────────────────────────────────
@@ -469,6 +471,7 @@ pub struct CadKitApp {
     last_saved_prefs: Option<AppPrefs>,
     autosave_last_at: Instant,
     recovery_prompt_open: bool,
+    qa_automation: Option<QaAutomationBridge>,
 }
 
 impl Default for CadKitApp {
@@ -645,6 +648,7 @@ impl Default for CadKitApp {
             last_saved_prefs: None,
             autosave_last_at: Instant::now(),
             recovery_prompt_open: false,
+            qa_automation: QaAutomationBridge::from_env(),
         };
         app.load_preferences();
         app
@@ -9636,6 +9640,8 @@ impl eframe::App for CadKitApp {
             self.import_dxf(ctx);
         }
 
+        self.process_qa_automation(ctx);
+
         // === Global keyboard shortcuts (fire even while command line has focus) ===
 
         // Ctrl+S: save
@@ -9683,130 +9689,14 @@ impl eframe::App for CadKitApp {
         }
         // ESC: clear command input if non-empty; else cancel FROM, then tool, trim, etc.
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
-            if !self.command_input.is_empty() {
-                self.command_input.clear();
-            } else if self.from_phase != FromPhase::Idle {
-                self.exit_from();
-                self.command_log.push("*Cancel*".to_string());
-            } else if !matches!(self.trim_phase, TrimPhase::Idle) {
-                self.exit_trim();
-                self.command_log.push("*Cancel*".to_string());
-            } else if matches!(self.offset_phase, OffsetPhase::PickingDistanceB { .. }) {
-                self.offset_phase = OffsetPhase::EnteringDistance;
-                self.command_log.push("OFFSET: Enter distance or click two points:".to_string());
-            } else if !matches!(self.offset_phase, OffsetPhase::Idle) {
-                self.exit_offset();
-                self.command_log.push("*Cancel*".to_string());
-            } else if !matches!(self.move_phase, MovePhase::Idle) {
-                self.exit_move();
-                self.command_log.push("*Cancel*".to_string());
-            } else if !matches!(self.stretch_phase, StretchPhase::Idle) {
-                self.exit_stretch();
-                self.command_log.push("*Cancel*".to_string());
-            } else if !matches!(self.copy_phase, CopyPhase::Idle) {
-                self.exit_copy();
-                self.command_log.push("*Cancel*".to_string());
-            } else if !matches!(self.rotate_phase, RotatePhase::Idle) {
-                self.exit_rotate();
-                self.command_log.push("*Cancel*".to_string());
-            } else if !matches!(self.scale_phase, ScalePhase::Idle) {
-                self.exit_scale();
-                self.command_log.push("*Cancel*".to_string());
-            } else if !matches!(self.mirror_phase, MirrorPhase::Idle) {
-                self.exit_mirror();
-                self.command_log.push("*Cancel*".to_string());
-            } else if !matches!(self.fillet_phase, FilletPhase::Idle) {
-                self.exit_fillet();
-                self.command_log.push("*Cancel*".to_string());
-            } else if !matches!(self.chamfer_phase, ChamferPhase::Idle) {
-                self.exit_chamfer();
-                self.command_log.push("*Cancel*".to_string());
-            } else if !matches!(self.polygon_phase, PolygonPhase::Idle) {
-                self.exit_polygon();
-                self.command_log.push("*Cancel*".to_string());
-            } else if !matches!(self.isocircle_phase, IsocirclePhase::Idle) {
-                self.exit_isocircle();
-                self.command_log.push("*Cancel*".to_string());
-            } else if !matches!(self.ellipse_phase, EllipsePhase::Idle) {
-                self.exit_ellipse();
-                self.command_log.push("*Cancel*".to_string());
-            } else if !matches!(self.rectangle_phase, RectanglePhase::Idle) {
-                self.exit_rectangle();
-                self.command_log.push("*Cancel*".to_string());
-            } else if !matches!(self.array_phase, ArrayPhase::Idle) {
-                self.exit_array();
-                self.command_log.push("*Cancel*".to_string());
-            } else if !matches!(self.pedit_phase, PeditPhase::Idle) {
-                self.exit_pedit();
-                self.command_log.push("*Cancel*".to_string());
-            } else if !matches!(self.boundary_phase, BoundaryPhase::Idle) {
-                self.exit_boundary();
-                self.command_log.push("*Cancel*".to_string());
-            } else if !matches!(self.hatch_phase, HatchPhase::Idle) {
-                self.exit_hatch();
-                self.command_log.push("*Cancel*".to_string());
-            } else if !matches!(self.isoextrude_phase, IsoExtrudePhase::Idle) {
-                self.exit_isoextrude();
-                self.command_log.push("*Cancel*".to_string());
-            } else if !matches!(self.dwiso_side_phase, DwIsoSidePhase::Idle) {
-                self.exit_dwiso_side();
-                self.command_log.push("*Cancel*".to_string());
-            } else if !matches!(self.block_phase, BlockPhase::Idle) {
-                self.exit_block();
-                self.command_log.push("*Cancel*".to_string());
-            } else if !matches!(self.insert_phase, InsertPhase::Idle) {
-                self.exit_insert();
-                self.command_log.push("*Cancel*".to_string());
-            } else if !matches!(self.extend_phase, ExtendPhase::Idle) {
-                self.exit_extend();
-                self.command_log.push("*Cancel*".to_string());
-            } else if self.has_active_dimension_command() {
-                self.exit_dim();
-                self.command_log.push("*Cancel*".to_string());
-            } else if !matches!(self.text_phase, TextPhase::Idle) {
-                self.exit_text();
-                self.command_log.push("*Cancel*".to_string());
-            } else if self.text_edit_dialog.is_some()
-                || !matches!(self.edit_text_phase, EditTextPhase::Idle)
-            {
-                self.exit_edit_text();
-                self.command_log.push("*Cancel*".to_string());
-            } else if self.dim_edit_dialog.is_some()
-                || !matches!(self.edit_dim_phase, EditDimPhase::Idle)
-            {
-                self.exit_edit_dim();
-                self.command_log.push("*Cancel*".to_string());
-            } else if matches!(self.active_tool, ActiveTool::None) {
-                self.selected_entities.clear();
-                self.selection = None;
-                self.selection_drag_start = None;
-                self.selection_drag_current = None;
-            } else {
-                self.cancel_active_tool();
-            }
+            self.handle_escape_action();
         }
         // Delete: remove selected entities (only when command line is empty and no tool active)
         if self.command_input.is_empty()
             && matches!(self.active_tool, ActiveTool::None)
             && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete))
         {
-            let requested: Vec<Guid> = self.selected_entities.iter().copied().collect();
-            let ids = self.filter_editable_entity_ids(&requested, "DELETE");
-            if !ids.is_empty() {
-                self.push_undo();
-            }
-            for id in &ids {
-                let _ = self.drawing.remove_entity(id);
-            }
-            if !ids.is_empty() {
-                self.command_log.push(format!(
-                    "Deleted {} entit{}",
-                    ids.len(),
-                    if ids.len() == 1 { "y" } else { "ies" }
-                ));
-            }
-            self.selected_entities.clear();
-            self.selection = None;
+            self.delete_selected_via_keyboard();
         }
 
         // Mirror command_input → distance_input so rubber-band preview tracks typed value
@@ -13434,6 +13324,10 @@ impl eframe::App for CadKitApp {
         // Persist app preferences (snap/ortho/grid/current file) when changed.
         self.autosave_recovery_if_due();
         self.persist_preferences_if_changed();
+        self.publish_qa_automation_state();
+        if self.qa_automation.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(50));
+        }
     }
 }
 
