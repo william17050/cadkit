@@ -37,6 +37,7 @@ impl CadKitApp {
             snap_tangent: self.snap_tangent,
             snap_nearest: self.snap_nearest,
             ortho_enabled: self.ortho_enabled,
+            ortho_increment_deg: self.ortho_increment_deg,
             grid_visible: self.grid_visible,
             grid_spacing: self.grid_spacing,
             current_file: self.current_file.clone(),
@@ -104,6 +105,7 @@ impl CadKitApp {
                     self.snap_tangent = prefs.snap_tangent;
                     self.snap_nearest = prefs.snap_nearest;
                     self.ortho_enabled = prefs.ortho_enabled;
+                    self.ortho_increment_deg = prefs.ortho_increment_deg.clamp(0.1, 360.0);
                     self.grid_visible = prefs.grid_visible;
                     self.grid_spacing = prefs.grid_spacing.max(0.5);
                     self.current_file = prefs.current_file.clone();

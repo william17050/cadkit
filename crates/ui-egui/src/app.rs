@@ -186,6 +186,7 @@ pub(crate) struct AppPrefs {
     pub snap_tangent: bool,
     pub snap_nearest: bool,
     pub ortho_enabled: bool,
+    pub ortho_increment_deg: f64,
     pub grid_visible: bool,
     pub grid_spacing: f64,
     pub current_file: Option<String>,
@@ -207,6 +208,7 @@ impl Default for AppPrefs {
             snap_tangent: true,
             snap_nearest: false,
             ortho_enabled: true,
+            ortho_increment_deg: 90.0,
             grid_visible: true,
             grid_spacing: 12.0,
             current_file: None,
@@ -16972,6 +16974,14 @@ impl CadKitApp {
         let (sx, sy) = world_to_screen(world.x as f32, world.y as f32, viewport);
         let pos = rect.min + egui::vec2(sx, sy);
         let dist = pos.distance(screen_pos);
+        let max_dist = match kind {
+            SnapKind::Intersection => Self::INTERSECTION_SNAP_RADIUS,
+            SnapKind::Nearest => Self::NEAREST_SNAP_RADIUS,
+            _ => Self::SNAP_POINT_RADIUS,
+        };
+        if dist > max_dist {
+            return;
+        }
         match best {
             Some((best_rank, best_dist, _, _))
                 if rank > *best_rank || (rank == *best_rank && dist >= *best_dist) => {}
@@ -16981,20 +16991,14 @@ impl CadKitApp {
         }
     }
 
-    fn resolve_ortho_snap_for_line_like(
+    fn resolve_ortho_snap_for_axis(
         &self,
         viewport: &Viewport,
         rect: egui::Rect,
         screen_pos: egui::Pos2,
         base: Vec2,
-        raw_world: Vec2,
-    ) -> (Vec2, Option<SnapKind>) {
-        let axis = Self::ortho_axis_from_cursor(base, raw_world);
-        let raw_ortho = Self::project_to_ortho_axis(base, raw_world, axis);
-        if !self.snap_enabled {
-            return (raw_ortho, None);
-        }
-
+        axis: OrthoAxis,
+    ) -> Option<(u8, f32, Vec2, SnapKind)> {
         let tol = Self::ortho_axis_world_tolerance(viewport, rect);
         let mut best: Option<(u8, f32, Vec2, SnapKind)> = None;
 
@@ -17611,8 +17615,65 @@ impl CadKitApp {
             }
         }
 
-        best.map(|(_, _, p, k)| (p, Some(k)))
-            .unwrap_or((raw_ortho, None))
+        best
+    }
+
+    fn resolve_ortho_snap_for_line_like(
+        &self,
+        viewport: &Viewport,
+        rect: egui::Rect,
+        screen_pos: egui::Pos2,
+        base: Vec2,
+        raw_world: Vec2,
+    ) -> (Vec2, Option<SnapKind>) {
+        let preferred_axis = Self::ortho_axis_from_cursor(base, raw_world);
+        let horiz_world = Self::project_to_ortho_axis(base, raw_world, OrthoAxis::Horizontal);
+        let vert_world = Self::project_to_ortho_axis(base, raw_world, OrthoAxis::Vertical);
+
+        if !self.snap_enabled {
+            return match preferred_axis {
+                OrthoAxis::Horizontal => (horiz_world, None),
+                OrthoAxis::Vertical => (vert_world, None),
+            };
+        }
+
+        let horiz = self
+            .resolve_ortho_snap_for_axis(
+                viewport,
+                rect,
+                screen_pos,
+                base,
+                OrthoAxis::Horizontal,
+            )
+            .map(|(_, dist, world, kind)| (dist, world, Some(kind)))
+            .unwrap_or_else(|| {
+                let (sx, sy) = world_to_screen(horiz_world.x as f32, horiz_world.y as f32, viewport);
+                let pos = rect.min + egui::vec2(sx, sy);
+                (pos.distance(screen_pos), horiz_world, None)
+            });
+        let vert = self
+            .resolve_ortho_snap_for_axis(
+                viewport,
+                rect,
+                screen_pos,
+                base,
+                OrthoAxis::Vertical,
+            )
+            .map(|(_, dist, world, kind)| (dist, world, Some(kind)))
+            .unwrap_or_else(|| {
+                let (sx, sy) = world_to_screen(vert_world.x as f32, vert_world.y as f32, viewport);
+                let pos = rect.min + egui::vec2(sx, sy);
+                (pos.distance(screen_pos), vert_world, None)
+            });
+
+        match horiz.0.partial_cmp(&vert.0) {
+            Some(std::cmp::Ordering::Less) => (horiz.1, horiz.2),
+            Some(std::cmp::Ordering::Greater) => (vert.1, vert.2),
+            _ => match preferred_axis {
+                OrthoAxis::Horizontal => (horiz.1, horiz.2),
+                OrthoAxis::Vertical => (vert.1, vert.2),
+            },
+        }
     }
 
     /// Track from `from_pt` to a point parallel/perpendicular to nearby line-like geometry.
