@@ -660,6 +660,8 @@ impl CadKitApp {
     const PAN_SENSITIVITY: f32 = 0.3;
     const GRID_MAX_POINTS: usize = 20_000;
     const PICK_RADIUS: f32 = 16.0; // screen-space pixels
+    const SNAP_POINT_RADIUS: f32 = 10.0; // tighter aperture for endpoint/midpoint/center/quadrant snaps
+    const INTERSECTION_SNAP_RADIUS: f32 = 10.0; // keep intersections deliberate, not broad
     const NEAREST_SNAP_RADIUS: f32 = 8.0; // tighter aperture for nearest-on-curve snap
     const TRACKING_RADIUS: f32 = 12.0; // screen-space pixels
     pub(crate) const DIM_GRIP_RADIUS: f32 = 7.0;
@@ -12629,7 +12631,7 @@ impl eframe::App for CadKitApp {
                             {
                                 match &self.active_tool {
                                     ActiveTool::Line { start: Some(s) } => {
-                                        if self.ortho_enabled {
+                                        if self.ortho_enabled && ortho_base.is_none() {
                                             world =
                                                 self.ortho_snap(*s, world);
                                         }
@@ -12653,7 +12655,7 @@ impl eframe::App for CadKitApp {
                                     }
                                     ActiveTool::Polyline { points } => {
                                         if let Some(last) = points.last() {
-                                            if self.ortho_enabled {
+                                            if self.ortho_enabled && ortho_base.is_none() {
                                                 world = self.ortho_snap(*last, world);
                                             }
                                             if let Some(dist_world) = Self::apply_distance_override(
@@ -13054,7 +13056,7 @@ impl eframe::App for CadKitApp {
                                     if pick.is_none() && matches!(self.from_phase, FromPhase::Idle) {
                                         match &self.active_tool {
                                             ActiveTool::Line { start: Some(s) } => {
-                                                if self.ortho_enabled {
+                                                if self.ortho_enabled && ortho_base.is_none() {
                                                     world = self.ortho_snap(*s, world);
                                                 }
                                                 if let Some(dist_world) = Self::apply_distance_override(
@@ -13077,7 +13079,7 @@ impl eframe::App for CadKitApp {
                                             }
                                             ActiveTool::Polyline { points } => {
                                                 if let Some(last) = points.last() {
-                                                    if self.ortho_enabled {
+                                                    if self.ortho_enabled && ortho_base.is_none() {
                                                         world = self.ortho_snap(*last, world);
                                                     }
                                                     if let Some(dist_world) = Self::apply_distance_override(
@@ -13974,7 +13976,7 @@ impl CadKitApp {
             let (sx, sy) = world_to_screen(world.x as f32, world.y as f32, viewport);
             let pos = rect.min + egui::vec2(sx, sy);
             let dist = pos.distance(screen_pos);
-            if dist <= Self::PICK_RADIUS {
+            if dist <= Self::SNAP_POINT_RADIUS {
                 match best {
                     Some((best_dist, _, _)) if dist >= *best_dist => {}
                     _ => {
@@ -16896,8 +16898,8 @@ impl CadKitApp {
 
     fn ortho_axis_world_tolerance(viewport: &Viewport, rect: egui::Rect) -> f64 {
         let p0 = screen_to_world(0.0, 0.0, viewport);
-        let px = screen_to_world(Self::PICK_RADIUS, 0.0, viewport);
-        let py = screen_to_world(0.0, Self::PICK_RADIUS, viewport);
+        let px = screen_to_world(Self::SNAP_POINT_RADIUS, 0.0, viewport);
+        let py = screen_to_world(0.0, Self::SNAP_POINT_RADIUS, viewport);
         let wx = (px.x - p0.x).abs();
         let wy = (py.y - p0.y).abs();
         wx.max(wy).max(1e-6).max((rect.width() as f64).recip())
@@ -17782,7 +17784,7 @@ impl CadKitApp {
                 let (sx, sy) = world_to_screen(w.x as f32, w.y as f32, viewport);
                 let sp = rect.min + egui::vec2(sx, sy);
                 let d = sp.distance(screen_pos);
-                if d <= Self::PICK_RADIUS {
+                if d <= Self::SNAP_POINT_RADIUS {
                     match best {
                         Some((bd, _)) if d >= bd => {}
                         _ => best = Some((d, w)),
@@ -17833,7 +17835,7 @@ impl CadKitApp {
                 let (sx, sy) = world_to_screen(w.x as f32, w.y as f32, viewport);
                 let sp = rect.min + egui::vec2(sx, sy);
                 let d = sp.distance(screen_pos);
-                if d <= Self::PICK_RADIUS {
+                if d <= Self::SNAP_POINT_RADIUS {
                     match best {
                         Some((bd, _)) if d >= bd => {}
                         _ => best = Some((d, w)),

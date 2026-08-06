@@ -1073,7 +1073,7 @@ impl CadKitApp {
                 let (sx, sy) = world_to_screen(w.x as f32, w.y as f32, viewport);
                 let s_pos = rect.min + egui::vec2(sx, sy);
                 let d = s_pos.distance(screen_pos);
-                if d <= Self::PICK_RADIUS {
+                if d <= Self::INTERSECTION_SNAP_RADIUS {
                     Some((d, w))
                 } else {
                     None

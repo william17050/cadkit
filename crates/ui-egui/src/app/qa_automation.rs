@@ -572,7 +572,7 @@ impl CadKitApp {
         {
             match &self.active_tool {
                 ActiveTool::Line { start: Some(s) } => {
-                    if self.ortho_enabled {
+                    if self.ortho_enabled && ortho_base.is_none() {
                         world = self.ortho_snap(*s, world);
                     }
                     if let Some(dist_world) =
@@ -593,7 +593,7 @@ impl CadKitApp {
                 }
                 ActiveTool::Polyline { points } => {
                     if let Some(last) = points.last() {
-                        if self.ortho_enabled {
+                        if self.ortho_enabled && ortho_base.is_none() {
                             world = self.ortho_snap(*last, world);
                         }
                         if let Some(dist_world) =
