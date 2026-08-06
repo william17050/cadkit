@@ -1,19 +1,19 @@
 # CadKit Current State
 
 ## Current Build
-- Current commit hash: `9a3c212`
+- Current commit hash: `8657467`
 - Branch: `refactor/main-split`
 - Worktree: Dirty
 
 ## Latest Completed Work Item
-- Work item ID: `CK-0002`
-- Title: `Snap radius tightening and ortho snap preservation`
+- Work item ID: `CK-0003`
+- Title: `Extended snap-mode behavioral verification`
 - QA status: `PASS`
-- Commit: `fba5c7a`
-- Current handoff/report: `qa/handoffs/CK-0002_H002.md`, `qa/reports/CK-0002_R002.md`
+- Commit: `8657467`
+- Current handoff/report: `qa/handoffs/CK-0003_H003.md`, `qa/reports/CK-0003_R003.md`
 
 ## Active Work Item
-- `CK-0003` - Extended snap-mode behavioral verification
+- None
 
 ## Open Engineering Issues
 - `AUTOMATION-001` - OS-level input injection on Wayland remains unavailable; the in-app QA bridge is the current workaround.
@@ -40,7 +40,7 @@
 - Python: Partial
 
 ## Next Recommended Work
-- Execute `CK-0003_H003` to validate the perpendicular precedence change and confirm tangent/nearest remain stable.
+- Add QA-session snapshot/restore for preference-backed settings such as `OSMODE` so bridge-driven testing never depends on manual prefs restoration.
 
 ## Last Updated
-- 2026-08-06 20:35:00Z
+- 2026-08-06 20:44:03Z
