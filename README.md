@@ -38,27 +38,28 @@ Modular Rust workspace with clear separation of concerns:
 - **XY plane**: Ground/construction plane (Z=0 for 2D phase)
 - **Right-handed system**
 
-## Current 2D Feature Set (as of Mar 2026)
-- **Drawing tools**: line, arc (3-point), circle, polyline with close; command aliases and toolbar buttons.
-- **Precision input**: absolute/relative (@x,y) and polar (@dist<angle); direct distance entry with live rubber-band; FROM offset workflow; ortho lock (F8); snap toggle (F3).
-- **Snaps**: endpoint, midpoint, center, intersection (radius search).
-- **Editing**: move, copy, rotate, offset, trim, extend — all with ghosted rubber-band previews; cancel via Esc or right-click; undo/redo stack.
+## Current 2D Feature Set (as of Aug 2026)
+- **Drawing tools**: line, arc (3-point), circle, polyline with close, rectangle, polygon, ellipse, isocircle, boundary, hatch, text, and multiple dimension commands; command aliases and toolbar buttons.
+- **Precision input**: absolute/relative (@x,y) and polar (@dist<angle); direct distance entry with live rubber-band; FROM offset workflow; orthogonal Ortho mode (F8); Polar tracking (F10); snap toggle (F3); ISO mode/isoplane.
+- **Snaps**: endpoint, midpoint, center, quadrant, intersection, perpendicular, tangent, nearest, plus parallel/perpendicular tracking and visual snap glyphs.
+- **Editing**: move, copy, rotate, scale, mirror, offset, trim, extend, stretch, fillet, chamfer, associative rectangular/polar array workflows — all with ghosted previews, undo/redo, and cancel via Esc or right-click.
 - **Blocks**: block definitions (`BLOCK`/`BMAKE`), true block inserts (`INSERT`), explode (`X/EXPLODE`), and first-pass block editing workflow (`BEDIT`, `BSAVE`, `BCANCEL`).
 - **Block snapping/selection**: insert geometry is selectable/snappable from transformed block geometry (not just insert origin); selected insert highlights full block geometry.
 - **Dynamic blocks (developer first pass)**: `dynamic_v1` data model + per-insert override map + runtime regeneration pipeline (authored-base driven, ordered action execution subset).
 - **Trim/Extend policy**: non-block entities can trim/extend against block geometry; direct trim/extend of insert internals requires explode or block edit workflow.
-- **Dimensions**: DIMLINEAR command (`dli`) — 3-click placement (first point, second point, line location); live preview with stroke text; readable text regardless of pick direction.
-- **Layers**: create, color, rename, set current, toggle visibility; selection highlights by layer.
+- **Dimensions**: linear, angular, radial, and diameter dimensions; live preview; DimStyle editing; egui text rendering; grip editing; DXF DIMENSION import/export.
+- **Layers**: create, color, rename, set current, move entities between layers, toggle visibility, lock, and freeze; selection highlights by layer.
 - **IO**: JSON save/load; DXF import/export with per-entity warnings; SVG/PDF export (paths-only/vector); auto-save recovery snapshots with startup restore prompt; file dialogs; window title reflects current file.
-- **Rendering/UI**: wgpu viewport, dot grid, selection marquee (window/crossing), command log, left tool palette, top menu bar, right properties/layers panel.
+- **Rendering/UI**: wgpu viewport, dot grid, status bar, selection marquee (window/crossing), command log, left tool palette, top menu bar, right properties/layers panel.
+- **Python/AI**: embedded Python console and script runner; initial natural-language command preview/execution path; local-model and MCP-aware AI plumbing.
+- **QA automation**: in-app QA bridge with mode toggles, polar-angle control, snap-aware testing, and session-safe preference snapshot/restore for repeatable behavioral QA.
 
-## Near-Term Roadmap (Q2 2026)
-- **Dimension polish**: egui native text rendering for dim labels (replacing stroke font); DimStyle dialog (text height, arrow size, extension gap, color); DXF DIMENSION entity export.
-- **Text placement**: TEXT command for placing annotation text entities on the drawing.
-- Additional snaps (perpendicular, tangent, nearest) and improved snap glyphs.
-- Status bar: live cursor coordinates, active snap/ortho/layer indicators.
-- Scale and mirror editing commands.
-- Preference persistence (grid spacing, last file, snap/ortho state).
+## Near-Term Product Focus
+- Leaders and callouts.
+- Hatch robustness, especially gap healing under tolerance.
+- Blocks follow-up work: nested blocks and a fuller block library/palette.
+- DXF and layer-system depth beyond the current stable drafting core.
+- Continued polish of modify workflows and annotation ergonomics.
 
 ## Longer-Term (high level)
 - Hatch patterns, leaders/callouts, multi-line text, dynamic/parametric blocks.
@@ -147,8 +148,8 @@ cargo test -p cadkit-types
   - `DYNBINDGROUP <block> <param> <group_name> <behavior> <frame> <keepdefault|offset:v|v>`
 
 ## Project Status
-**Current**: Interactive 2D drafting MVP — command-line tools, snaps, layers, undo/redo, DXF IO, linear dimensions.
-**Next Milestone**: Dim text via egui font + DimStyle dialog + TEXT placement command.
+**Current**: Mature 2D drafting core with a strong editing, snapping, annotation, DXF/JSON IO, Python/AI, and QA automation foundation.
+**Next Milestone**: Return to product-facing feature work on advanced 2D depth, likely leaders/callouts, hatch robustness, or broader block workflows.
 
 ---
 *Built by Bill - 20+ years manufacturing experience, ready to ship what should exist.*

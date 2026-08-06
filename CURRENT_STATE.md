@@ -1,7 +1,7 @@
 # CadKit Current State
 
 ## Current Build
-- Current commit hash: `512d0d3`
+- Current commit hash: `4f0373c`
 - Branch: `refactor/main-split`
 - Worktree: Dirty
 
@@ -44,7 +44,7 @@
 - Python: Partial
 
 ## Next Recommended Work
-- Return to product feature work; the QA bridge now covers mode toggles, polar angle, and session-safe restoration of persisted QA settings.
+- Return to product feature work, with leaders/callouts as the clearest next feature area on top of the now-stable drafting and QA foundation.
 
 ## Last Updated
-- 2026-08-06 23:05:00Z
+- 2026-08-06 23:20:00Z

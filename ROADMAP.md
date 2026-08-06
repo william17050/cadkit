@@ -111,7 +111,7 @@
 
 ---
 
-## Phase 3: File Interop & IO (Q3 2026)
+## Phase 3: File Interop & IO (Q3 2026) — **Mostly Done**
 
 ### Milestone 3.1: DXF Completeness
 - [x] DIMENSION entity export (RotatedDimension / AlignedDimension)
@@ -127,7 +127,7 @@
 
 ---
 
-## Phase 4: Python & AI (Q4 2026)
+## Phase 4: Python & AI (Q4 2026) — **Mostly Done**
 
 ### Milestone 4.1: Python Bridge
 - [x] PyO3 integration working (new `cadkit-scripting-python` crate in workspace)
@@ -152,7 +152,7 @@
 
 ---
 
-## Phase 5: Advanced 2D (Q1 2027)
+## Phase 5: Advanced 2D (Q1 2027) — **Current Main Product Track**
 
 ### Milestone 5.1: Hatch & Regions
 - [x] Boundary detection algorithm (first pass in geometry crate + `BOUNDARY` point-pick command)
@@ -179,6 +179,26 @@
 - [ ] Leader entity (line + arrowhead + text)
 - [ ] Multileader
 - [ ] Balloon callouts
+
+---
+
+## Current Focus Snapshot (Aug 2026)
+
+CadKit has progressed beyond the earlier "2D MVP" framing. The current baseline now includes:
+- stable viewport, selection, snapping, directional constraints, and undo/redo
+- broad 2D drafting and modify coverage
+- text, multiple dimension types, hatch/boundary first pass
+- block insert/edit plus first-pass dynamic block tooling
+- DXF, SVG, PDF, autosave/recovery, Python, AI-assisted command plumbing
+- a substantial in-app QA bridge for repeatable behavioral testing under Wayland
+
+The highest-value unfinished product work is now concentrated in:
+- leaders/callouts
+- hatch gap healing and robustness
+- nested blocks and fuller block-palette workflows
+- broader DXF and layer-system completeness
+
+The long-term 3D, CAM, cabinet, and parametric phases remain directionally valid, but the immediate development posture is still deepening the 2D drafting product.
 
 ---
 
