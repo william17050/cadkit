@@ -18,6 +18,8 @@ pub(super) struct QaAutomationBridge {
 enum QaAutomationCommand {
     Status,
     RunCommand { text: String },
+    HoverWorldSnapped { x: f64, y: f64 },
+    ClickWorldSnapped { x: f64, y: f64, additive: Option<bool> },
     ClickWorld { x: f64, y: f64, additive: Option<bool> },
     DragSelectWorld {
         x0: f64,
@@ -70,6 +72,8 @@ struct QaStateSnapshot {
     snap_enabled: bool,
     ortho_enabled: bool,
     grid_visible: bool,
+    hover_world: Option<[f64; 2]>,
+    hover_snap_kind: Option<String>,
     viewport: Option<QaViewportSnapshot>,
 }
 
@@ -264,6 +268,24 @@ impl CadKitApp {
                     Err(format!("Command was not recognized: {trimmed}"))
                 }
             }
+            QaAutomationCommand::HoverWorldSnapped { x, y } => {
+                if self.recovery_prompt_open {
+                    return Err(
+                        "Recovery prompt is open; send a recovery command before hover actions"
+                            .to_string(),
+                    );
+                }
+                self.qa_hover_world_snapped(Vec2::new(x, y))
+            }
+            QaAutomationCommand::ClickWorldSnapped { x, y, additive } => {
+                if self.recovery_prompt_open {
+                    return Err(
+                        "Recovery prompt is open; send a recovery command before viewport clicks"
+                            .to_string(),
+                    );
+                }
+                self.qa_click_world_snapped(Vec2::new(x, y), additive.unwrap_or(false))
+            }
             QaAutomationCommand::ClickWorld { x, y, additive } => {
                 if self.recovery_prompt_open {
                     return Err(
@@ -422,6 +444,35 @@ impl CadKitApp {
         }
     }
 
+    fn qa_hover_world_snapped(&mut self, approx_world: Vec2) -> Result<String, String> {
+        let (world, snap_kind) = self.qa_resolve_hover_world_from_approx_world(approx_world)?;
+        let snap_label = snap_kind
+            .map(Self::qa_snap_kind_name)
+            .unwrap_or("none");
+        Ok(format!(
+            "Resolved hover to ({:.4}, {:.4}) with snap {}",
+            world.x, world.y, snap_label
+        ))
+    }
+
+    fn qa_click_world_snapped(
+        &mut self,
+        approx_world: Vec2,
+        additive: bool,
+    ) -> Result<String, String> {
+        let (world, snap_kind) = self.qa_resolve_hover_world_from_approx_world(approx_world)?;
+        if self.qa_uses_point_delivery() {
+            self.deliver_point(world);
+            return Ok(format!(
+                "Delivered snapped point at ({:.4}, {:.4}) with snap {}",
+                world.x,
+                world.y,
+                snap_kind.map(Self::qa_snap_kind_name).unwrap_or("none")
+            ));
+        }
+        self.qa_click_world(world, additive)
+    }
+
     fn qa_drag_select_world(
         &mut self,
         start: Vec2,
@@ -475,6 +526,167 @@ impl CadKitApp {
     fn qa_viewport_rect(&self, viewport: &Viewport) -> egui::Rect {
         let (width, height) = viewport.size();
         egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width as f32, height as f32))
+    }
+
+    fn qa_resolve_hover_world_from_approx_world(
+        &mut self,
+        approx_world: Vec2,
+    ) -> Result<(Vec2, Option<SnapKind>), String> {
+        let Some(viewport) = self.viewport.as_ref() else {
+            return Err("Viewport is not initialized".to_string());
+        };
+        let rect = self.qa_viewport_rect(viewport);
+        let (sx, sy) = world_to_screen(approx_world.x as f32, approx_world.y as f32, viewport);
+        let screen_pos = rect.min + egui::vec2(sx, sy);
+
+        self.snap_intersection_point = None;
+        self.hover_snap_kind = None;
+
+        let local = screen_pos - rect.min;
+        let raw_world = screen_to_world(local.x, local.y, viewport);
+        let ortho_base = if self.dim_grip_drag.is_none() && matches!(self.from_phase, FromPhase::Idle)
+        {
+            self.ortho_snap_base_point()
+        } else {
+            None
+        };
+
+        let (hover_pick, mut world) = if let Some(base) = ortho_base {
+            let (w, kind) =
+                self.resolve_ortho_snap_for_line_like(viewport, rect, screen_pos, base, raw_world);
+            self.hover_snap_kind = kind;
+            if kind == Some(SnapKind::Intersection) {
+                self.snap_intersection_point = Some(w);
+            }
+            (None, w)
+        } else if let Some((pick, kind)) = self.pick_entity_point(viewport, rect, screen_pos) {
+            self.hover_snap_kind = Some(kind);
+            (Some(pick.clone()), pick.world)
+        } else {
+            (None, raw_world)
+        };
+
+        if hover_pick.is_none()
+            && self.dim_grip_drag.is_none()
+            && matches!(self.from_phase, FromPhase::Idle)
+        {
+            match &self.active_tool {
+                ActiveTool::Line { start: Some(s) } => {
+                    if self.ortho_enabled {
+                        world = self.ortho_snap(*s, world);
+                    }
+                    if let Some(dist_world) =
+                        Self::apply_distance_override(*s, world, &self.distance_input)
+                    {
+                        world = dist_world;
+                    }
+                }
+                ActiveTool::Circle { center: Some(c) } => {
+                    if let Some(dist_world) = Self::apply_circle_distance_override(
+                        *c,
+                        world,
+                        &self.distance_input,
+                        self.circle_use_diameter,
+                    ) {
+                        world = dist_world;
+                    }
+                }
+                ActiveTool::Polyline { points } => {
+                    if let Some(last) = points.last() {
+                        if self.ortho_enabled {
+                            world = self.ortho_snap(*last, world);
+                        }
+                        if let Some(dist_world) =
+                            Self::apply_distance_override(*last, world, &self.distance_input)
+                        {
+                            world = dist_world;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if hover_pick.is_none()
+            && self.dim_grip_drag.is_none()
+            && ortho_base.is_none()
+            && self.snap_enabled
+            && self.snap_intersection
+        {
+            if let Some(snap_pt) = self.find_intersection_snap(viewport, rect, screen_pos) {
+                world = snap_pt;
+                self.snap_intersection_point = Some(snap_pt);
+                self.hover_snap_kind = Some(SnapKind::Intersection);
+            }
+        }
+
+        if hover_pick.is_none()
+            && self.dim_grip_drag.is_none()
+            && ortho_base.is_none()
+            && self.snap_intersection_point.is_none()
+            && self.hover_snap_kind.is_none()
+            && self.snap_enabled
+            && (self.snap_parallel || self.snap_perpendicular)
+        {
+            if let Some(from_pt) = self.current_from_point() {
+                if let Some((pt, kind)) =
+                    self.tracking_snap(viewport, rect, screen_pos, from_pt)
+                {
+                    world = pt;
+                    self.hover_snap_kind = Some(kind);
+                }
+            }
+        }
+
+        if hover_pick.is_none()
+            && self.dim_grip_drag.is_none()
+            && ortho_base.is_none()
+            && self.snap_intersection_point.is_none()
+            && self.hover_snap_kind.is_none()
+            && self.snap_enabled
+            && self.snap_perpendicular
+        {
+            if let Some(from_pt) = self.current_from_point() {
+                if let Some(pt) = self.perpendicular_snap(viewport, rect, screen_pos, from_pt) {
+                    world = pt;
+                    self.hover_snap_kind = Some(SnapKind::Perpendicular);
+                }
+            }
+        }
+
+        if hover_pick.is_none()
+            && self.dim_grip_drag.is_none()
+            && ortho_base.is_none()
+            && self.snap_intersection_point.is_none()
+            && self.hover_snap_kind.is_none()
+            && self.snap_enabled
+            && self.snap_tangent
+        {
+            if let Some(from_pt) = self.current_from_point() {
+                if let Some(pt) = self.tangent_snap(viewport, rect, screen_pos, from_pt) {
+                    world = pt;
+                    self.hover_snap_kind = Some(SnapKind::Tangent);
+                }
+            }
+        }
+
+        if hover_pick.is_none()
+            && self.dim_grip_drag.is_none()
+            && ortho_base.is_none()
+            && self.snap_intersection_point.is_none()
+            && self.hover_snap_kind.is_none()
+            && self.snap_enabled
+            && self.snap_nearest
+        {
+            if let Some(pt) = self.nearest_entity_snap(viewport, rect, screen_pos) {
+                world = pt;
+                self.hover_snap_kind = Some(SnapKind::Nearest);
+            }
+        }
+
+        self.hover_world_pos = Some(world);
+        self.last_hover_world_pos = Some(world);
+        Ok((world, self.hover_snap_kind))
     }
 
     fn qa_uses_point_delivery(&self) -> bool {
@@ -568,6 +780,11 @@ impl CadKitApp {
             snap_enabled: self.snap_enabled,
             ortho_enabled: self.ortho_enabled,
             grid_visible: self.grid_visible,
+            hover_world: self
+                .hover_world_pos
+                .or(self.last_hover_world_pos)
+                .map(|w| [w.x, w.y]),
+            hover_snap_kind: self.hover_snap_kind.map(|kind| Self::qa_snap_kind_name(kind).to_string()),
             viewport,
         }
     }
@@ -634,6 +851,20 @@ impl CadKitApp {
             EntityKind::DimRadial { .. } => "dim_radial",
             EntityKind::Text { .. } => "text",
             EntityKind::Insert { .. } => "insert",
+        }
+    }
+
+    fn qa_snap_kind_name(kind: SnapKind) -> &'static str {
+        match kind {
+            SnapKind::Endpoint => "endpoint",
+            SnapKind::Midpoint => "midpoint",
+            SnapKind::Center => "center",
+            SnapKind::Quadrant => "quadrant",
+            SnapKind::Intersection => "intersection",
+            SnapKind::Parallel => "parallel",
+            SnapKind::Nearest => "nearest",
+            SnapKind::Perpendicular => "perpendicular",
+            SnapKind::Tangent => "tangent",
         }
     }
 

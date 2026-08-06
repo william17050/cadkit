@@ -28,6 +28,8 @@ The bridge is intentionally explicit and file-based so it works in constrained L
 
 ## Supported Commands
 - `run_command`
+- `hover_world_snapped`
+- `click_world_snapped`
 - `click_world`
 - `drag_select_world`
 - `escape`
@@ -49,6 +51,8 @@ Examples:
 python scripts/cadkit_qa_bridge.py status qa/runtime/CK-0001
 python scripts/cadkit_qa_bridge.py recovery qa/runtime/CK-0001 discard
 python scripts/cadkit_qa_bridge.py run-command qa/runtime/CK-0001 line
+python scripts/cadkit_qa_bridge.py hover-world-snapped qa/runtime/CK-0001 19.2 0.3
+python scripts/cadkit_qa_bridge.py click-world-snapped qa/runtime/CK-0001 19.2 0.3
 python scripts/cadkit_qa_bridge.py click-world qa/runtime/CK-0001 0 0
 python scripts/cadkit_qa_bridge.py click-world qa/runtime/CK-0001 20 0
 python scripts/cadkit_qa_bridge.py escape qa/runtime/CK-0001
@@ -67,18 +71,38 @@ python scripts/cadkit_qa_bridge.py quit qa/runtime/CK-0001
 - command log tail
 - current layer
 - snap/ortho/grid flags
+- resolved hover world and snap kind
 - viewport size, zoom, and pan
 
 ## Current Scope
-The first bridge pass is aimed at the `CK-0001` baseline scenarios:
+The bridge covers the `CK-0001` baseline scenarios plus snap-aware follow-up testing:
 - launch handling
 - recovery-prompt handling
 - viewport zoom and pan
 - command-line command execution
 - line creation via point delivery
+- snap-aware hover and click resolution
 - click selection
 - window/crossing selection
 - delete, undo, redo
 - clean close request
 
-It does not yet automate every interaction mode in CadKit. Unsupported modes return explicit errors in the result JSON rather than silently mutating state.
+## Snap-Aware Mode
+`hover_world_snapped` and `click_world_snapped` take an approximate world-space target, project it into the viewport, and then run CadKit's internal snap-resolution pipeline before reporting or delivering the resolved point.
+
+This is intended for validating snap correctness:
+- endpoint
+- midpoint
+- center
+- quadrant
+- intersection
+- parallel/perpendicular tracking
+- perpendicular
+- tangent
+- nearest
+- ortho-assisted line-like snapping
+
+## Current Limitations
+- Raw `click_world` still bypasses snapping by design and is useful for exact-coordinate regression checks.
+- Snap-aware actions validate CadKit's snap logic, but not literal desktop hover ergonomics such as cursor icons or OS cursor motion.
+- It does not yet automate every interaction mode in CadKit. Unsupported modes return explicit errors in the result JSON rather than silently mutating state.

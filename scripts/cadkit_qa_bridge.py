@@ -69,6 +69,23 @@ def build_parser() -> argparse.ArgumentParser:
     run_command.add_argument("root")
     run_command.add_argument("text")
 
+    hover_world_snapped = subparsers.add_parser(
+        "hover-world-snapped",
+        help="resolve a snapped hover near a world-space location",
+    )
+    hover_world_snapped.add_argument("root")
+    hover_world_snapped.add_argument("x", type=float)
+    hover_world_snapped.add_argument("y", type=float)
+
+    click_world_snapped = subparsers.add_parser(
+        "click-world-snapped",
+        help="deliver a snapped viewport click near a world-space location",
+    )
+    click_world_snapped.add_argument("root")
+    click_world_snapped.add_argument("x", type=float)
+    click_world_snapped.add_argument("y", type=float)
+    click_world_snapped.add_argument("--additive", action="store_true")
+
     click_world = subparsers.add_parser("click-world", help="deliver a viewport click in world coordinates")
     click_world.add_argument("root")
     click_world.add_argument("x", type=float)
@@ -126,6 +143,15 @@ def main() -> int:
     match args.subcommand:
         case "run-command":
             payload = {"action": "run_command", "text": args.text}
+        case "hover-world-snapped":
+            payload = {"action": "hover_world_snapped", "x": args.x, "y": args.y}
+        case "click-world-snapped":
+            payload = {
+                "action": "click_world_snapped",
+                "x": args.x,
+                "y": args.y,
+                "additive": args.additive,
+            }
         case "click-world":
             payload = {
                 "action": "click_world",
