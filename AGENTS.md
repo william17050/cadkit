@@ -67,6 +67,9 @@ Primary integration surface:
 - Claude Code must not edit application source.
 
 ## Workflow Rules
+- Begin each new work item by reading:
+  - `AGENTS.md`
+  - `CURRENT_STATE.md`
 - Read only the newest applicable handoff or report for a work item unless historical investigation is required.
 - Use the helper scripts in `scripts/` to resolve the newest handoff or report before reading older artifacts manually.
 - Act through the human path; verify through the machine path.
@@ -80,6 +83,7 @@ Primary integration surface:
 - Bill can accept risk explicitly, but acceptance should be recorded in the relevant handoff or report trail.
 
 ## Handoff And Report Discovery
+- Current state dashboard: `CURRENT_STATE.md`
 - Latest handoff: `python scripts/latest_handoff.py CK-0001`
 - Latest report: `python scripts/latest_report.py CK-0001`
 
