@@ -29,6 +29,7 @@ The bridge is intentionally explicit and file-based so it works in constrained L
 ## Supported Commands
 - `run_command`
 - `ortho`
+- `polar`
 - `hover_world_snapped`
 - `click_world_snapped`
 - `click_world`
@@ -52,7 +53,8 @@ Examples:
 python scripts/cadkit_qa_bridge.py status qa/runtime/CK-0001
 python scripts/cadkit_qa_bridge.py recovery qa/runtime/CK-0001 discard
 python scripts/cadkit_qa_bridge.py run-command qa/runtime/CK-0001 line
-python scripts/cadkit_qa_bridge.py ortho qa/runtime/CK-0001 off
+python scripts/cadkit_qa_bridge.py ortho qa/runtime/CK-0001 on
+python scripts/cadkit_qa_bridge.py polar qa/runtime/CK-0001 off
 python scripts/cadkit_qa_bridge.py hover-world-snapped qa/runtime/CK-0001 19.2 0.3
 python scripts/cadkit_qa_bridge.py click-world-snapped qa/runtime/CK-0001 19.2 0.3
 python scripts/cadkit_qa_bridge.py click-world qa/runtime/CK-0001 0 0
@@ -72,7 +74,7 @@ python scripts/cadkit_qa_bridge.py quit qa/runtime/CK-0001
 - entity count and entity kinds
 - command log tail
 - current layer
-- snap/ortho/grid flags
+- snap/ortho/polar/grid flags
 - resolved hover world and snap kind
 - viewport size, zoom, and pan
 
@@ -82,6 +84,7 @@ The bridge covers the `CK-0001` baseline scenarios plus snap-aware follow-up tes
 - recovery-prompt handling
 - viewport zoom and pan
 - ortho state control
+- polar state control
 - command-line command execution
 - line creation via point delivery
 - snap-aware hover and click resolution
@@ -103,7 +106,7 @@ This is intended for validating snap correctness:
 - perpendicular
 - tangent
 - nearest
-- ortho-assisted line-like snapping
+- polar-assisted line-like snapping
 
 ## Current Limitations
 - Raw `click_world` still bypasses snapping by design and is useful for exact-coordinate regression checks.

@@ -114,12 +114,6 @@ fn point_seg_dist2(p: Vec2, a: Vec2, b: Vec2) -> f64 {
     ex * ex + ey * ey
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum OrthoAxis {
-    Horizontal,
-    Vertical,
-}
-
 #[derive(Clone, Copy, Debug)]
 struct StretchWindow {
     min: Vec2,
@@ -185,6 +179,7 @@ pub(crate) struct AppPrefs {
     pub snap_perpendicular: bool,
     pub snap_tangent: bool,
     pub snap_nearest: bool,
+    pub axis_ortho_enabled: bool,
     pub ortho_enabled: bool,
     pub ortho_increment_deg: f64,
     pub grid_visible: bool,
@@ -207,6 +202,7 @@ impl Default for AppPrefs {
             snap_perpendicular: true,
             snap_tangent: true,
             snap_nearest: false,
+            axis_ortho_enabled: false,
             ortho_enabled: true,
             ortho_increment_deg: 90.0,
             grid_visible: true,
@@ -326,6 +322,7 @@ pub struct CadKitApp {
     dim_grip_drag: Option<DimGripHandle>,
     dim_grip_is_dragging: bool,
     hover_dim_grip: Option<DimGripHandle>,
+    axis_ortho_enabled: bool,
     ortho_enabled: bool,
     ortho_increment_deg: f64,
     iso_mode: bool,
@@ -508,6 +505,7 @@ impl Default for CadKitApp {
             dim_grip_drag: None,
             dim_grip_is_dragging: false,
             hover_dim_grip: None,
+            axis_ortho_enabled: false,
             ortho_enabled: true,
             ortho_increment_deg: 90.0,
             iso_mode: false,
@@ -1561,7 +1559,7 @@ impl CadKitApp {
                 .push("MIRROR: Pick second axis point".to_string());
         } else if self.mirror_phase == MirrorPhase::SecondAxisPoint {
             if let Some(p1) = self.mirror_axis_p1 {
-                let axis_p2 = if self.ortho_enabled {
+                let axis_p2 = if self.directional_snap_enabled() {
                     self.ortho_snap(p1, world)
                 } else {
                     world
@@ -1589,7 +1587,7 @@ impl CadKitApp {
             self.command_log
                 .push("ELLIPSE: Specify radius from center".to_string());
         } else if let EllipsePhase::RadiusX { center } = self.ellipse_phase {
-            let p = if self.ortho_enabled {
+            let p = if self.directional_snap_enabled() {
                 self.ortho_snap(center, world)
             } else {
                 world
@@ -1604,7 +1602,7 @@ impl CadKitApp {
                     .push("ELLIPSE: Radius too small".to_string());
             }
         } else if let EllipsePhase::RadiusY { center, rx } = self.ellipse_phase {
-            let p = if self.ortho_enabled {
+            let p = if self.directional_snap_enabled() {
                 self.ortho_snap(center, world)
             } else {
                 world
@@ -1763,16 +1761,33 @@ impl CadKitApp {
     }
 
     fn set_ortho_enabled(&mut self, enabled: bool) -> bool {
-        self.ortho_enabled = enabled;
+        self.axis_ortho_enabled = enabled;
         self.command_log.push(format!(
             "Ortho {}",
+            if self.axis_ortho_enabled { "ON" } else { "OFF" }
+        ));
+        self.axis_ortho_enabled
+    }
+
+    fn toggle_ortho_enabled(&mut self) -> bool {
+        self.set_ortho_enabled(!self.axis_ortho_enabled)
+    }
+
+    fn set_polar_enabled(&mut self, enabled: bool) -> bool {
+        self.ortho_enabled = enabled;
+        self.command_log.push(format!(
+            "Polar {}",
             if self.ortho_enabled { "ON" } else { "OFF" }
         ));
         self.ortho_enabled
     }
 
-    fn toggle_ortho_enabled(&mut self) -> bool {
-        self.set_ortho_enabled(!self.ortho_enabled)
+    fn toggle_polar_enabled(&mut self) -> bool {
+        self.set_polar_enabled(!self.ortho_enabled)
+    }
+
+    fn directional_snap_enabled(&self) -> bool {
+        self.axis_ortho_enabled || self.ortho_enabled
     }
 
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
@@ -2404,7 +2419,7 @@ impl CadKitApp {
                 .push("DIM GRIP: move cursor to set direction".to_string());
             return true;
         };
-        if self.ortho_enabled {
+        if self.directional_snap_enabled() {
             hover = self.ortho_snap(base, hover);
         }
         let dx = hover.x - base.x;
@@ -2482,7 +2497,7 @@ impl CadKitApp {
             return None;
         }
         let mut world = Vec2::new(base.x + dx / len * dist, base.y + dy / len * dist);
-        if self.ortho_enabled {
+        if self.directional_snap_enabled() {
             world = self.ortho_snap(base, world);
         }
         Some(world)
@@ -4129,7 +4144,7 @@ impl CadKitApp {
                 .push("ARRAY: Need at least 2 items (columns/rows)".to_string());
             return false;
         }
-        let dir = if self.ortho_enabled {
+        let dir = if self.directional_snap_enabled() {
             self.ortho_snap(base, direction)
         } else {
             direction
@@ -4277,7 +4292,7 @@ impl CadKitApp {
     }
 
     fn apply_array_polar(&mut self, center: Vec2, base: Vec2) -> bool {
-        let base = if self.ortho_enabled {
+        let base = if self.directional_snap_enabled() {
             self.ortho_snap(center, base)
         } else {
             base
@@ -5708,7 +5723,7 @@ impl CadKitApp {
         let Some(p1) = self.mirror_axis_p1 else {
             return;
         };
-        let p2 = if self.ortho_enabled {
+        let p2 = if self.directional_snap_enabled() {
             self.ortho_snap(p1, world_cursor)
         } else {
             world_cursor
@@ -8251,7 +8266,7 @@ impl CadKitApp {
                 if self.polygon_sides < 3 {
                     return;
                 }
-                let cursor = if self.ortho_enabled {
+                let cursor = if self.directional_snap_enabled() {
                     self.ortho_snap(center, world_cursor)
                 } else {
                     world_cursor
@@ -8363,7 +8378,7 @@ impl CadKitApp {
                 painter.line_segment([c - egui::vec2(0.0, r), c + egui::vec2(0.0, r)], ghost);
             }
             EllipsePhase::RadiusX { center } => {
-                let p = if self.ortho_enabled {
+                let p = if self.directional_snap_enabled() {
                     self.ortho_snap(center, world_cursor)
                 } else {
                     world_cursor
@@ -8376,7 +8391,7 @@ impl CadKitApp {
                 );
             }
             EllipsePhase::RadiusY { center, rx } => {
-                let p = if self.ortho_enabled {
+                let p = if self.directional_snap_enabled() {
                     self.ortho_snap(center, world_cursor)
                 } else {
                     world_cursor
@@ -8548,7 +8563,7 @@ impl CadKitApp {
         };
         match self.array_phase {
             ArrayPhase::RectXSpacingGrip => {
-                let dir = if self.ortho_enabled {
+                let dir = if self.directional_snap_enabled() {
                     self.ortho_snap(base, world)
                 } else {
                     world
@@ -8767,7 +8782,7 @@ impl CadKitApp {
                     .array_rect_dir_point
                     .unwrap_or_else(|| Vec2::new(base.x + dx_step, base.y));
                 if self.array_phase == ArrayPhase::RectXSpacingGrip {
-                    dir = if self.ortho_enabled {
+                    dir = if self.directional_snap_enabled() {
                         self.ortho_snap(base, world_cursor)
                     } else {
                         world_cursor
@@ -8895,7 +8910,7 @@ impl CadKitApp {
             }
             ArrayPhase::PolarBasePoint => {
                 if let Some(center) = self.array_center {
-                    let p = if self.ortho_enabled {
+                    let p = if self.directional_snap_enabled() {
                         self.ortho_snap(center, world_cursor)
                     } else {
                         world_cursor
@@ -9696,9 +9711,13 @@ impl eframe::App for CadKitApp {
                 self.command_log.push("ISO mode is off — use ISOPLANE to enable".to_string());
             }
         }
-        // F8: ortho toggle
+        // F8: orthogonal Ortho toggle
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F8)) {
             self.toggle_ortho_enabled();
+        }
+        // F10: polar tracking toggle
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F10)) {
+            self.toggle_polar_enabled();
         }
         // ESC: clear command input if non-empty; else cancel FROM, then tool, trim, etc.
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
@@ -11553,7 +11572,7 @@ impl eframe::App for CadKitApp {
                                             self.mirror_phase = MirrorPhase::SecondAxisPoint;
                                             self.command_log.push("MIRROR: Pick second axis point".to_string());
                                         } else if let Some(p1) = self.mirror_axis_p1 {
-                                            let axis_p2 = if self.ortho_enabled {
+                                            let axis_p2 = if self.directional_snap_enabled() {
                                                 self.ortho_snap(p1, world)
                                             } else {
                                                 world
@@ -11753,7 +11772,7 @@ impl eframe::App for CadKitApp {
                                             self.ellipse_phase = EllipsePhase::RadiusX { center: world };
                                             self.command_log.push("ELLIPSE: Specify radius from center".to_string());
                                         } else if let EllipsePhase::RadiusX { center } = self.ellipse_phase {
-                                            let p = if self.ortho_enabled {
+                                            let p = if self.directional_snap_enabled() {
                                                 self.ortho_snap(center, world)
                                             } else {
                                                 world
@@ -11766,7 +11785,7 @@ impl eframe::App for CadKitApp {
                                                 self.command_log.push("ELLIPSE: Radius too small".to_string());
                                             }
                                         } else if let EllipsePhase::RadiusY { center, rx } = self.ellipse_phase {
-                                            let p = if self.ortho_enabled {
+                                            let p = if self.directional_snap_enabled() {
                                                 self.ortho_snap(center, world)
                                             } else {
                                                 world
@@ -12642,7 +12661,7 @@ impl eframe::App for CadKitApp {
                             {
                                 match &self.active_tool {
                                     ActiveTool::Line { start: Some(s) } => {
-                                        if self.ortho_enabled && ortho_base.is_none() {
+                                        if self.directional_snap_enabled() && ortho_base.is_none() {
                                             world =
                                                 self.ortho_snap(*s, world);
                                         }
@@ -12666,7 +12685,7 @@ impl eframe::App for CadKitApp {
                                     }
                                     ActiveTool::Polyline { points } => {
                                         if let Some(last) = points.last() {
-                                            if self.ortho_enabled && ortho_base.is_none() {
+                                            if self.directional_snap_enabled() && ortho_base.is_none() {
                                                 world = self.ortho_snap(*last, world);
                                             }
                                             if let Some(dist_world) = Self::apply_distance_override(
@@ -12825,7 +12844,7 @@ impl eframe::App for CadKitApp {
                                 // In WaitingOffset: ortho-constrain the rubber-band tip so it
                                 // visually matches what a plain-distance entry would produce.
                                 let tip_world = if self.from_phase == FromPhase::WaitingOffset
-                                    && self.ortho_enabled
+                                    && self.directional_snap_enabled()
                                     && hover_pick.is_none()
                                 {
                                     self.ortho_snap(base, world)
@@ -13069,7 +13088,7 @@ impl eframe::App for CadKitApp {
                                     if pick.is_none() && matches!(self.from_phase, FromPhase::Idle) {
                                         match &self.active_tool {
                                             ActiveTool::Line { start: Some(s) } => {
-                                                if self.ortho_enabled && ortho_base.is_none() {
+                                                if self.directional_snap_enabled() && ortho_base.is_none() {
                                                     world = self.ortho_snap(*s, world);
                                                 }
                                                 if let Some(dist_world) = Self::apply_distance_override(
@@ -13092,7 +13111,7 @@ impl eframe::App for CadKitApp {
                                             }
                                             ActiveTool::Polyline { points } => {
                                                 if let Some(last) = points.last() {
-                                                    if self.ortho_enabled && ortho_base.is_none() {
+                                                    if self.directional_snap_enabled() && ortho_base.is_none() {
                                                         world = self.ortho_snap(*last, world);
                                                     }
                                                     if let Some(dist_world) = Self::apply_distance_override(
@@ -14048,11 +14067,24 @@ impl CadKitApp {
         Vec2::new(base.x + best_ax.x * best_t, base.y + best_ax.y * best_t)
     }
 
-    /// Apply ortho or iso-ortho snap depending on the current mode.
-    /// Callers are responsible for checking `ortho_enabled` before calling.
+    fn snap_axis_ortho(base: Vec2, target: Vec2) -> Vec2 {
+        let dx = target.x - base.x;
+        let dy = target.y - base.y;
+        if dx.abs() >= dy.abs() {
+            Vec2::new(target.x, base.y)
+        } else {
+            Vec2::new(base.x, target.y)
+        }
+    }
+
+    /// Apply the active directional constraint.
+    /// Ortho has priority over Polar when both are enabled.
+    /// Callers are responsible for checking `directional_snap_enabled` before calling.
     fn ortho_snap(&self, base: Vec2, target: Vec2) -> Vec2 {
         if self.iso_mode {
             Self::snap_iso_ortho(base, target, self.iso_plane)
+        } else if self.axis_ortho_enabled {
+            Self::snap_axis_ortho(base, target)
         } else {
             Self::snap_angle(base, target, self.ortho_increment_deg)
         }
@@ -16577,7 +16609,7 @@ impl CadKitApp {
                 .push("POLYGON: Number of sides must be >= 3".to_string());
             return false;
         }
-        let edge_point = if self.ortho_enabled {
+        let edge_point = if self.directional_snap_enabled() {
             self.ortho_snap(center, edge_point)
         } else {
             edge_point
@@ -16663,7 +16695,7 @@ impl CadKitApp {
         if width <= 1e-9 || height <= 1e-9 || !width.is_finite() || !height.is_finite() {
             return None;
         }
-        let dir = if self.ortho_enabled {
+        let dir = if self.directional_snap_enabled() {
             self.ortho_snap(first, direction)
         } else {
             direction
@@ -16875,7 +16907,7 @@ impl CadKitApp {
     }
 
     fn ortho_snap_base_point(&self) -> Option<Vec2> {
-        if !self.ortho_enabled || self.iso_mode {
+        if !self.directional_snap_enabled() || self.iso_mode {
             return None;
         }
         match &self.active_tool {
@@ -16892,21 +16924,15 @@ impl CadKitApp {
         }
     }
 
-    fn ortho_axis_from_cursor(base: Vec2, cursor: Vec2) -> OrthoAxis {
-        let dx = (cursor.x - base.x).abs();
-        let dy = (cursor.y - base.y).abs();
-        if dx >= dy {
-            OrthoAxis::Horizontal
-        } else {
-            OrthoAxis::Vertical
+    fn ortho_axis_from_cursor(&self, base: Vec2, cursor: Vec2) -> Option<(Vec2, Vec2)> {
+        let guide_world = self.ortho_snap(base, cursor);
+        let dx = guide_world.x - base.x;
+        let dy = guide_world.y - base.y;
+        let len = (dx * dx + dy * dy).sqrt();
+        if len <= 1e-9 {
+            return None;
         }
-    }
-
-    fn project_to_ortho_axis(base: Vec2, cursor: Vec2, axis: OrthoAxis) -> Vec2 {
-        match axis {
-            OrthoAxis::Horizontal => Vec2::new(cursor.x, base.y),
-            OrthoAxis::Vertical => Vec2::new(base.x, cursor.y),
-        }
+        Some((guide_world, Vec2::new(dx / len, dy / len)))
     }
 
     fn ortho_axis_world_tolerance(viewport: &Viewport, rect: egui::Rect) -> f64 {
@@ -16918,25 +16944,16 @@ impl CadKitApp {
         wx.max(wy).max(1e-6).max((rect.width() as f64).recip())
     }
 
-    fn point_on_ortho_axis(base: Vec2, axis: OrthoAxis, pt: Vec2, tol: f64) -> bool {
-        match axis {
-            OrthoAxis::Horizontal => (pt.y - base.y).abs() <= tol,
-            OrthoAxis::Vertical => (pt.x - base.x).abs() <= tol,
-        }
+    fn point_on_ortho_axis(base: Vec2, axis: Vec2, pt: Vec2, tol: f64) -> bool {
+        let dx = pt.x - base.x;
+        let dy = pt.y - base.y;
+        (dx * axis.y - dy * axis.x).abs() <= tol
     }
 
-    fn ortho_line_intersections(&self, base: Vec2, axis: OrthoAxis) -> Vec<Vec2> {
+    fn ortho_line_intersections(&self, base: Vec2, axis: Vec2) -> Vec<Vec2> {
         const INF: f64 = 1_000_000.0;
-        let (s, e) = match axis {
-            OrthoAxis::Horizontal => (
-                Vec3::xy(base.x - INF, base.y),
-                Vec3::xy(base.x + INF, base.y),
-            ),
-            OrthoAxis::Vertical => (
-                Vec3::xy(base.x, base.y - INF),
-                Vec3::xy(base.x, base.y + INF),
-            ),
-        };
+        let s = Vec3::xy(base.x - axis.x * INF, base.y - axis.y * INF);
+        let e = Vec3::xy(base.x + axis.x * INF, base.y + axis.y * INF);
         let ortho = GeomPrim::Line(GeomLine::new(s, e));
         let mut points: Vec<Vec2> = Vec::new();
         for entity in self.drawing.visible_entities() {
@@ -16997,7 +17014,7 @@ impl CadKitApp {
         rect: egui::Rect,
         screen_pos: egui::Pos2,
         base: Vec2,
-        axis: OrthoAxis,
+        axis: Vec2,
     ) -> Option<(u8, f32, Vec2, SnapKind)> {
         let tol = Self::ortho_axis_world_tolerance(viewport, rect);
         let mut best: Option<(u8, f32, Vec2, SnapKind)> = None;
@@ -17626,54 +17643,24 @@ impl CadKitApp {
         base: Vec2,
         raw_world: Vec2,
     ) -> (Vec2, Option<SnapKind>) {
-        let preferred_axis = Self::ortho_axis_from_cursor(base, raw_world);
-        let horiz_world = Self::project_to_ortho_axis(base, raw_world, OrthoAxis::Horizontal);
-        let vert_world = Self::project_to_ortho_axis(base, raw_world, OrthoAxis::Vertical);
+        let Some((guide_world, guide_axis)) = self.ortho_axis_from_cursor(base, raw_world) else {
+            return (raw_world, None);
+        };
 
         if !self.snap_enabled {
-            return match preferred_axis {
-                OrthoAxis::Horizontal => (horiz_world, None),
-                OrthoAxis::Vertical => (vert_world, None),
-            };
+            return (guide_world, None);
         }
 
-        let horiz = self
+        self
             .resolve_ortho_snap_for_axis(
                 viewport,
                 rect,
                 screen_pos,
                 base,
-                OrthoAxis::Horizontal,
+                guide_axis,
             )
-            .map(|(_, dist, world, kind)| (dist, world, Some(kind)))
-            .unwrap_or_else(|| {
-                let (sx, sy) = world_to_screen(horiz_world.x as f32, horiz_world.y as f32, viewport);
-                let pos = rect.min + egui::vec2(sx, sy);
-                (pos.distance(screen_pos), horiz_world, None)
-            });
-        let vert = self
-            .resolve_ortho_snap_for_axis(
-                viewport,
-                rect,
-                screen_pos,
-                base,
-                OrthoAxis::Vertical,
-            )
-            .map(|(_, dist, world, kind)| (dist, world, Some(kind)))
-            .unwrap_or_else(|| {
-                let (sx, sy) = world_to_screen(vert_world.x as f32, vert_world.y as f32, viewport);
-                let pos = rect.min + egui::vec2(sx, sy);
-                (pos.distance(screen_pos), vert_world, None)
-            });
-
-        match horiz.0.partial_cmp(&vert.0) {
-            Some(std::cmp::Ordering::Less) => (horiz.1, horiz.2),
-            Some(std::cmp::Ordering::Greater) => (vert.1, vert.2),
-            _ => match preferred_axis {
-                OrthoAxis::Horizontal => (horiz.1, horiz.2),
-                OrthoAxis::Vertical => (vert.1, vert.2),
-            },
-        }
+            .map(|(_, _, world, kind)| (world, Some(kind)))
+            .unwrap_or((guide_world, None))
     }
 
     /// Track from `from_pt` to a point parallel/perpendicular to nearby line-like geometry.

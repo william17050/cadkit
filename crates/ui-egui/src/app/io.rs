@@ -36,6 +36,7 @@ impl CadKitApp {
             snap_perpendicular: self.snap_perpendicular,
             snap_tangent: self.snap_tangent,
             snap_nearest: self.snap_nearest,
+            axis_ortho_enabled: self.axis_ortho_enabled,
             ortho_enabled: self.ortho_enabled,
             ortho_increment_deg: self.ortho_increment_deg,
             grid_visible: self.grid_visible,
@@ -104,6 +105,7 @@ impl CadKitApp {
                     self.snap_perpendicular = prefs.snap_perpendicular;
                     self.snap_tangent = prefs.snap_tangent;
                     self.snap_nearest = prefs.snap_nearest;
+                    self.axis_ortho_enabled = prefs.axis_ortho_enabled;
                     self.ortho_enabled = prefs.ortho_enabled;
                     self.ortho_increment_deg = prefs.ortho_increment_deg.clamp(0.1, 360.0);
                     self.grid_visible = prefs.grid_visible;

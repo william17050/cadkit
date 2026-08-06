@@ -78,6 +78,15 @@ def build_parser() -> argparse.ArgumentParser:
         default="toggle",
     )
 
+    polar = subparsers.add_parser("polar", help="set or toggle Polar mode")
+    polar.add_argument("root")
+    polar.add_argument(
+        "mode",
+        nargs="?",
+        choices=["on", "off", "toggle"],
+        default="toggle",
+    )
+
     hover_world_snapped = subparsers.add_parser(
         "hover-world-snapped",
         help="resolve a snapped hover near a world-space location",
@@ -157,6 +166,11 @@ def main() -> int:
                 payload = {"action": "ortho"}
             else:
                 payload = {"action": "ortho", "enabled": args.mode == "on"}
+        case "polar":
+            if args.mode == "toggle":
+                payload = {"action": "polar"}
+            else:
+                payload = {"action": "polar", "enabled": args.mode == "on"}
         case "hover-world-snapped":
             payload = {"action": "hover_world_snapped", "x": args.x, "y": args.y}
         case "click-world-snapped":

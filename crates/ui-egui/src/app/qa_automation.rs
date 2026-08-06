@@ -19,6 +19,7 @@ enum QaAutomationCommand {
     Status,
     RunCommand { text: String },
     Ortho { enabled: Option<bool> },
+    Polar { enabled: Option<bool> },
     HoverWorldSnapped { x: f64, y: f64 },
     ClickWorldSnapped { x: f64, y: f64, additive: Option<bool> },
     ClickWorld { x: f64, y: f64, additive: Option<bool> },
@@ -72,6 +73,7 @@ struct QaStateSnapshot {
     current_layer: u32,
     snap_enabled: bool,
     ortho_enabled: bool,
+    polar_enabled: bool,
     grid_visible: bool,
     hover_world: Option<[f64; 2]>,
     hover_snap_kind: Option<String>,
@@ -282,6 +284,22 @@ impl CadKitApp {
                 };
                 Ok(format!(
                     "Ortho {}",
+                    if state { "ON" } else { "OFF" }
+                ))
+            }
+            QaAutomationCommand::Polar { enabled } => {
+                if self.recovery_prompt_open {
+                    return Err(
+                        "Recovery prompt is open; send a recovery command before other actions"
+                            .to_string(),
+                    );
+                }
+                let state = match enabled {
+                    Some(enabled) => self.set_polar_enabled(enabled),
+                    None => self.toggle_polar_enabled(),
+                };
+                Ok(format!(
+                    "Polar {}",
                     if state { "ON" } else { "OFF" }
                 ))
             }
@@ -589,7 +607,7 @@ impl CadKitApp {
         {
             match &self.active_tool {
                 ActiveTool::Line { start: Some(s) } => {
-                    if self.ortho_enabled && ortho_base.is_none() {
+                    if self.directional_snap_enabled() && ortho_base.is_none() {
                         world = self.ortho_snap(*s, world);
                     }
                     if let Some(dist_world) =
@@ -610,7 +628,7 @@ impl CadKitApp {
                 }
                 ActiveTool::Polyline { points } => {
                     if let Some(last) = points.last() {
-                        if self.ortho_enabled && ortho_base.is_none() {
+                        if self.directional_snap_enabled() && ortho_base.is_none() {
                             world = self.ortho_snap(*last, world);
                         }
                         if let Some(dist_world) =
@@ -795,7 +813,8 @@ impl CadKitApp {
                 .collect(),
             current_layer: self.current_layer,
             snap_enabled: self.snap_enabled,
-            ortho_enabled: self.ortho_enabled,
+            ortho_enabled: self.axis_ortho_enabled,
+            polar_enabled: self.ortho_enabled,
             grid_visible: self.grid_visible,
             hover_world: self
                 .hover_world_pos

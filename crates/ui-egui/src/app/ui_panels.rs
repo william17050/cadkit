@@ -1470,7 +1470,8 @@ impl CadKitApp {
                                 ui.label(format!("X: {:.3}  Y: {:.3}", world.x, world.y));
                             }
                             ui.separator();
-                            ui.checkbox(&mut self.ortho_enabled, "Ortho");
+                            ui.checkbox(&mut self.axis_ortho_enabled, "Ortho");
+                            ui.checkbox(&mut self.ortho_enabled, "Polar");
                             if !self.iso_mode {
                                 ui.add(
                                     egui::DragValue::new(&mut self.ortho_increment_deg)
@@ -1601,7 +1602,7 @@ impl CadKitApp {
                                     self.hover_world_pos.or(self.last_hover_world_pos),
                                 ) {
                                     let mut target = hover;
-                                    if self.ortho_enabled {
+                                    if self.directional_snap_enabled() {
                                         target = self.ortho_snap(base, hover);
                                     }
                                     self.apply_from_result_point(target);
@@ -1826,7 +1827,7 @@ impl CadKitApp {
                                 }
                             } else if self.mirror_phase == MirrorPhase::SecondAxisPoint {
                                 if let (Some(world), Some(p1)) = (self.hover_world_pos, self.mirror_axis_p1) {
-                                    let axis_p2 = if self.ortho_enabled {
+                                    let axis_p2 = if self.directional_snap_enabled() {
                                         self.ortho_snap(p1, world)
                                     } else {
                                         world
@@ -1914,7 +1915,7 @@ impl CadKitApp {
                                 }
                             } else if let EllipsePhase::RadiusX { center } = self.ellipse_phase {
                                 if let Some(world) = self.hover_world_pos {
-                                    let p = if self.ortho_enabled {
+                                    let p = if self.directional_snap_enabled() {
                                         self.ortho_snap(center, world)
                                     } else {
                                         world
@@ -1932,7 +1933,7 @@ impl CadKitApp {
                                 }
                             } else if let EllipsePhase::RadiusY { center, rx } = self.ellipse_phase {
                                 if let Some(world) = self.hover_world_pos {
-                                    let p = if self.ortho_enabled {
+                                    let p = if self.directional_snap_enabled() {
                                         self.ortho_snap(center, world)
                                     } else {
                                         world
@@ -2267,7 +2268,7 @@ impl CadKitApp {
                                 {
                                     if dist > f64::EPSILON {
                                         let mut target = hover;
-                                        if self.ortho_enabled {
+                                        if self.directional_snap_enabled() {
                                             target =
                                                 self.ortho_snap(base, hover);
                                         }
@@ -2660,7 +2661,7 @@ impl CadKitApp {
                                 if let (Some(world), Some(base)) =
                                     (Self::resolve_typed_point(&cmd, None), self.array_center)
                                 {
-                                    let dir = if self.ortho_enabled {
+                                    let dir = if self.directional_snap_enabled() {
                                         self.ortho_snap(base, world)
                                     } else {
                                         world
