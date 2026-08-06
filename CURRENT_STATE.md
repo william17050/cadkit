@@ -1,16 +1,16 @@
 # CadKit Current State
 
 ## Current Build
-- Current commit hash: `ec1e40a`
+- Current commit hash: `512d0d3`
 - Branch: `refactor/main-split`
 - Worktree: Dirty
 
 ## Latest Completed Work Item
-- Work item ID: `CK-0005`
-- Title: `Split Ortho and Polar directional constraints`
+- Work item ID: `CK-0006`
+- Title: `QA preference snapshot and restore workflow`
 - QA status: `PASS`
-- Commit: `ec1e40a`
-- Current handoff/report: `qa/handoffs/CK-0005_H001.md`, `qa/reports/CK-0005_R001.md`
+- Commit: `512d0d3`
+- Current handoff/report: `qa/handoffs/CK-0006_H001.md`, `qa/reports/CK-0006_R001.md`
 
 ## Active Work Item
 - None
@@ -28,8 +28,8 @@
 - Ortho Bridge Control: COMPLETE
 - Polar Bridge Control: COMPLETE
 - Polar Angle Bridge Control: COMPLETE
+- Preference Snapshot/Restore: COMPLETE
 - Wayland Behavioral Testing: COMPLETE via in-app bridge
-- Preference Snapshot/Restore: PARTIAL
 
 ## Major Systems
 - Viewport: Stable
@@ -44,7 +44,7 @@
 - Python: Partial
 
 ## Next Recommended Work
-- Add session-scoped snapshot/restore for preference-backed QA settings such as snap flags and other persisted toggles so bridge-driven tests cannot leak state across cycles.
+- Return to product feature work; the QA bridge now covers mode toggles, polar angle, and session-safe restoration of persisted QA settings.
 
 ## Last Updated
-- 2026-08-06 22:34:00Z
+- 2026-08-06 23:05:00Z
