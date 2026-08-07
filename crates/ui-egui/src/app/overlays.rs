@@ -77,10 +77,10 @@ impl CadKitApp {
         if w == 0 || h == 0 {
             return;
         }
-        let ax1x =  spacing * 0.8660254037844386;
-        let ax1y =  spacing * 0.5;
+        let ax1x = spacing * 0.8660254037844386;
+        let ax1y = spacing * 0.5;
         let ax2x = -spacing * 0.8660254037844386;
-        let ax2y =  spacing * 0.5;
+        let ax2y = spacing * 0.5;
 
         let tl = screen_to_world(0.0, 0.0, viewport);
         let br = screen_to_world(w as f32, h as f32, viewport);
@@ -128,7 +128,10 @@ impl CadKitApp {
         let (sx, sy) = world_to_screen(world_cursor.x as f32, world_cursor.y as f32, viewport);
         let center = rect.min + egui::vec2(sx, sy);
         let painter = ui.painter_at(rect);
-        let stroke = egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(180, 180, 180, 120));
+        let stroke = egui::Stroke::new(
+            1.0,
+            egui::Color32::from_rgba_premultiplied(180, 180, 180, 120),
+        );
         // Extend each axis arm to fill the screen (use a large world-space length)
         let arm = 1_000_000.0f64;
         for ax in plane.axes() {

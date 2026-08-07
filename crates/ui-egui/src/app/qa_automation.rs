@@ -18,15 +18,34 @@ pub(super) struct QaAutomationBridge {
 #[serde(tag = "action", rename_all = "snake_case")]
 enum QaAutomationCommand {
     Status,
-    RunCommand { text: String },
-    Ortho { enabled: Option<bool> },
-    Polar { enabled: Option<bool> },
-    PolarAngle { degrees: f64 },
+    RunCommand {
+        text: String,
+    },
+    Ortho {
+        enabled: Option<bool>,
+    },
+    Polar {
+        enabled: Option<bool>,
+    },
+    PolarAngle {
+        degrees: f64,
+    },
     PrefsSnapshot,
     PrefsRestore,
-    HoverWorldSnapped { x: f64, y: f64 },
-    ClickWorldSnapped { x: f64, y: f64, additive: Option<bool> },
-    ClickWorld { x: f64, y: f64, additive: Option<bool> },
+    HoverWorldSnapped {
+        x: f64,
+        y: f64,
+    },
+    ClickWorldSnapped {
+        x: f64,
+        y: f64,
+        additive: Option<bool>,
+    },
+    ClickWorld {
+        x: f64,
+        y: f64,
+        additive: Option<bool>,
+    },
     DragSelectWorld {
         x0: f64,
         y0: f64,
@@ -38,9 +57,16 @@ enum QaAutomationCommand {
     Delete,
     Undo,
     Redo,
-    Zoom { delta: f32 },
-    PanScreen { dx: f32, dy: f32 },
-    Recovery { decision: QaRecoveryDecision },
+    Zoom {
+        delta: f32,
+    },
+    PanScreen {
+        dx: f32,
+        dy: f32,
+    },
+    Recovery {
+        decision: QaRecoveryDecision,
+    },
     Quit,
 }
 
@@ -245,7 +271,10 @@ impl CadKitApp {
             let command = match self.qa_automation.as_ref().unwrap().read_command(&path) {
                 Ok(command) => command,
                 Err(err) => {
-                    self.qa_automation.as_ref().unwrap().write_result(&path, false, err);
+                    self.qa_automation
+                        .as_ref()
+                        .unwrap()
+                        .write_result(&path, false, err);
                     self.qa_automation.as_ref().unwrap().archive_command(&path);
                     continue;
                 }
@@ -314,10 +343,7 @@ impl CadKitApp {
                     Some(enabled) => self.set_ortho_enabled(enabled),
                     None => self.toggle_ortho_enabled(),
                 };
-                Ok(format!(
-                    "Ortho {}",
-                    if state { "ON" } else { "OFF" }
-                ))
+                Ok(format!("Ortho {}", if state { "ON" } else { "OFF" }))
             }
             QaAutomationCommand::Polar { enabled } => {
                 if self.recovery_prompt_open {
@@ -330,10 +356,7 @@ impl CadKitApp {
                     Some(enabled) => self.set_polar_enabled(enabled),
                     None => self.toggle_polar_enabled(),
                 };
-                Ok(format!(
-                    "Polar {}",
-                    if state { "ON" } else { "OFF" }
-                ))
+                Ok(format!("Polar {}", if state { "ON" } else { "OFF" }))
             }
             QaAutomationCommand::PolarAngle { degrees } => {
                 if self.recovery_prompt_open {
@@ -395,7 +418,8 @@ impl CadKitApp {
             }
             QaAutomationCommand::Escape => {
                 if self.recovery_prompt_open {
-                    self.command_log.push("Recovery: Deferred for this session".to_string());
+                    self.command_log
+                        .push("Recovery: Deferred for this session".to_string());
                     self.recovery_prompt_open = false;
                     Ok("Dismissed recovery prompt using Escape semantics".to_string())
                 } else {
@@ -416,8 +440,7 @@ impl CadKitApp {
             QaAutomationCommand::Undo => {
                 if self.recovery_prompt_open {
                     return Err(
-                        "Recovery prompt is open; send a recovery command before Undo"
-                            .to_string(),
+                        "Recovery prompt is open; send a recovery command before Undo".to_string(),
                     );
                 }
                 self.undo();
@@ -426,8 +449,7 @@ impl CadKitApp {
             QaAutomationCommand::Redo => {
                 if self.recovery_prompt_open {
                     return Err(
-                        "Recovery prompt is open; send a recovery command before Redo"
-                            .to_string(),
+                        "Recovery prompt is open; send a recovery command before Redo".to_string(),
                     );
                 }
                 self.redo();
@@ -436,8 +458,7 @@ impl CadKitApp {
             QaAutomationCommand::Zoom { delta } => {
                 if self.recovery_prompt_open {
                     return Err(
-                        "Recovery prompt is open; send a recovery command before Zoom"
-                            .to_string(),
+                        "Recovery prompt is open; send a recovery command before Zoom".to_string(),
                     );
                 }
                 let Some(viewport) = self.viewport.as_mut() else {
@@ -449,8 +470,7 @@ impl CadKitApp {
             QaAutomationCommand::PanScreen { dx, dy } => {
                 if self.recovery_prompt_open {
                     return Err(
-                        "Recovery prompt is open; send a recovery command before Pan"
-                            .to_string(),
+                        "Recovery prompt is open; send a recovery command before Pan".to_string(),
                     );
                 }
                 let Some(viewport) = self.viewport.as_mut() else {
@@ -540,13 +560,15 @@ impl CadKitApp {
 
         if self.qa_uses_point_delivery() {
             self.deliver_point(world);
-            return Ok(format!("Delivered point at ({:.4}, {:.4})", world.x, world.y));
+            return Ok(format!(
+                "Delivered point at ({:.4}, {:.4})",
+                world.x, world.y
+            ));
         }
 
         if self.qa_requires_unsupported_click_mode() {
             return Err(
-                "Automation click is not implemented for the current interaction mode"
-                    .to_string(),
+                "Automation click is not implemented for the current interaction mode".to_string(),
             );
         }
 
@@ -561,9 +583,7 @@ impl CadKitApp {
 
     fn qa_hover_world_snapped(&mut self, approx_world: Vec2) -> Result<String, String> {
         let (world, snap_kind) = self.qa_resolve_hover_world_from_approx_world(approx_world)?;
-        let snap_label = snap_kind
-            .map(Self::qa_snap_kind_name)
-            .unwrap_or("none");
+        let snap_label = snap_kind.map(Self::qa_snap_kind_name).unwrap_or("none");
         Ok(format!(
             "Resolved hover to ({:.4}, {:.4}) with snap {}",
             world.x, world.y, snap_label
@@ -596,8 +616,7 @@ impl CadKitApp {
     ) -> Result<String, String> {
         if self.qa_requires_unsupported_click_mode() || self.qa_uses_point_delivery() {
             return Err(
-                "Automation drag selection is only available from idle selection mode"
-                    .to_string(),
+                "Automation drag selection is only available from idle selection mode".to_string(),
             );
         }
 
@@ -659,12 +678,12 @@ impl CadKitApp {
 
         let local = screen_pos - rect.min;
         let raw_world = screen_to_world(local.x, local.y, viewport);
-        let ortho_base = if self.dim_grip_drag.is_none() && matches!(self.from_phase, FromPhase::Idle)
-        {
-            self.ortho_snap_base_point()
-        } else {
-            None
-        };
+        let ortho_base =
+            if self.dim_grip_drag.is_none() && matches!(self.from_phase, FromPhase::Idle) {
+                self.ortho_snap_base_point()
+            } else {
+                None
+            };
 
         let (hover_pick, mut world) = if let Some(base) = ortho_base {
             let (w, kind) =
@@ -760,9 +779,7 @@ impl CadKitApp {
             && (self.snap_parallel || self.snap_perpendicular)
         {
             if let Some(from_pt) = self.current_from_point() {
-                if let Some((pt, kind)) =
-                    self.tracking_snap(viewport, rect, screen_pos, from_pt)
-                {
+                if let Some((pt, kind)) = self.tracking_snap(viewport, rect, screen_pos, from_pt) {
                     world = pt;
                     self.hover_snap_kind = Some(kind);
                 }
@@ -826,7 +843,10 @@ impl CadKitApp {
             || !matches!(self.extend_phase, ExtendPhase::Idle)
             || !matches!(self.fillet_phase, FilletPhase::Idle)
             || !matches!(self.chamfer_phase, ChamferPhase::Idle)
-            || !matches!(self.array_phase, ArrayPhase::Idle | ArrayPhase::SelectingEntities)
+            || !matches!(
+                self.array_phase,
+                ArrayPhase::Idle | ArrayPhase::SelectingEntities
+            )
             || !matches!(self.pedit_phase, PeditPhase::Idle)
             || !matches!(self.boundary_phase, BoundaryPhase::Idle)
             || !matches!(self.hatch_phase, HatchPhase::Idle)
@@ -902,7 +922,9 @@ impl CadKitApp {
                 .hover_world_pos
                 .or(self.last_hover_world_pos)
                 .map(|w| [w.x, w.y]),
-            hover_snap_kind: self.hover_snap_kind.map(|kind| Self::qa_snap_kind_name(kind).to_string()),
+            hover_snap_kind: self
+                .hover_snap_kind
+                .map(|kind| Self::qa_snap_kind_name(kind).to_string()),
             viewport,
         }
     }

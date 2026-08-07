@@ -255,6 +255,50 @@ impl CadKitApp {
         }
     }
 
+    pub(crate) fn export_block_file(&mut self) {
+        let Some(block_name) = self.current_block_target_name() else {
+            self.command_log.push(
+                "WBLOCK: Select one insert of the target block or choose a block in Block Palette"
+                    .to_string(),
+            );
+            return;
+        };
+        let path = rfd::FileDialog::new()
+            .set_title("Save Block File")
+            .add_filter("CadKit Block", &["cadblock", "json"])
+            .set_file_name(&format!("{block_name}.cadblock"))
+            .save_file();
+        let Some(path) = path else { return };
+        let path_str = path.to_string_lossy().to_string();
+        match self.drawing.export_block_to_file(&block_name, &path_str) {
+            Ok(()) => self
+                .command_log
+                .push(format!("WBLOCK: Saved '{}' to {}", block_name, path_str)),
+            Err(err) => self
+                .command_log
+                .push(format!("WBLOCK: Save failed - {}", err)),
+        }
+    }
+
+    pub(crate) fn import_block_file(&mut self) {
+        let path = rfd::FileDialog::new()
+            .set_title("Load Block File")
+            .add_filter("CadKit Block", &["cadblock", "json"])
+            .pick_file();
+        let Some(path) = path else { return };
+        let path_str = path.to_string_lossy().to_string();
+        match self.drawing.import_block_from_file(&path_str) {
+            Ok(name) => {
+                self.block_palette_selected = name.clone();
+                self.command_log
+                    .push(format!("BLOCKIN: Loaded '{}' from {}", name, path_str));
+            }
+            Err(err) => self
+                .command_log
+                .push(format!("BLOCKIN: Load failed - {}", err)),
+        }
+    }
+
     /// Export the current drawing to a DXF file.
     pub(crate) fn export_dxf(&mut self) {
         let path = rfd::FileDialog::new()

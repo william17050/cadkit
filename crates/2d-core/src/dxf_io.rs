@@ -577,6 +577,7 @@ impl Drawing {
                     linetype_scale: None,
                     block_params: crate::BlockParamValues::default(),
                     insert_dynamic_param_overrides: std::collections::HashMap::new(),
+                    insert_cabinet_param_overrides: std::collections::HashMap::new(),
                 }),
 
                 EntityType::Circle(circle) => Some(Entity {
@@ -596,6 +597,7 @@ impl Drawing {
                     linetype_scale: None,
                     block_params: crate::BlockParamValues::default(),
                     insert_dynamic_param_overrides: std::collections::HashMap::new(),
+                    insert_cabinet_param_overrides: std::collections::HashMap::new(),
                 }),
 
                 EntityType::Arc(arc) => Some(Entity {
@@ -621,6 +623,7 @@ impl Drawing {
                     linetype_scale: None,
                     block_params: crate::BlockParamValues::default(),
                     insert_dynamic_param_overrides: std::collections::HashMap::new(),
+                    insert_cabinet_param_overrides: std::collections::HashMap::new(),
                 }),
 
                 EntityType::LwPolyline(poly) => {
@@ -648,6 +651,7 @@ impl Drawing {
                             linetype_scale: None,
                             block_params: crate::BlockParamValues::default(),
                             insert_dynamic_param_overrides: std::collections::HashMap::new(),
+                            insert_cabinet_param_overrides: std::collections::HashMap::new(),
                         })
                     } else {
                         None
@@ -679,6 +683,7 @@ impl Drawing {
                             linetype_scale: None,
                             block_params: crate::BlockParamValues::default(),
                             insert_dynamic_param_overrides: std::collections::HashMap::new(),
+                            insert_cabinet_param_overrides: std::collections::HashMap::new(),
                         })
                     } else {
                         None
@@ -709,6 +714,7 @@ impl Drawing {
                     linetype_scale: None,
                     block_params: crate::BlockParamValues::default(),
                     insert_dynamic_param_overrides: std::collections::HashMap::new(),
+                    insert_cabinet_param_overrides: std::collections::HashMap::new(),
                 }),
 
                 EntityType::MText(t) => {
@@ -747,6 +753,7 @@ impl Drawing {
                         linetype_scale: None,
                         block_params: crate::BlockParamValues::default(),
                         insert_dynamic_param_overrides: std::collections::HashMap::new(),
+                        insert_cabinet_param_overrides: std::collections::HashMap::new(),
                     })
                 }
 
@@ -793,6 +800,7 @@ impl Drawing {
                                 linetype_scale: None,
                                 block_params: crate::BlockParamValues::default(),
                                 insert_dynamic_param_overrides: std::collections::HashMap::new(),
+                                insert_cabinet_param_overrides: std::collections::HashMap::new(),
                             })
                         }
                     } else {
@@ -829,6 +837,7 @@ impl Drawing {
                             linetype_scale: None,
                             block_params: crate::BlockParamValues::default(),
                             insert_dynamic_param_overrides: std::collections::HashMap::new(),
+                            insert_cabinet_param_overrides: std::collections::HashMap::new(),
                         })
                     }
                 }
@@ -871,6 +880,7 @@ impl Drawing {
                         linetype_scale: None,
                         block_params: crate::BlockParamValues::default(),
                         insert_dynamic_param_overrides: std::collections::HashMap::new(),
+                        insert_cabinet_param_overrides: std::collections::HashMap::new(),
                     })
                 }
 
@@ -915,6 +925,7 @@ impl Drawing {
                         linetype_scale: None,
                         block_params: crate::BlockParamValues::default(),
                         insert_dynamic_param_overrides: std::collections::HashMap::new(),
+                        insert_cabinet_param_overrides: std::collections::HashMap::new(),
                     })
                 }
 
@@ -959,6 +970,7 @@ impl Drawing {
                         linetype_scale: None,
                         block_params: crate::BlockParamValues::default(),
                         insert_dynamic_param_overrides: std::collections::HashMap::new(),
+                        insert_cabinet_param_overrides: std::collections::HashMap::new(),
                     })
                 }
 
@@ -1375,6 +1387,7 @@ fn expand_insert_flattened(
                         linetype_scale: None,
                         block_params: crate::BlockParamValues::default(),
                         insert_dynamic_param_overrides: std::collections::HashMap::new(),
+                        insert_cabinet_param_overrides: std::collections::HashMap::new(),
                     });
                     added += 1;
                 }
@@ -1534,5 +1547,6 @@ fn hatch_pairs_to_polyline(
         linetype_scale: None,
         block_params: crate::BlockParamValues::default(),
         insert_dynamic_param_overrides: std::collections::HashMap::new(),
+        insert_cabinet_param_overrides: std::collections::HashMap::new(),
     })
 }

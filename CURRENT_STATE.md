@@ -1,7 +1,7 @@
 # CadKit Current State
 
 ## Current Build
-- Current commit hash: `20bb792`
+- Current commit hash: `eb0db2e`
 - Branch: `refactor/main-split`
 - Worktree: Dirty
 
@@ -13,7 +13,7 @@
 - Current handoff/report: `qa/handoffs/CK-0006_H001.md`, `qa/reports/CK-0006_R001.md`
 
 ## Active Work Item
-- None
+- `CK-0007` - Cabinet definition authoring foundation
 
 ## Open Engineering Issues
 - `AUTOMATION-001` - OS-level input injection on Wayland remains unavailable; the in-app QA bridge is the current workaround.
@@ -37,14 +37,16 @@
 - Snapping: Stable
 - Directional Constraints: Stable
 - Drawing: Stable
-- Modify: Partial
+- Modify: Stable
+- Blocks: Stable
+- Cabinet Authoring: Partial
 - Undo/Redo: Stable
 - Layers: Partial
 - DXF: Partial
 - Python: Partial
 
 ## Next Recommended Work
-- Start the cabinet-layout and MTO foundation: cabinet library objects, project spec data, rule-driven part derivation, and material-based nesting/estimation for sheet-goods shops.
+- Use the cabinet-family spreadsheet to define real family templates, default part sets, and formula-driven cutlist rules on top of the new `CabDef` foundation.
 
 ## Last Updated
-- 2026-08-07 00:05:00Z
+- 2026-08-07 04:25:00Z

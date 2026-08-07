@@ -36,7 +36,9 @@ pub enum OffsetPhase {
     Idle,
     EnteringDistance,
     /// User clicked first reference point; waiting for second to compute A→B distance.
-    PickingDistanceB { a: Vec2 },
+    PickingDistanceB {
+        a: Vec2,
+    },
     SelectingEntity,
     SelectingSide,
 }
@@ -283,13 +285,13 @@ impl IsoPlane {
     }
     /// The two axis unit-vectors (world space, y-up) for this iso plane.
     pub fn axes(self) -> [Vec2; 2] {
-        let a30  = Vec2::new( 0.8660254037844386,  0.5);
-        let a150 = Vec2::new(-0.8660254037844386,  0.5);
-        let a90  = Vec2::new( 0.0,                 1.0);
+        let a30 = Vec2::new(0.8660254037844386, 0.5);
+        let a150 = Vec2::new(-0.8660254037844386, 0.5);
+        let a90 = Vec2::new(0.0, 1.0);
         match self {
-            IsoPlane::Right => [a30,  a90],
-            IsoPlane::Left  => [a150, a90],
-            IsoPlane::Top   => [a30,  a150],
+            IsoPlane::Right => [a30, a90],
+            IsoPlane::Left => [a150, a90],
+            IsoPlane::Top => [a30, a150],
         }
     }
 }

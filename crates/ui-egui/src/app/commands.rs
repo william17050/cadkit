@@ -2,8 +2,8 @@ use super::state::{
     ActiveTool, ArrayMode, ArrayPhase, BlockPhase, BoundaryPhase, ChamferPhase, CopyPhase,
     DimAngularPhase, DimLinearPhase, DimPhase, DimRadialPhase, DwIsoSidePhase, EditDimPhase,
     EditTextPhase, EllipsePhase, ExtendPhase, FilletPhase, FromPhase, HatchPhase, InsertPhase,
-    IsocirclePhase, IsoExtrudePhase, IsoPlane, MirrorPhase, MovePhase, OffsetPhase, PeditPhase, PolygonPhase,
-    RectanglePhase, RotatePhase, ScalePhase, StretchPhase, TextPhase, TrimPhase,
+    IsoExtrudePhase, IsoPlane, IsocirclePhase, MirrorPhase, MovePhase, OffsetPhase, PeditPhase,
+    PolygonPhase, RectanglePhase, RotatePhase, ScalePhase, StretchPhase, TextPhase, TrimPhase,
 };
 use super::{create_arc_from_three_points, AiBackendMode, AiModelProfile, CadKitApp};
 use cadkit_2d_core::{
@@ -34,9 +34,14 @@ impl CadKitApp {
             match self.define_block_from_selection(&ids, base, name) {
                 Ok(n) => {
                     self.command_log.push(format!(
-                        "BLOCK: '{}' defined from {} entities",
+                        "BLOCK: '{}' defined from {} entities{}",
                         name.trim(),
-                        n
+                        n,
+                        if self.block_replace_source {
+                            " and replaced with an insert"
+                        } else {
+                            ""
+                        }
                     ));
                 }
                 Err(msg) => self.command_log.push(msg),
@@ -210,9 +215,8 @@ impl CadKitApp {
         if !keeps_polygon_context {
             self.exit_polygon();
         }
-        let keeps_isocircle_context =
-            matches!(cmd.as_str(), "ic" | "isocircle" | "from" | "fr")
-                || self.isocircle_phase != IsocirclePhase::Idle;
+        let keeps_isocircle_context = matches!(cmd.as_str(), "ic" | "isocircle" | "from" | "fr")
+            || self.isocircle_phase != IsocirclePhase::Idle;
         if !keeps_isocircle_context {
             self.exit_isocircle();
         }
@@ -254,9 +258,8 @@ impl CadKitApp {
         if !keeps_isoextrude_context {
             self.exit_isoextrude();
         }
-        let keeps_dwiso_side_context =
-            matches!(cmd.as_str(), "dwiso_side" | "from" | "fr")
-                || self.dwiso_side_phase != DwIsoSidePhase::Idle;
+        let keeps_dwiso_side_context = matches!(cmd.as_str(), "dwiso_side" | "from" | "fr")
+            || self.dwiso_side_phase != DwIsoSidePhase::Idle;
         if !keeps_dwiso_side_context {
             self.exit_dwiso_side();
         }
@@ -1196,8 +1199,9 @@ impl CadKitApp {
             }
             "ic" | "isocircle" => {
                 if !self.iso_mode {
-                    self.command_log
-                        .push("ISOCIRCLE: Enable ISO mode first (ISO command or status bar)".to_string());
+                    self.command_log.push(
+                        "ISOCIRCLE: Enable ISO mode first (ISO command or status bar)".to_string(),
+                    );
                     return true;
                 }
                 self.cancel_active_tool();
@@ -1215,7 +1219,8 @@ impl CadKitApp {
                 self.exit_ellipse();
                 self.exit_pedit();
                 self.isocircle_phase = IsocirclePhase::Center;
-                self.command_log.push("ISOCIRCLE: Pick center point:".to_string());
+                self.command_log
+                    .push("ISOCIRCLE: Pick center point:".to_string());
                 log::info!("Command: ISOCIRCLE");
                 true
             }
@@ -1343,6 +1348,7 @@ impl CadKitApp {
                 self.exit_copy();
                 self.exit_rotate();
                 self.exit_scale();
+                self.mirror_erase_source = false;
                 self.mirror_phase = MirrorPhase::SelectingEntities;
                 self.mirror_axis_p1 = None;
                 self.mirror_entities.clear();
@@ -1556,8 +1562,9 @@ impl CadKitApp {
                 let ids = self.filter_editable_entity_ids(&requested, "DWISO_SIDE");
                 if ids.is_empty() {
                     self.dwiso_side_phase = DwIsoSidePhase::SelectingFrontEntities;
-                    self.command_log
-                        .push("DWISO_SIDE: Select FRONT entities, press Enter to continue".to_string());
+                    self.command_log.push(
+                        "DWISO_SIDE: Select FRONT entities, press Enter to continue".to_string(),
+                    );
                 } else {
                     self.dwiso_side_front_entities = ids;
                     self.dwiso_side_phase = DwIsoSidePhase::PickingFrontOrigin;
@@ -1592,7 +1599,14 @@ impl CadKitApp {
                 } else {
                     let ids: Vec<_> = self.selected_entities.iter().copied().collect();
                     self.block_phase = BlockPhase::PickBase { ids };
-                    self.command_log.push("BLOCK: Pick base point".to_string());
+                    self.command_log.push(format!(
+                        "BLOCK: Pick base point [Replace source: {}]",
+                        if self.block_replace_source {
+                            "Yes"
+                        } else {
+                            "No"
+                        }
+                    ));
                 }
                 true
             }
@@ -1685,6 +1699,14 @@ impl CadKitApp {
             }
             "pdfout" => {
                 self.export_pdf();
+                true
+            }
+            "wblock" => {
+                self.export_block_file();
+                true
+            }
+            "blockin" | "iblock" => {
+                self.import_block_file();
                 true
             }
             "dxfin" => {
@@ -1878,14 +1900,20 @@ impl CadKitApp {
             }
             "isoplane" | "iso" => {
                 // Optional arg: L/Left, R/Right, T/Top — or no arg to cycle
-                let arg = raw.trim().split_whitespace().nth(1).unwrap_or("").to_ascii_lowercase();
+                let arg = raw
+                    .trim()
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
                 let new_plane = match arg.as_str() {
-                    "l" | "left"  => Some(IsoPlane::Left),
+                    "l" | "left" => Some(IsoPlane::Left),
                     "r" | "right" => Some(IsoPlane::Right),
-                    "t" | "top"   => Some(IsoPlane::Top),
+                    "t" | "top" => Some(IsoPlane::Top),
                     "" => None,
                     _ => {
-                        self.command_log.push("ISOPLANE: use L, R, or T".to_string());
+                        self.command_log
+                            .push("ISOPLANE: use L, R, or T".to_string());
                         return true;
                     }
                 };
@@ -1943,7 +1971,7 @@ impl CadKitApp {
         Ok((id, name.clone()))
     }
 
-    fn ensure_dynamic_v1_for_block(
+    pub(crate) fn ensure_dynamic_v1_for_block(
         &self,
         block_name: &str,
     ) -> Result<DynamicBlockDefinition, String> {

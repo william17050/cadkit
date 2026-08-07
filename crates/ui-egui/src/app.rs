@@ -1,8 +1,12 @@
 //! CadKit - Main application entry point
 
 use cadkit_2d_core::{
-    create_arc, create_circle, create_line, BlockDynamic, BlockEntity, Drawing, Entity, EntityKind,
-    Linetype,
+    create_arc, create_circle, create_line, ActionBinding, ActionKind, ActionTarget, AxisMask,
+    BlockAuthoredEntity, BlockBounds, BlockDynamic, BlockEntity, CabinetDefinition,
+    CabinetParameterDefinition, CabinetParameterType, CabinetPartFace, CabinetPartRecipeRow,
+    CabinetViewDefinition, CabinetViewKind, Drawing, DynamicBlockDefinition, Entity,
+    EntityBehavior, EntityKind, Linetype, ParameterAxis, ParameterDefinition, PlacementRule,
+    ReferenceFrame, TargetRef,
 };
 // create_arc_from_three_points helper lives below in this file (UI layer-specific).
 use cadkit_geometry::{detect_closed_boundaries_with_gap, Circle as GeomCircle, Line as GeomLine};
@@ -126,6 +130,16 @@ struct RadialSourceChange {
     old_radius: f64,
     new_center: Vec3,
     new_radius: f64,
+}
+
+#[derive(Clone, Debug)]
+struct CabdefBehaviorSummary {
+    action_id: Guid,
+    parameter_name: String,
+    rule_key: String,
+    rule_label: String,
+    rate: f64,
+    target_count: usize,
 }
 
 impl StretchWindow {
@@ -378,6 +392,7 @@ pub struct CadKitApp {
     mirror_phase: MirrorPhase,
     mirror_axis_p1: Option<Vec2>,
     mirror_entities: Vec<Guid>,
+    mirror_erase_source: bool,
     fillet_phase: FilletPhase,
     fillet_radius: f64,
     chamfer_phase: ChamferPhase,
@@ -420,6 +435,7 @@ pub struct CadKitApp {
     dwiso_side_side_origin: Option<Vec2>,
     dwiso_side_output_origin: Option<Vec2>,
     block_phase: BlockPhase,
+    block_replace_source: bool,
     insert_phase: InsertPhase,
     hatch_dialog_open: bool,
     hatch_pattern: HatchPattern,
@@ -482,6 +498,12 @@ pub struct CadKitApp {
     block_edit_snapshot: Option<Drawing>,
     block_edit_layer_map: HashMap<u32, u32>, // edit layer id -> original layer id
     block_edit_prev_layer: u32,
+    block_edit_entity_local_map: HashMap<Guid, Guid>, // edit entity id -> block local entity id
+    block_edit_cabinet_v1: Option<CabinetDefinition>,
+    block_edit_dynamic_v1: Option<DynamicBlockDefinition>,
+    cabdef_behavior_param_name: String,
+    cabdef_behavior_kind: String,
+    cabdef_behavior_weight: f64,
     // Dev dynamic-block mapping: source drawing entity id -> block local entity id
     // captured at BLOCKMAKE time for temporary DYNBINDSEL/DYNMAKEGROUP flows.
     dyn_block_source_entity_map: HashMap<String, HashMap<Guid, Guid>>,
@@ -562,6 +584,7 @@ impl Default for CadKitApp {
             mirror_phase: MirrorPhase::Idle,
             mirror_axis_p1: None,
             mirror_entities: Vec::new(),
+            mirror_erase_source: false,
             fillet_phase: FilletPhase::Idle,
             fillet_radius: 5.0,
             chamfer_phase: ChamferPhase::Idle,
@@ -604,6 +627,7 @@ impl Default for CadKitApp {
             dwiso_side_side_origin: None,
             dwiso_side_output_origin: None,
             block_phase: BlockPhase::Idle,
+            block_replace_source: true,
             insert_phase: InsertPhase::Idle,
             hatch_dialog_open: false,
             hatch_pattern: HatchPattern::Ansi31,
@@ -663,6 +687,12 @@ impl Default for CadKitApp {
             block_edit_snapshot: None,
             block_edit_layer_map: HashMap::new(),
             block_edit_prev_layer: 0,
+            block_edit_entity_local_map: HashMap::new(),
+            block_edit_cabinet_v1: None,
+            block_edit_dynamic_v1: None,
+            cabdef_behavior_param_name: "W".to_string(),
+            cabdef_behavior_kind: "stretch_right_x".to_string(),
+            cabdef_behavior_weight: 1.0,
             dyn_block_source_entity_map: HashMap::new(),
             bgcolor_picker_open: false,
             last_saved_prefs: None,
@@ -1581,8 +1611,14 @@ impl CadKitApp {
         } else if self.mirror_phase == MirrorPhase::FirstAxisPoint {
             self.mirror_axis_p1 = Some(world);
             self.mirror_phase = MirrorPhase::SecondAxisPoint;
-            self.command_log
-                .push("MIRROR: Pick second axis point".to_string());
+            self.command_log.push(format!(
+                "MIRROR: Pick second axis point [Erase source: {}]",
+                if self.mirror_erase_source {
+                    "Yes"
+                } else {
+                    "No"
+                }
+            ));
         } else if self.mirror_phase == MirrorPhase::SecondAxisPoint {
             if let Some(p1) = self.mirror_axis_p1 {
                 let axis_p2 = if self.directional_snap_enabled() {
@@ -1602,7 +1638,8 @@ impl CadKitApp {
             }
         } else if self.isocircle_phase == IsocirclePhase::Center {
             self.isocircle_phase = IsocirclePhase::Radius { center: world };
-            self.command_log.push("ISOCIRCLE: Pick radius or type value:".to_string());
+            self.command_log
+                .push("ISOCIRCLE: Pick radius or type value:".to_string());
         } else if let IsocirclePhase::Radius { center } = self.isocircle_phase {
             let radius = center.distance_to(&world);
             if self.apply_isocircle(center, radius) {
@@ -1781,7 +1818,8 @@ impl CadKitApp {
 
     /// Request focus on the command line input if nothing else currently has it.
     fn auto_focus_command_line(&self, ctx: &egui::Context) {
-        if !ctx.wants_keyboard_input() {
+        let nothing_focused = ctx.memory(|m| m.focused().is_none());
+        if !ctx.wants_keyboard_input() && nothing_focused {
             ctx.memory_mut(|m| m.request_focus(egui::Id::new("cmd_input")));
         }
     }
@@ -2209,7 +2247,14 @@ impl CadKitApp {
         }
         match &self.block_phase {
             BlockPhase::PickBase { .. } => {
-                return "BLOCK  Pick base point:".into();
+                return format!(
+                    "BLOCK  Pick base point [Replace source: {}]:",
+                    if self.block_replace_source {
+                        "Yes"
+                    } else {
+                        "No"
+                    }
+                );
             }
             BlockPhase::EnterName { .. } => {
                 return "BLOCK  Enter block name:".into();
@@ -2319,10 +2364,24 @@ impl CadKitApp {
                                                     "MIRROR  Select entities, press Enter to continue:".into()
                                                 }
                                                 MirrorPhase::FirstAxisPoint => {
-                                                    "MIRROR  Pick first axis point:".into()
+                                                    format!(
+                                                        "MIRROR  Pick first axis point [Erase source: {}]:",
+                                                        if self.mirror_erase_source {
+                                                            "Yes"
+                                                        } else {
+                                                            "No"
+                                                        }
+                                                    )
                                                 }
                                                 MirrorPhase::SecondAxisPoint => {
-                                                    "MIRROR  Pick second axis point:".into()
+                                                    format!(
+                                                        "MIRROR  Pick second axis point [Erase source: {}]:",
+                                                        if self.mirror_erase_source {
+                                                            "Yes"
+                                                        } else {
+                                                            "No"
+                                                        }
+                                                    )
                                                 }
                                             },
                                             ScalePhase::SelectingEntities => {
@@ -3232,6 +3291,11 @@ impl CadKitApp {
             Some(b) => b,
             None => return,
         };
+        let dest = if self.directional_snap_enabled() {
+            self.ortho_snap(base, dest)
+        } else {
+            dest
+        };
         let dx = dest.x - base.x;
         let dy = dest.y - base.y;
         if dx.abs() < 1e-9 && dy.abs() < 1e-9 {
@@ -3389,6 +3453,11 @@ impl CadKitApp {
         let base = match self.move_base_point {
             Some(b) => b,
             None => return,
+        };
+        let world_cursor = if self.directional_snap_enabled() {
+            self.ortho_snap(base, world_cursor)
+        } else {
+            world_cursor
         };
         let dx = world_cursor.x - base.x;
         let dy = world_cursor.y - base.y;
@@ -5537,6 +5606,7 @@ impl CadKitApp {
         self.mirror_phase = MirrorPhase::Idle;
         self.mirror_axis_p1 = None;
         self.mirror_entities.clear();
+        self.mirror_erase_source = false;
     }
 
     /// Mirror selected entities about axis line p1->p2.
@@ -5576,171 +5646,202 @@ impl CadKitApp {
         }
 
         self.push_undo();
-        for id in &ids {
-            if let Some(entity) = self.drawing.get_entity_mut(id) {
-                match &mut entity.kind {
-                    EntityKind::Line { start, end } => {
-                        *start = reflect_pt(*start);
-                        *end = reflect_pt(*end);
-                    }
-                    EntityKind::Circle { center, .. } => {
-                        *center = reflect_pt(*center);
-                    }
-                    EntityKind::Arc {
-                        center,
-                        radius,
-                        start_angle,
-                        end_angle,
-                    } => {
-                        let old_start = Vec3::xy(
-                            center.x + *radius * start_angle.cos(),
-                            center.y + *radius * start_angle.sin(),
-                        );
-                        let old_end = Vec3::xy(
-                            center.x + *radius * end_angle.cos(),
-                            center.y + *radius * end_angle.sin(),
-                        );
-                        let new_center = reflect_pt(*center);
-                        let new_start_ref = reflect_pt(old_start);
-                        let new_end_ref = reflect_pt(old_end);
-
-                        // Mirroring reverses orientation; swap endpoints to keep stored arc CCW.
-                        let mut ns =
-                            (new_end_ref.y - new_center.y).atan2(new_end_ref.x - new_center.x);
-                        let mut ne =
-                            (new_start_ref.y - new_center.y).atan2(new_start_ref.x - new_center.x);
-                        if ne <= ns {
-                            ne += std::f64::consts::TAU;
-                        }
-                        if ns < 0.0 {
-                            ns += std::f64::consts::TAU;
-                        }
-                        *center = new_center;
-                        *start_angle = ns;
-                        *end_angle = ne;
-                    }
-                    EntityKind::Polyline { vertices, .. } => {
-                        for v in vertices.iter_mut() {
-                            *v = reflect_pt(*v);
-                        }
-                    }
-                    EntityKind::DimAligned {
-                        start,
-                        end,
-                        offset,
-                        text_pos,
-                        ..
-                    } => {
-                        let old_s = *start;
-                        let old_e = *end;
-                        let old_dx = old_e.x - old_s.x;
-                        let old_dy = old_e.y - old_s.y;
-                        let old_len = (old_dx * old_dx + old_dy * old_dy).sqrt();
-                        let old_perp = if old_len > 1e-9 {
-                            Vec2::new(-old_dy / old_len, old_dx / old_len)
-                        } else {
-                            Vec2::new(0.0, 0.0)
-                        };
-                        let old_mid =
-                            Vec2::new((old_s.x + old_e.x) * 0.5, (old_s.y + old_e.y) * 0.5);
-                        let old_dl = Vec2::new(
-                            old_mid.x + old_perp.x * *offset,
-                            old_mid.y + old_perp.y * *offset,
-                        );
-
-                        *start = reflect_pt(*start);
-                        *end = reflect_pt(*end);
-                        *text_pos = reflect_pt(*text_pos);
-                        let new_dl = reflect_vec2(old_dl.x, old_dl.y);
-
-                        let new_dx = end.x - start.x;
-                        let new_dy = end.y - start.y;
-                        let new_len = (new_dx * new_dx + new_dy * new_dy).sqrt();
-                        if new_len > 1e-9 {
-                            let new_perp = Vec2::new(-new_dy / new_len, new_dx / new_len);
-                            let new_mid =
-                                Vec2::new((start.x + end.x) * 0.5, (start.y + end.y) * 0.5);
-                            *offset = (new_dl.x - new_mid.x) * new_perp.x
-                                + (new_dl.y - new_mid.y) * new_perp.y;
-                        }
-                    }
-                    EntityKind::DimLinear {
-                        start,
-                        end,
-                        offset,
-                        text_pos,
-                        horizontal,
-                        ..
-                    } => {
-                        let old_mid_x = (start.x + end.x) * 0.5;
-                        let old_mid_y = (start.y + end.y) * 0.5;
-                        let old_dl = if *horizontal {
-                            Vec2::new(old_mid_x, old_mid_y + *offset)
-                        } else {
-                            Vec2::new(old_mid_x + *offset, old_mid_y)
-                        };
-                        *start = reflect_pt(*start);
-                        *end = reflect_pt(*end);
-                        *text_pos = reflect_pt(*text_pos);
-                        let new_dl = reflect_vec2(old_dl.x, old_dl.y);
-                        let new_mid_x = (start.x + end.x) * 0.5;
-                        let new_mid_y = (start.y + end.y) * 0.5;
-                        *offset = if *horizontal {
-                            new_dl.y - new_mid_y
-                        } else {
-                            new_dl.x - new_mid_x
-                        };
-                    }
-                    EntityKind::DimAngular {
-                        vertex,
-                        line1_pt,
-                        line2_pt,
-                        text_pos,
-                        ..
-                    } => {
-                        *vertex = reflect_pt(*vertex);
-                        *line1_pt = reflect_pt(*line1_pt);
-                        *line2_pt = reflect_pt(*line2_pt);
-                        *text_pos = reflect_pt(*text_pos);
-                    }
-                    EntityKind::DimRadial {
-                        center,
-                        leader_pt,
-                        text_pos,
-                        ..
-                    } => {
-                        *center = reflect_pt(*center);
-                        *leader_pt = reflect_pt(*leader_pt);
-                        *text_pos = reflect_pt(*text_pos);
-                    }
-                    EntityKind::Text {
-                        position, rotation, ..
-                    } => {
-                        *position = reflect_pt(*position);
-                        let vx = rotation.cos();
-                        let vy = rotation.sin();
-                        let dot = vx * ux + vy * uy;
-                        let rvx = 2.0 * dot * ux - vx;
-                        let rvy = 2.0 * dot * uy - vy;
-                        *rotation = rvy.atan2(rvx);
-                    }
-                    EntityKind::Insert {
-                        position, rotation, ..
-                    } => {
-                        *position = reflect_pt(*position);
-                        let vx = rotation.cos();
-                        let vy = rotation.sin();
-                        let dot = vx * ux + vy * uy;
-                        let rvx = 2.0 * dot * ux - vx;
-                        let rvy = 2.0 * dot * uy - vy;
-                        *rotation = rvy.atan2(rvx);
-                    }
+        let mut result_ids: Vec<Guid> = Vec::new();
+        if self.mirror_erase_source {
+            for id in &ids {
+                if let Some(entity) = self.drawing.get_entity_mut(id) {
+                    Self::reflect_entity_kind(&mut entity.kind, reflect_pt, reflect_vec2, ux, uy);
+                    result_ids.push(*id);
                 }
             }
+        } else {
+            for id in &ids {
+                let Some(entity) = self.drawing.get_entity(id).cloned() else {
+                    continue;
+                };
+                let mut mirrored = entity;
+                mirrored.id = Guid::new();
+                Self::reflect_entity_kind(&mut mirrored.kind, reflect_pt, reflect_vec2, ux, uy);
+                let new_id = mirrored.id;
+                self.drawing.add_entity(mirrored);
+                result_ids.push(new_id);
+            }
         }
-        self.selected_entities = ids.into_iter().collect();
-        self.command_log.push("MIRROR: Complete".to_string());
+        self.selected_entities = result_ids.into_iter().collect();
+        self.command_log.push(format!(
+            "MIRROR: Complete ({})",
+            if self.mirror_erase_source {
+                "source erased"
+            } else {
+                "source kept"
+            }
+        ));
         self.exit_mirror();
+    }
+
+    fn reflect_entity_kind<Fp, Fv>(
+        kind: &mut EntityKind,
+        reflect_pt: Fp,
+        reflect_vec2: Fv,
+        ux: f64,
+        uy: f64,
+    ) where
+        Fp: Fn(Vec3) -> Vec3 + Copy,
+        Fv: Fn(f64, f64) -> Vec2 + Copy,
+    {
+        match kind {
+            EntityKind::Line { start, end } => {
+                *start = reflect_pt(*start);
+                *end = reflect_pt(*end);
+            }
+            EntityKind::Circle { center, .. } => {
+                *center = reflect_pt(*center);
+            }
+            EntityKind::Arc {
+                center,
+                radius,
+                start_angle,
+                end_angle,
+            } => {
+                let old_start = Vec3::xy(
+                    center.x + *radius * start_angle.cos(),
+                    center.y + *radius * start_angle.sin(),
+                );
+                let old_end = Vec3::xy(
+                    center.x + *radius * end_angle.cos(),
+                    center.y + *radius * end_angle.sin(),
+                );
+                let new_center = reflect_pt(*center);
+                let new_start_ref = reflect_pt(old_start);
+                let new_end_ref = reflect_pt(old_end);
+
+                let mut ns = (new_end_ref.y - new_center.y).atan2(new_end_ref.x - new_center.x);
+                let mut ne = (new_start_ref.y - new_center.y).atan2(new_start_ref.x - new_center.x);
+                if ne <= ns {
+                    ne += std::f64::consts::TAU;
+                }
+                if ns < 0.0 {
+                    ns += std::f64::consts::TAU;
+                }
+                *center = new_center;
+                *start_angle = ns;
+                *end_angle = ne;
+            }
+            EntityKind::Polyline { vertices, .. } => {
+                for v in vertices.iter_mut() {
+                    *v = reflect_pt(*v);
+                }
+            }
+            EntityKind::DimAligned {
+                start,
+                end,
+                offset,
+                text_pos,
+                ..
+            } => {
+                let old_s = *start;
+                let old_e = *end;
+                let old_dx = old_e.x - old_s.x;
+                let old_dy = old_e.y - old_s.y;
+                let old_len = (old_dx * old_dx + old_dy * old_dy).sqrt();
+                let old_perp = if old_len > 1e-9 {
+                    Vec2::new(-old_dy / old_len, old_dx / old_len)
+                } else {
+                    Vec2::new(0.0, 0.0)
+                };
+                let old_mid = Vec2::new((old_s.x + old_e.x) * 0.5, (old_s.y + old_e.y) * 0.5);
+                let old_dl = Vec2::new(
+                    old_mid.x + old_perp.x * *offset,
+                    old_mid.y + old_perp.y * *offset,
+                );
+
+                *start = reflect_pt(*start);
+                *end = reflect_pt(*end);
+                *text_pos = reflect_pt(*text_pos);
+                let new_dl = reflect_vec2(old_dl.x, old_dl.y);
+
+                let new_dx = end.x - start.x;
+                let new_dy = end.y - start.y;
+                let new_len = (new_dx * new_dx + new_dy * new_dy).sqrt();
+                if new_len > 1e-9 {
+                    let new_perp = Vec2::new(-new_dy / new_len, new_dx / new_len);
+                    let new_mid = Vec2::new((start.x + end.x) * 0.5, (start.y + end.y) * 0.5);
+                    *offset =
+                        (new_dl.x - new_mid.x) * new_perp.x + (new_dl.y - new_mid.y) * new_perp.y;
+                }
+            }
+            EntityKind::DimLinear {
+                start,
+                end,
+                offset,
+                text_pos,
+                horizontal,
+                ..
+            } => {
+                let old_mid_x = (start.x + end.x) * 0.5;
+                let old_mid_y = (start.y + end.y) * 0.5;
+                let old_dl = if *horizontal {
+                    Vec2::new(old_mid_x, old_mid_y + *offset)
+                } else {
+                    Vec2::new(old_mid_x + *offset, old_mid_y)
+                };
+                *start = reflect_pt(*start);
+                *end = reflect_pt(*end);
+                *text_pos = reflect_pt(*text_pos);
+                let new_dl = reflect_vec2(old_dl.x, old_dl.y);
+                let new_mid_x = (start.x + end.x) * 0.5;
+                let new_mid_y = (start.y + end.y) * 0.5;
+                *offset = if *horizontal {
+                    new_dl.y - new_mid_y
+                } else {
+                    new_dl.x - new_mid_x
+                };
+            }
+            EntityKind::DimAngular {
+                vertex,
+                line1_pt,
+                line2_pt,
+                text_pos,
+                ..
+            } => {
+                *vertex = reflect_pt(*vertex);
+                *line1_pt = reflect_pt(*line1_pt);
+                *line2_pt = reflect_pt(*line2_pt);
+                *text_pos = reflect_pt(*text_pos);
+            }
+            EntityKind::DimRadial {
+                center,
+                leader_pt,
+                text_pos,
+                ..
+            } => {
+                *center = reflect_pt(*center);
+                *leader_pt = reflect_pt(*leader_pt);
+                *text_pos = reflect_pt(*text_pos);
+            }
+            EntityKind::Text {
+                position, rotation, ..
+            } => {
+                *position = reflect_pt(*position);
+                let vx = rotation.cos();
+                let vy = rotation.sin();
+                let dot = vx * ux + vy * uy;
+                let rvx = 2.0 * dot * ux - vx;
+                let rvy = 2.0 * dot * uy - vy;
+                *rotation = rvy.atan2(rvx);
+            }
+            EntityKind::Insert {
+                position, rotation, ..
+            } => {
+                *position = reflect_pt(*position);
+                let vx = rotation.cos();
+                let vy = rotation.sin();
+                let dot = vx * ux + vy * uy;
+                let rvx = 2.0 * dot * ux - vx;
+                let rvy = 2.0 * dot * uy - vy;
+                *rotation = rvy.atan2(rvx);
+            }
+        }
     }
 
     fn draw_mirror_preview(
@@ -8355,7 +8456,8 @@ impl CadKitApp {
         );
         match self.isocircle_phase {
             IsocirclePhase::Center => {
-                let (sx, sy) = world_to_screen(world_cursor.x as f32, world_cursor.y as f32, viewport);
+                let (sx, sy) =
+                    world_to_screen(world_cursor.x as f32, world_cursor.y as f32, viewport);
                 let c = rect.min + egui::vec2(sx, sy);
                 let r = 6.0_f32;
                 painter.line_segment([c - egui::vec2(r, 0.0), c + egui::vec2(r, 0.0)], ghost);
@@ -8363,7 +8465,9 @@ impl CadKitApp {
             }
             IsocirclePhase::Radius { center } => {
                 let radius = center.distance_to(&world_cursor);
-                if radius <= 1e-9 { return; }
+                if radius <= 1e-9 {
+                    return;
+                }
                 let axes = self.iso_plane.axes();
                 let a1 = axes[0];
                 let a2 = axes[1];
@@ -9242,7 +9346,9 @@ impl CadKitApp {
                 // Through-point mode: perp distance from click to line.
                 let dist = self.offset_distance.unwrap_or_else(|| (cp / len).abs());
                 if dist < 1e-9 {
-                    return Err("OFFSET: Click is on the line — pick a point to one side".to_string());
+                    return Err(
+                        "OFFSET: Click is on the line — pick a point to one side".to_string()
+                    );
                 }
                 let new_start = Vec2::new(start.x + sign * dist * nx, start.y + sign * dist * ny);
                 let new_end = Vec2::new(end.x + sign * dist * nx, end.y + sign * dist * ny);
@@ -9256,7 +9362,13 @@ impl CadKitApp {
                 let dy = world_click.y - c.y;
                 let click_dist = (dx * dx + dy * dy).sqrt();
                 let new_radius = match self.offset_distance {
-                    Some(dist) => if click_dist > *radius { radius + dist } else { radius - dist },
+                    Some(dist) => {
+                        if click_dist > *radius {
+                            radius + dist
+                        } else {
+                            radius - dist
+                        }
+                    }
                     // Through-point: new circle passes through click point.
                     None => click_dist,
                 };
@@ -9278,7 +9390,13 @@ impl CadKitApp {
                 let dy = world_click.y - c.y;
                 let click_dist = (dx * dx + dy * dy).sqrt();
                 let new_radius = match self.offset_distance {
-                    Some(dist) => if click_dist > *radius { radius + dist } else { radius - dist },
+                    Some(dist) => {
+                        if click_dist > *radius {
+                            radius + dist
+                        } else {
+                            radius - dist
+                        }
+                    }
                     None => click_dist,
                 };
                 if new_radius <= 0.0 {
@@ -9323,11 +9441,17 @@ impl CadKitApp {
                 }
                 let dist = self.offset_distance.unwrap_or_else(|| best_dist_sq.sqrt());
                 if dist < 1e-9 {
-                    return Err("OFFSET: Click is on the polyline — pick a point to one side".to_string());
+                    return Err(
+                        "OFFSET: Click is on the polyline — pick a point to one side".to_string(),
+                    );
                 }
 
                 // Build per-segment offset lines (start, end, unit-dir).
-                struct OffSeg { start: Vec2, end: Vec2, dir: Vec2 }
+                struct OffSeg {
+                    start: Vec2,
+                    end: Vec2,
+                    dir: Vec2,
+                }
                 let mut off_segs: Vec<OffSeg> = Vec::with_capacity(seg_count);
                 for i in 0..seg_count {
                     let a = verts[i];
@@ -9380,8 +9504,15 @@ impl CadKitApp {
                     new_verts.push(off_segs[m - 1].end);
                 }
 
-                let vertices_out: Vec<Vec3> = new_verts.iter().map(|v| Vec3::xy(v.x, v.y)).collect();
-                let mut e = Entity::new(EntityKind::Polyline { vertices: vertices_out, closed: *closed }, layer);
+                let vertices_out: Vec<Vec3> =
+                    new_verts.iter().map(|v| Vec3::xy(v.x, v.y)).collect();
+                let mut e = Entity::new(
+                    EntityKind::Polyline {
+                        vertices: vertices_out,
+                        closed: *closed,
+                    },
+                    layer,
+                );
                 e.layer = layer;
                 Ok(e)
             }
@@ -9493,15 +9624,23 @@ impl CadKitApp {
             if let Some(cursor) = self.hover_world_pos {
                 let (ax, ay) = world_to_screen(a.x as f32, a.y as f32, viewport);
                 let (bx, by) = world_to_screen(cursor.x as f32, cursor.y as f32, viewport);
-                let dim_line = egui::Stroke::new(1.2, egui::Color32::from_rgba_premultiplied(255, 220, 80, 200));
+                let dim_line = egui::Stroke::new(
+                    1.2,
+                    egui::Color32::from_rgba_premultiplied(255, 220, 80, 200),
+                );
                 painter.line_segment(
                     [rect.min + egui::vec2(ax, ay), rect.min + egui::vec2(bx, by)],
                     dim_line,
                 );
                 let dist = a.distance_to(&cursor);
                 let mid = rect.min + egui::vec2((ax + bx) * 0.5, (ay + by) * 0.5);
-                painter.text(mid, egui::Align2::CENTER_BOTTOM, format!("{:.3}", dist),
-                    egui::FontId::proportional(11.0), egui::Color32::from_rgb(255, 220, 80));
+                painter.text(
+                    mid,
+                    egui::Align2::CENTER_BOTTOM,
+                    format!("{:.3}", dist),
+                    egui::FontId::proportional(11.0),
+                    egui::Color32::from_rgb(255, 220, 80),
+                );
             }
             return;
         }
@@ -9586,8 +9725,13 @@ impl CadKitApp {
         }
 
         // Draw live offset preview following the cursor.
-        let Some(cursor) = self.hover_world_pos else { return };
-        let preview_stroke = egui::Stroke::new(1.5, egui::Color32::from_rgba_premultiplied(40, 220, 255, 160));
+        let Some(cursor) = self.hover_world_pos else {
+            return;
+        };
+        let preview_stroke = egui::Stroke::new(
+            1.5,
+            egui::Color32::from_rgba_premultiplied(40, 220, 255, 160),
+        );
         match self.apply_offset(cursor) {
             Ok(preview) => match &preview.kind {
                 EntityKind::Line { start, end } => {
@@ -9602,9 +9746,18 @@ impl CadKitApp {
                     let c: Vec2 = (*center).into();
                     let (cx, cy) = world_to_screen(c.x as f32, c.y as f32, viewport);
                     let (rx, _) = world_to_screen((c.x + radius) as f32, c.y as f32, viewport);
-                    painter.circle_stroke(rect.min + egui::vec2(cx, cy), (rx - cx).abs(), preview_stroke);
+                    painter.circle_stroke(
+                        rect.min + egui::vec2(cx, cy),
+                        (rx - cx).abs(),
+                        preview_stroke,
+                    );
                 }
-                EntityKind::Arc { center, radius, start_angle, end_angle } => {
+                EntityKind::Arc {
+                    center,
+                    radius,
+                    start_angle,
+                    end_angle,
+                } => {
                     let c: Vec2 = (*center).into();
                     let sweep = *end_angle - *start_angle;
                     let steps = ((sweep.abs() * *radius).max(12.0) as usize).clamp(12, 128);
@@ -9616,7 +9769,9 @@ impl CadKitApp {
                         let py = c.y + *radius * ang.sin();
                         let (sx, sy) = world_to_screen(px as f32, py as f32, viewport);
                         let pos = rect.min + egui::vec2(sx, sy);
-                        if let Some(prev) = last { painter.line_segment([prev, pos], preview_stroke); }
+                        if let Some(prev) = last {
+                            painter.line_segment([prev, pos], preview_stroke);
+                        }
                         last = Some(pos);
                     }
                 }
@@ -9741,7 +9896,8 @@ impl eframe::App for CadKitApp {
                 self.command_log
                     .push(format!("Isoplane: {}", self.iso_plane.label()));
             } else {
-                self.command_log.push("ISO mode is off — use ISOPLANE to enable".to_string());
+                self.command_log
+                    .push("ISO mode is off — use ISOPLANE to enable".to_string());
             }
         }
         // F8: orthogonal Ortho toggle
@@ -11603,7 +11759,14 @@ impl eframe::App for CadKitApp {
                                         if self.mirror_phase == MirrorPhase::FirstAxisPoint {
                                             self.mirror_axis_p1 = Some(world);
                                             self.mirror_phase = MirrorPhase::SecondAxisPoint;
-                                            self.command_log.push("MIRROR: Pick second axis point".to_string());
+                                            self.command_log.push(format!(
+                                                "MIRROR: Pick second axis point [Erase source: {}]",
+                                                if self.mirror_erase_source {
+                                                    "Yes"
+                                                } else {
+                                                    "No"
+                                                }
+                                            ));
                                         } else if let Some(p1) = self.mirror_axis_p1 {
                                             let axis_p2 = if self.directional_snap_enabled() {
                                                 self.ortho_snap(p1, world)
@@ -14128,10 +14291,10 @@ impl CadKitApp {
     fn snap_to_iso_grid(&self, world: Vec2) -> Vec2 {
         let s = self.grid_spacing;
         // Lattice basis: ax1 = s*(cos30, sin30), ax2 = s*(cos150, sin150)
-        let ax1x =  s * 0.8660254037844386;
-        let ax1y =  s * 0.5;
+        let ax1x = s * 0.8660254037844386;
+        let ax1y = s * 0.5;
         let ax2x = -s * 0.8660254037844386;
-        let ax2y =  s * 0.5;
+        let ax2y = s * 0.5;
         // Inverse solve: i = wx/(s√3) + wy/s, j = -wx/(s√3) + wy/s
         let inv_s3 = 1.0 / (s * 1.7320508075688772);
         let fi = world.x * inv_s3 + world.y / s;
@@ -14748,6 +14911,7 @@ impl CadKitApp {
             return Err("BLOCK: No source entities selected".to_string());
         }
         let dynamic = Self::infer_block_dynamic_from_payload(&payload);
+        self.push_undo();
         if !self.drawing.define_block(
             block_name.to_string(),
             Vec3::xy(base.x, base.y),
@@ -14756,7 +14920,618 @@ impl CadKitApp {
         ) {
             return Err("BLOCK: Failed to define block".to_string());
         }
+        if self.block_replace_source {
+            for id in ids {
+                let _ = self.drawing.remove_entity(id);
+            }
+            let mut insert = Entity::new(
+                EntityKind::Insert {
+                    name: block_name.to_string(),
+                    position: Vec3::xy(base.x, base.y),
+                    rotation: 0.0,
+                    scale_x: 1.0,
+                    scale_y: 1.0,
+                },
+                self.current_layer,
+            );
+            insert.layer = self.current_layer;
+            let insert_id = self.drawing.add_entity(insert);
+            self.selected_entities.clear();
+            self.selected_entities.insert(insert_id);
+            self.selection = None;
+        }
         Ok(ids.len())
+    }
+
+    fn current_block_target_name(&self) -> Option<String> {
+        if self.selected_entities.len() == 1 {
+            let selected_id = self.selected_entities.iter().next()?;
+            if let Some(entity) = self.drawing.get_entity(selected_id) {
+                if let EntityKind::Insert { name, .. } = &entity.kind {
+                    return Some(name.clone());
+                }
+            }
+        }
+        if !self.block_palette_selected.trim().is_empty() {
+            return Some(self.block_palette_selected.clone());
+        }
+        None
+    }
+
+    fn current_cabdef_target_block_name(&self) -> Option<String> {
+        self.current_block_target_name()
+    }
+
+    fn attach_starter_cabinet_definition(&mut self) -> Result<String, String> {
+        let Some(block_name) = self.current_cabdef_target_block_name() else {
+            return Err(
+                "CABDEF: Select one insert of the target block or choose a block in Block Palette"
+                    .to_string(),
+            );
+        };
+        let Some(block) = self.drawing.get_block(&block_name).cloned() else {
+            return Err(format!("CABDEF: Block '{}' not found", block_name));
+        };
+        if block.cabinet_v1.is_some() {
+            return Ok(format!(
+                "CABDEF: Block '{}' already has a cabinet definition",
+                block.name
+            ));
+        }
+        let mut min_x = f64::INFINITY;
+        let mut min_y = f64::INFINITY;
+        let mut max_x = f64::NEG_INFINITY;
+        let mut max_y = f64::NEG_INFINITY;
+        for entity in &block.entities {
+            if let Some((x0, y0, x1, y1)) = Self::entity_bounds_world(&entity.kind) {
+                min_x = min_x.min(x0);
+                min_y = min_y.min(y0);
+                max_x = max_x.max(x1);
+                max_y = max_y.max(y1);
+            }
+        }
+        let inferred_width = if min_x.is_finite() && max_x.is_finite() {
+            (max_x - min_x).abs().max(0.001)
+        } else {
+            36.0
+        };
+        let inferred_height = if min_y.is_finite() && max_y.is_finite() {
+            (max_y - min_y).abs().max(0.001)
+        } else {
+            34.5
+        };
+
+        let cabinet = CabinetDefinition {
+            family_name: block.name.clone(),
+            family_kind: Some("base".to_string()),
+            geometry_authored: false,
+            parameters: vec![
+                CabinetParameterDefinition {
+                    id: Guid::new(),
+                    name: "W".to_string(),
+                    label: "Width".to_string(),
+                    param_type: CabinetParameterType::Number,
+                    default_value: format!("{:.4}", inferred_width),
+                    choice_options: Vec::new(),
+                    unit: Some("in".to_string()),
+                    notes: None,
+                },
+                CabinetParameterDefinition {
+                    id: Guid::new(),
+                    name: "H".to_string(),
+                    label: "Height".to_string(),
+                    param_type: CabinetParameterType::Number,
+                    default_value: format!("{:.4}", inferred_height),
+                    choice_options: Vec::new(),
+                    unit: Some("in".to_string()),
+                    notes: None,
+                },
+                CabinetParameterDefinition {
+                    id: Guid::new(),
+                    name: "D".to_string(),
+                    label: "Depth".to_string(),
+                    param_type: CabinetParameterType::Number,
+                    default_value: "24".to_string(),
+                    choice_options: Vec::new(),
+                    unit: Some("in".to_string()),
+                    notes: None,
+                },
+                CabinetParameterDefinition {
+                    id: Guid::new(),
+                    name: "THK".to_string(),
+                    label: "Thickness".to_string(),
+                    param_type: CabinetParameterType::Number,
+                    default_value: "0.75".to_string(),
+                    choice_options: Vec::new(),
+                    unit: Some("in".to_string()),
+                    notes: None,
+                },
+                CabinetParameterDefinition {
+                    id: Guid::new(),
+                    name: "COREMAT".to_string(),
+                    label: "Core Material".to_string(),
+                    param_type: CabinetParameterType::Text,
+                    default_value: "PB_3_4_WHITE".to_string(),
+                    choice_options: Vec::new(),
+                    unit: None,
+                    notes: None,
+                },
+                CabinetParameterDefinition {
+                    id: Guid::new(),
+                    name: "FINISH".to_string(),
+                    label: "Finish".to_string(),
+                    param_type: CabinetParameterType::Text,
+                    default_value: String::new(),
+                    choice_options: Vec::new(),
+                    unit: None,
+                    notes: None,
+                },
+            ],
+            views: vec![CabinetViewDefinition {
+                kind: CabinetViewKind::FrontElevation,
+                description: Some("Initial authored cabinet view".to_string()),
+                entity_ids: Vec::new(),
+            }],
+            part_recipe: vec![CabinetPartRecipeRow {
+                id: Guid::new(),
+                part_name: "PANEL".to_string(),
+                enabled: true,
+                qty_formula: "1".to_string(),
+                length_formula: "H".to_string(),
+                width_formula: "W".to_string(),
+                thickness_formula: "THK".to_string(),
+                core_material_formula: "COREMAT".to_string(),
+                finish_formula: "FINISH".to_string(),
+                face: Some(CabinetPartFace::Front),
+                grain: None,
+                notes: Some("Starter placeholder part row".to_string()),
+            }],
+            notes: Some(
+                "Starter cabinet definition. Replace parameters and recipe rows with real cabinet data."
+                    .to_string(),
+            ),
+        };
+
+        if !self
+            .drawing
+            .set_block_cabinet_v1(&block_name, Some(cabinet))
+        {
+            return Err(format!(
+                "CABDEF: Failed to attach cabinet definition to '{}'",
+                block_name
+            ));
+        }
+
+        Ok(format!(
+            "CABDEF: Attached starter cabinet definition to '{}'",
+            block.name
+        ))
+    }
+
+    fn remove_cabinet_definition(&mut self) -> Result<String, String> {
+        let Some(block_name) = self.current_cabdef_target_block_name() else {
+            return Err(
+                "CABDEF: Select one insert of the target block or choose a block in Block Palette"
+                    .to_string(),
+            );
+        };
+        let Some(block) = self.drawing.get_block(&block_name).cloned() else {
+            return Err(format!("CABDEF: Block '{}' not found", block_name));
+        };
+        if block.cabinet_v1.is_none() {
+            return Ok(format!(
+                "CABDEF: Block '{}' has no cabinet definition",
+                block.name
+            ));
+        }
+        if !self.drawing.set_block_cabinet_v1(&block_name, None) {
+            return Err(format!(
+                "CABDEF: Failed to remove cabinet definition from '{}'",
+                block.name
+            ));
+        }
+        Ok(format!(
+            "CABDEF: Removed cabinet definition from '{}'",
+            block.name
+        ))
+    }
+
+    fn cabdef_behavior_parameter_axis(name: &str) -> ParameterAxis {
+        if name.eq_ignore_ascii_case("H") {
+            ParameterAxis::Y
+        } else {
+            ParameterAxis::X
+        }
+    }
+
+    fn ensure_block_edit_dynamic_param_for_cabinet(
+        &mut self,
+        parameter_name: &str,
+    ) -> Result<Guid, String> {
+        let cabinet = self
+            .block_edit_cabinet_v1
+            .as_ref()
+            .ok_or_else(|| "CABDEF: No cabinet definition loaded in block editor".to_string())?;
+        let dynamic_v1 = self
+            .block_edit_dynamic_v1
+            .as_mut()
+            .ok_or_else(|| "CABDEF: No dynamic definition loaded in block editor".to_string())?;
+
+        if let Some(existing) = dynamic_v1
+            .parameters
+            .iter()
+            .find(|p| p.name == parameter_name)
+        {
+            return Ok(existing.id);
+        }
+
+        let Some(cab_param) = cabinet.parameters.iter().find(|p| p.name == parameter_name) else {
+            return Err(format!(
+                "CABDEF: Cabinet parameter '{}' not found",
+                parameter_name
+            ));
+        };
+        let default_value = cab_param
+            .default_value
+            .trim()
+            .parse::<f64>()
+            .map_err(|_| format!("CABDEF: Parameter '{}' is not numeric", parameter_name))?;
+        let axis = Self::cabdef_behavior_parameter_axis(parameter_name);
+        let param_id = Guid::new();
+        dynamic_v1.parameters.push(ParameterDefinition {
+            id: param_id,
+            name: parameter_name.to_string(),
+            axis,
+            default_value,
+            min_value: 0.0,
+            max_value: 1_000_000.0,
+            step: 1.0,
+        });
+        Ok(param_id)
+    }
+
+    fn cabdef_selected_local_ids(&self) -> Result<Vec<Guid>, String> {
+        if self.selected_entities.is_empty() {
+            return Err("CABDEF: Select one or more block entities in BEDIT first".to_string());
+        }
+        let mut out = Vec::new();
+        for id in &self.selected_entities {
+            if let Some(local_id) = self.block_edit_entity_local_map.get(id) {
+                out.push(*local_id);
+            }
+        }
+        if out.is_empty() {
+            return Err("CABDEF: Selected entities are not mappable block geometry".to_string());
+        }
+        Ok(out)
+    }
+
+    fn cabdef_behavior_kind_label(kind: &str) -> &'static str {
+        match kind {
+            "stretch_right_x" => "Stretch Right X",
+            "stretch_left_x" => "Stretch Left X",
+            "stretch_center_x" => "Stretch Center X",
+            "stretch_top_y" => "Stretch Top Y",
+            "stretch_bottom_y" => "Stretch Bottom Y",
+            "stretch_center_y" => "Stretch Center Y",
+            "move_x" => "Move X",
+            "move_y" => "Move Y",
+            "anchor_left" => "Anchor Left",
+            "anchor_right" => "Anchor Right",
+            "center_x" => "Center X",
+            _ => "Custom",
+        }
+    }
+
+    fn cabdef_behavior_kind_from_target(
+        behavior: EntityBehavior,
+        reference_frame: ReferenceFrame,
+        axis_mask: AxisMask,
+    ) -> Option<&'static str> {
+        match (behavior, reference_frame, axis_mask.x, axis_mask.y) {
+            (EntityBehavior::StretchFromRight, ReferenceFrame::RightEdge, true, false) => {
+                Some("stretch_right_x")
+            }
+            (EntityBehavior::StretchFromLeft, ReferenceFrame::LeftEdge, true, false) => {
+                Some("stretch_left_x")
+            }
+            (EntityBehavior::StretchFromCenter, ReferenceFrame::BoundsCenter, true, false) => {
+                Some("stretch_center_x")
+            }
+            (EntityBehavior::StretchFromRight, ReferenceFrame::TopEdge, false, true) => {
+                Some("stretch_top_y")
+            }
+            (EntityBehavior::StretchFromLeft, ReferenceFrame::BottomEdge, false, true) => {
+                Some("stretch_bottom_y")
+            }
+            (EntityBehavior::StretchFromCenter, ReferenceFrame::BoundsCenter, false, true) => {
+                Some("stretch_center_y")
+            }
+            (EntityBehavior::MoveRigid, ReferenceFrame::BlockOrigin, true, false) => Some("move_x"),
+            (EntityBehavior::MoveRigid, ReferenceFrame::BlockOrigin, false, true) => Some("move_y"),
+            (EntityBehavior::AnchorToEdge, ReferenceFrame::LeftEdge, true, false) => {
+                Some("anchor_left")
+            }
+            (EntityBehavior::AnchorToEdge, ReferenceFrame::RightEdge, true, false) => {
+                Some("anchor_right")
+            }
+            (EntityBehavior::KeepCentered, ReferenceFrame::BoundsCenter, true, false) => {
+                Some("center_x")
+            }
+            _ => None,
+        }
+    }
+
+    fn cabdef_behavior_summaries(&self) -> Vec<CabdefBehaviorSummary> {
+        let Some(dynamic_v1) = self.block_edit_dynamic_v1.as_ref() else {
+            return Vec::new();
+        };
+
+        let mut rows = Vec::new();
+        for action in &dynamic_v1.actions {
+            let Some(first_target) = action.targets.first() else {
+                continue;
+            };
+            let parameter_name = dynamic_v1
+                .parameters
+                .iter()
+                .find(|p| p.id == action.parameter_id)
+                .map(|p| p.name.clone())
+                .unwrap_or_else(|| "<unknown>".to_string());
+            let rule_key = Self::cabdef_behavior_kind_from_target(
+                first_target.behavior,
+                first_target.reference_frame,
+                first_target.axis_mask,
+            )
+            .unwrap_or("custom")
+            .to_string();
+            rows.push(CabdefBehaviorSummary {
+                action_id: action.id,
+                parameter_name,
+                rule_label: Self::cabdef_behavior_kind_label(&rule_key).to_string(),
+                rule_key,
+                rate: first_target.weight,
+                target_count: action.targets.len(),
+            });
+        }
+        rows.sort_by(|a, b| {
+            a.parameter_name
+                .cmp(&b.parameter_name)
+                .then_with(|| a.rule_label.cmp(&b.rule_label))
+                .then_with(|| a.action_id.to_string().cmp(&b.action_id.to_string()))
+        });
+        rows
+    }
+
+    fn load_cabdef_behavior_binding(&mut self, action_id: Guid) -> Result<String, String> {
+        let dynamic_v1 = self
+            .block_edit_dynamic_v1
+            .as_ref()
+            .ok_or_else(|| "CABDEF: No dynamic definition loaded in block editor".to_string())?;
+        let action = dynamic_v1
+            .actions
+            .iter()
+            .find(|a| a.id == action_id)
+            .ok_or_else(|| "CABDEF: Behavior binding not found".to_string())?;
+        let first_target = action
+            .targets
+            .first()
+            .ok_or_else(|| "CABDEF: Behavior binding has no targets".to_string())?;
+        let param_name = dynamic_v1
+            .parameters
+            .iter()
+            .find(|p| p.id == action.parameter_id)
+            .map(|p| p.name.clone())
+            .ok_or_else(|| "CABDEF: Behavior parameter not found".to_string())?;
+        let rule_key = Self::cabdef_behavior_kind_from_target(
+            first_target.behavior,
+            first_target.reference_frame,
+            first_target.axis_mask,
+        )
+        .ok_or_else(|| "CABDEF: This rule cannot be edited with the current preset UI".to_string())?
+        .to_string();
+
+        self.cabdef_behavior_param_name = param_name.clone();
+        self.cabdef_behavior_kind = rule_key.clone();
+        self.cabdef_behavior_weight = first_target.weight;
+
+        let mut mapped = Vec::new();
+        for target in &action.targets {
+            if let TargetRef::Entity(local_id) = target.target {
+                if let Some((edit_id, _)) = self
+                    .block_edit_entity_local_map
+                    .iter()
+                    .find(|(_, mapped_local_id)| **mapped_local_id == local_id)
+                {
+                    mapped.push(*edit_id);
+                }
+            }
+        }
+        if !mapped.is_empty() {
+            self.selected_entities = mapped.into_iter().collect();
+        }
+
+        Ok(format!(
+            "CABDEF: Loaded {} for {} ({} target{})",
+            Self::cabdef_behavior_kind_label(&rule_key),
+            param_name,
+            action.targets.len(),
+            if action.targets.len() == 1 { "" } else { "s" }
+        ))
+    }
+
+    fn remove_cabdef_behavior_binding(&mut self, action_id: Guid) -> Result<String, String> {
+        let dynamic_v1 = self
+            .block_edit_dynamic_v1
+            .as_mut()
+            .ok_or_else(|| "CABDEF: No dynamic definition loaded in block editor".to_string())?;
+        let before = dynamic_v1.actions.len();
+        dynamic_v1.actions.retain(|a| a.id != action_id);
+        if dynamic_v1.actions.len() == before {
+            return Err("CABDEF: Behavior binding not found".to_string());
+        }
+        Ok("CABDEF: Removed behavior binding".to_string())
+    }
+
+    fn apply_cabdef_behavior_to_selection(&mut self) -> Result<String, String> {
+        let block_name = self
+            .block_edit_name
+            .clone()
+            .ok_or_else(|| "CABDEF: Not in block editor".to_string())?;
+        let local_ids = self.cabdef_selected_local_ids()?;
+        let param_name = self.cabdef_behavior_param_name.trim().to_string();
+        let param_id = self.ensure_block_edit_dynamic_param_for_cabinet(&param_name)?;
+        let weight = self.cabdef_behavior_weight;
+        let dynamic_v1 = self
+            .block_edit_dynamic_v1
+            .as_mut()
+            .ok_or_else(|| "CABDEF: No dynamic definition loaded in block editor".to_string())?;
+
+        let (behavior, reference_frame, axis_mask) = match self.cabdef_behavior_kind.as_str() {
+            "stretch_right_x" => (
+                EntityBehavior::StretchFromRight,
+                ReferenceFrame::RightEdge,
+                AxisMask { x: true, y: false },
+            ),
+            "stretch_left_x" => (
+                EntityBehavior::StretchFromLeft,
+                ReferenceFrame::LeftEdge,
+                AxisMask { x: true, y: false },
+            ),
+            "stretch_center_x" => (
+                EntityBehavior::StretchFromCenter,
+                ReferenceFrame::BoundsCenter,
+                AxisMask { x: true, y: false },
+            ),
+            "stretch_top_y" => (
+                EntityBehavior::StretchFromRight,
+                ReferenceFrame::TopEdge,
+                AxisMask { x: false, y: true },
+            ),
+            "stretch_bottom_y" => (
+                EntityBehavior::StretchFromLeft,
+                ReferenceFrame::BottomEdge,
+                AxisMask { x: false, y: true },
+            ),
+            "stretch_center_y" => (
+                EntityBehavior::StretchFromCenter,
+                ReferenceFrame::BoundsCenter,
+                AxisMask { x: false, y: true },
+            ),
+            "move_x" => (
+                EntityBehavior::MoveRigid,
+                ReferenceFrame::BlockOrigin,
+                AxisMask { x: true, y: false },
+            ),
+            "move_y" => (
+                EntityBehavior::MoveRigid,
+                ReferenceFrame::BlockOrigin,
+                AxisMask { x: false, y: true },
+            ),
+            "anchor_left" => (
+                EntityBehavior::AnchorToEdge,
+                ReferenceFrame::LeftEdge,
+                AxisMask { x: true, y: false },
+            ),
+            "anchor_right" => (
+                EntityBehavior::AnchorToEdge,
+                ReferenceFrame::RightEdge,
+                AxisMask { x: true, y: false },
+            ),
+            "center_x" => (
+                EntityBehavior::KeepCentered,
+                ReferenceFrame::BoundsCenter,
+                AxisMask { x: true, y: false },
+            ),
+            _ => {
+                return Err("CABDEF: Unsupported behavior preset".to_string());
+            }
+        };
+
+        dynamic_v1.actions.retain(|a| {
+            let matches_param = a.parameter_id == param_id;
+            let touches_target = a.targets.iter().any(|t| match &t.target {
+                TargetRef::Entity(id) => local_ids.contains(id),
+                _ => false,
+            });
+            let same_behavior = a.targets.iter().any(|t| {
+                t.behavior == behavior
+                    && t.reference_frame == reference_frame
+                    && t.axis_mask == axis_mask
+            });
+            !(matches_param && touches_target && same_behavior)
+        });
+
+        dynamic_v1.actions.push(ActionBinding {
+            id: Guid::new(),
+            parameter_id: param_id,
+            action_kind: match behavior {
+                EntityBehavior::MoveRigid => ActionKind::Move,
+                EntityBehavior::KeepCentered | EntityBehavior::AnchorToCenter => ActionKind::Move,
+                EntityBehavior::AnchorToEdge => ActionKind::Anchor,
+                EntityBehavior::StretchFromLeft
+                | EntityBehavior::StretchFromRight
+                | EntityBehavior::StretchFromCenter => ActionKind::Stretch,
+                EntityBehavior::Ignore => ActionKind::Move,
+            },
+            targets: local_ids
+                .iter()
+                .map(|local_id| ActionTarget {
+                    target: TargetRef::Entity(*local_id),
+                    behavior,
+                    reference_frame,
+                    placement_rule: PlacementRule::KeepDefault,
+                    axis_mask,
+                    weight,
+                })
+                .collect(),
+            order: dynamic_v1.actions.len() as i32,
+        });
+
+        Ok(format!(
+            "CABDEF: Applied '{}' on {} selected entit{} for {} in '{}'",
+            self.cabdef_behavior_kind,
+            local_ids.len(),
+            if local_ids.len() == 1 { "y" } else { "ies" },
+            param_name,
+            block_name
+        ))
+    }
+
+    fn clear_cabdef_behaviors_from_selection(&mut self) -> Result<String, String> {
+        let local_ids = self.cabdef_selected_local_ids()?;
+        let param_name = self.cabdef_behavior_param_name.trim().to_string();
+        let dynamic_v1 = self
+            .block_edit_dynamic_v1
+            .as_mut()
+            .ok_or_else(|| "CABDEF: No dynamic definition loaded in block editor".to_string())?;
+        let param_id = dynamic_v1
+            .parameters
+            .iter()
+            .find(|p| p.name == param_name)
+            .map(|p| p.id)
+            .ok_or_else(|| {
+                format!(
+                    "CABDEF: No dynamic rule parameter found for '{}'",
+                    param_name
+                )
+            })?;
+
+        let before = dynamic_v1.actions.len();
+        dynamic_v1.actions.retain(|a| {
+            if a.parameter_id != param_id {
+                return true;
+            }
+            !a.targets.iter().any(|t| match &t.target {
+                TargetRef::Entity(id) => local_ids.contains(id),
+                _ => false,
+            })
+        });
+
+        Ok(format!(
+            "CABDEF: Removed {} behavior binding(s)",
+            before.saturating_sub(dynamic_v1.actions.len())
+        ))
     }
 
     fn begin_block_edit(&mut self, name: &str) -> Result<(), String> {
@@ -14769,6 +15544,12 @@ impl CadKitApp {
 
         let snapshot = self.drawing.clone();
         let prev_layer = self.current_layer;
+        let mut local_map: HashMap<Guid, Guid> = HashMap::new();
+        let block_dynamic_v1 = snapshot
+            .get_block_dynamic_v1(name)
+            .cloned()
+            .or_else(|| self.ensure_dynamic_v1_for_block(name).ok());
+        let block_cabinet_v1 = snapshot.get_block_cabinet_v1(name).cloned();
 
         let mut edit = Drawing::new(format!("Block Edit: {}", def.name));
         let mut src_layers: Vec<_> = snapshot.layers().cloned().collect();
@@ -14801,16 +15582,36 @@ impl CadKitApp {
             edit_to_src.insert(eid, l.id);
         }
 
-        for be in &def.entities {
-            let mut e = Entity::new(
-                be.kind.clone(),
-                src_to_edit.get(&be.layer).copied().unwrap_or(0),
-            );
-            e.color = be.color;
-            e.linetype = be.linetype;
-            e.linetype_by_layer = be.linetype_by_layer;
-            e.linetype_scale = be.linetype_scale;
-            edit.add_entity(e);
+        if let Some(dynv1) = &block_dynamic_v1 {
+            for (idx, be) in dynv1.base_entities.iter().enumerate() {
+                let mut e = Entity::new(
+                    be.kind.clone(),
+                    src_to_edit.get(&be.layer).copied().unwrap_or(0),
+                );
+                if let Some(styled) = def.entities.get(idx) {
+                    e.color = styled.color;
+                    e.linetype = styled.linetype;
+                    e.linetype_by_layer = styled.linetype_by_layer;
+                    e.linetype_scale = styled.linetype_scale;
+                }
+                let eid = e.id;
+                edit.add_entity(e);
+                local_map.insert(eid, be.local_entity_id);
+            }
+        } else {
+            for be in &def.entities {
+                let mut e = Entity::new(
+                    be.kind.clone(),
+                    src_to_edit.get(&be.layer).copied().unwrap_or(0),
+                );
+                let eid = e.id;
+                e.color = be.color;
+                e.linetype = be.linetype;
+                e.linetype_by_layer = be.linetype_by_layer;
+                e.linetype_scale = be.linetype_scale;
+                edit.add_entity(e);
+                local_map.insert(eid, Guid::new());
+            }
         }
 
         self.cancel_active_tool();
@@ -14845,6 +15646,9 @@ impl CadKitApp {
         self.block_edit_snapshot = Some(snapshot);
         self.block_edit_layer_map = edit_to_src;
         self.block_edit_prev_layer = prev_layer;
+        self.block_edit_entity_local_map = local_map;
+        self.block_edit_cabinet_v1 = block_cabinet_v1;
+        self.block_edit_dynamic_v1 = block_dynamic_v1;
         Ok(())
     }
 
@@ -14886,6 +15690,53 @@ impl CadKitApp {
         let existing_dynamic = snapshot
             .get_block(&name)
             .and_then(|def| def.dynamic.clone());
+        let mut dynamic_v1 = self.block_edit_dynamic_v1.clone();
+        if let Some(dynv1) = dynamic_v1.as_mut() {
+            let mut base_entities: Vec<BlockAuthoredEntity> = Vec::new();
+            let mut min_x = f64::INFINITY;
+            let mut min_y = f64::INFINITY;
+            let mut max_x = f64::NEG_INFINITY;
+            let mut max_y = f64::NEG_INFINITY;
+            for src in self.drawing.entities() {
+                let local_id = self
+                    .block_edit_entity_local_map
+                    .get(&src.id)
+                    .copied()
+                    .unwrap_or_else(Guid::new);
+                base_entities.push(BlockAuthoredEntity {
+                    local_entity_id: local_id,
+                    kind: src.kind.clone(),
+                    layer: self
+                        .block_edit_layer_map
+                        .get(&src.layer)
+                        .copied()
+                        .unwrap_or(0),
+                });
+                if let Some((x0, y0, x1, y1)) = Self::entity_bounds_world(&src.kind) {
+                    min_x = min_x.min(x0);
+                    min_y = min_y.min(y0);
+                    max_x = max_x.max(x1);
+                    max_y = max_y.max(y1);
+                }
+            }
+            if !min_x.is_finite() || !min_y.is_finite() || !max_x.is_finite() || !max_y.is_finite()
+            {
+                min_x = 0.0;
+                min_y = 0.0;
+                max_x = 0.0;
+                max_y = 0.0;
+            }
+            dynv1.block_name = name.clone();
+            dynv1.base_entities = base_entities;
+            dynv1.base_bounds = BlockBounds {
+                min: Vec2::new(min_x, min_y),
+                max: Vec2::new(max_x, max_y),
+            };
+        }
+        let mut cabinet_v1 = self.block_edit_cabinet_v1.clone();
+        if let Some(cabinet) = cabinet_v1.as_mut() {
+            cabinet.geometry_authored = true;
+        }
         self.drawing = snapshot;
         self.current_layer = self.block_edit_prev_layer;
         self.selected_entities.clear();
@@ -14911,11 +15762,16 @@ impl CadKitApp {
         {
             return Err("BSAVE: Failed to update block definition".to_string());
         }
+        let _ = self.drawing.set_block_dynamic_v1(&name, dynamic_v1);
+        let _ = self.drawing.set_block_cabinet_v1(&name, cabinet_v1);
 
         self.block_edit_active = false;
         self.block_edit_name = None;
         self.block_edit_base_point = None;
         self.block_edit_layer_map.clear();
+        self.block_edit_entity_local_map.clear();
+        self.block_edit_cabinet_v1 = None;
+        self.block_edit_dynamic_v1 = None;
         Ok(())
     }
 
@@ -14935,6 +15791,9 @@ impl CadKitApp {
         self.block_edit_name = None;
         self.block_edit_base_point = None;
         self.block_edit_layer_map.clear();
+        self.block_edit_entity_local_map.clear();
+        self.block_edit_cabinet_v1 = None;
+        self.block_edit_dynamic_v1 = None;
         Ok(())
     }
 
@@ -15497,13 +16356,12 @@ impl CadKitApp {
                     .fold(f64::NEG_INFINITY, f64::max);
                 let tol = ((max_x - min_x).abs().max((max_y - min_y).abs()) * 1e-6).max(1e-6);
 
-                let axis_aligned = front_vertices
+                let axis_aligned = front_vertices.iter().all(|v| {
+                    ((v.x - min_x).abs() <= tol || (v.x - max_x).abs() <= tol)
+                        && ((v.y - min_y).abs() <= tol || (v.y - max_y).abs() <= tol)
+                }) && front_vertices
                     .iter()
-                    .all(|v| {
-                        ((v.x - min_x).abs() <= tol || (v.x - max_x).abs() <= tol)
-                            && ((v.y - min_y).abs() <= tol || (v.y - max_y).abs() <= tol)
-                    })
-                    && front_vertices.iter().zip(
+                    .zip(
                         front_vertices
                             .iter()
                             .cycle()
@@ -15548,11 +16406,7 @@ impl CadKitApp {
                     (front_tr, back_tr),
                     (front_br, back_br),
                 ];
-                let hidden_edges = [
-                    (back_bl, back_br),
-                    (back_bl, back_tl),
-                    (front_bl, back_bl),
-                ];
+                let hidden_edges = [(back_bl, back_br), (back_bl, back_tl), (front_bl, back_bl)];
 
                 for (start, end) in visible_edges {
                     let mut edge = Entity::new(EntityKind::Line { start, end }, output_layer_id);
@@ -15590,9 +16444,8 @@ impl CadKitApp {
         }
 
         if valid_polylines == 0 {
-            self.command_log.push(
-                "ISOEXTRUDE: No editable closed polylines in selection".to_string(),
-            );
+            self.command_log
+                .push("ISOEXTRUDE: No editable closed polylines in selection".to_string());
             return;
         }
 
@@ -15628,16 +16481,13 @@ impl CadKitApp {
             .map(|v| v.y)
             .fold(f64::NEG_INFINITY, f64::max);
         let tol = ((max_x - min_x).abs().max((max_y - min_y).abs()) * 1e-6).max(1e-6);
-        let axis_aligned = vertices
+        let axis_aligned = vertices.iter().all(|v| {
+            ((v.x - min_x).abs() <= tol || (v.x - max_x).abs() <= tol)
+                && ((v.y - min_y).abs() <= tol || (v.y - max_y).abs() <= tol)
+        }) && vertices
             .iter()
-            .all(|v| {
-                ((v.x - min_x).abs() <= tol || (v.x - max_x).abs() <= tol)
-                    && ((v.y - min_y).abs() <= tol || (v.y - max_y).abs() <= tol)
-            })
-            && vertices
-                .iter()
-                .zip(vertices.iter().cycle().skip(1).take(vertices.len()))
-                .all(|(a, b)| (a.x - b.x).abs() <= tol || (a.y - b.y).abs() <= tol);
+            .zip(vertices.iter().cycle().skip(1).take(vertices.len()))
+            .all(|(a, b)| (a.x - b.x).abs() <= tol || (a.y - b.y).abs() <= tol);
         if axis_aligned && (max_x - min_x).abs() > tol && (max_y - min_y).abs() > tol {
             Some((min_x, max_x, min_y, max_y))
         } else {
@@ -15666,7 +16516,14 @@ impl CadKitApp {
         vertices
             .iter()
             .copied()
-            .zip(vertices.iter().copied().cycle().skip(1).take(vertices.len()))
+            .zip(
+                vertices
+                    .iter()
+                    .copied()
+                    .cycle()
+                    .skip(1)
+                    .take(vertices.len()),
+            )
             .collect()
     }
 
@@ -15693,14 +16550,7 @@ impl CadKitApp {
         edges
     }
 
-    fn dwiso_box_edges(
-        x0: f64,
-        x1: f64,
-        y0: f64,
-        y1: f64,
-        z0: f64,
-        z1: f64,
-    ) -> [(Vec3, Vec3); 12] {
+    fn dwiso_box_edges(x0: f64, x1: f64, y0: f64, y1: f64, z0: f64, z1: f64) -> [(Vec3, Vec3); 12] {
         let fbl = Vec3::new(x0, y0, z0);
         let fbr = Vec3::new(x1, y0, z0);
         let ftr = Vec3::new(x1, y0, z1);
@@ -15741,11 +16591,7 @@ impl CadKitApp {
         )
     }
 
-    fn barycentric_screen_triangle(
-        tri: &[Vec2; 3],
-        p: Vec2,
-        eps: f64,
-    ) -> Option<[f64; 3]> {
+    fn barycentric_screen_triangle(tri: &[Vec2; 3], p: Vec2, eps: f64) -> Option<[f64; 3]> {
         let a = tri[0];
         let b = tri[1];
         let c = tri[2];
@@ -15772,7 +16618,9 @@ impl CadKitApp {
         uy: f64,
         eps: f64,
     ) -> (usize, usize) {
-        let samples = [0.05_f64, 0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85, 0.95];
+        let samples = [
+            0.05_f64, 0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85, 0.95,
+        ];
         let mut hidden = 0usize;
         for t in samples {
             let model = Vec3::new(
@@ -15784,7 +16632,11 @@ impl CadKitApp {
             let p = Vec2::new(screen.x, screen.y);
             let mut occluded = false;
             for (tri, depths, aabb) in occluders {
-                if p.x < aabb.0 - eps || p.x > aabb.1 + eps || p.y < aabb.2 - eps || p.y > aabb.3 + eps {
+                if p.x < aabb.0 - eps
+                    || p.x > aabb.1 + eps
+                    || p.y < aabb.2 - eps
+                    || p.y > aabb.3 + eps
+                {
                     continue;
                 }
                 let Some(weights) = Self::barycentric_screen_triangle(tri, p, eps) else {
@@ -15840,9 +16692,11 @@ impl CadKitApp {
             let Some(layer) = self.drawing.get_layer(entity.layer) else {
                 continue;
             };
-            front_map
-                .entry(layer.name.to_ascii_lowercase())
-                .or_insert((entity.layer, layer.name.clone(), bounds));
+            front_map.entry(layer.name.to_ascii_lowercase()).or_insert((
+                entity.layer,
+                layer.name.clone(),
+                bounds,
+            ));
         }
 
         for id in self.dwiso_side_side_entities.clone() {
@@ -15861,9 +16715,11 @@ impl CadKitApp {
             let Some(layer) = self.drawing.get_layer(entity.layer) else {
                 continue;
             };
-            side_map
-                .entry(layer.name.to_ascii_lowercase())
-                .or_insert((entity.layer, layer.name.clone(), bounds));
+            side_map.entry(layer.name.to_ascii_lowercase()).or_insert((
+                entity.layer,
+                layer.name.clone(),
+                bounds,
+            ));
         }
 
         let angle = std::f64::consts::PI / 6.0;
@@ -15938,7 +16794,8 @@ impl CadKitApp {
         let mut occluders: Vec<([Vec2; 3], [f64; 3], (f64, f64, f64, f64))> = Vec::new();
 
         for (_depth_offset, output_layer_id, faces, all_edges, silhouette_edges) in parts {
-            let mut allowed_edges: HashMap<((i64, i64, i64), (i64, i64, i64)), (Vec3, Vec3)> = HashMap::new();
+            let mut allowed_edges: HashMap<((i64, i64, i64), (i64, i64, i64)), (Vec3, Vec3)> =
+                HashMap::new();
             for face in &faces {
                 for (start, end) in Self::polygon_edges(face) {
                     let key = Self::canonical_segment_key(start, end);
@@ -15966,20 +16823,20 @@ impl CadKitApp {
             }
 
             for (key, (start, end)) in allowed_edges {
-                let (visible_samples, occluded_samples) = Self::edge_visibility_counts_dwiso_triangles(
-                    start,
-                    end,
-                    &occluders,
-                    output_origin,
-                    ux,
-                    uy,
-                    eps,
-                );
+                let (visible_samples, occluded_samples) =
+                    Self::edge_visibility_counts_dwiso_triangles(
+                        start,
+                        end,
+                        &occluders,
+                        output_origin,
+                        ux,
+                        uy,
+                        eps,
+                    );
                 let is_silhouette = silhouette_edges.contains(&key);
                 let total_samples = visible_samples + occluded_samples;
                 let hidden = if is_silhouette {
-                    total_samples > 0
-                        && (occluded_samples as f64) / (total_samples as f64) >= 0.9
+                    total_samples > 0 && (occluded_samples as f64) / (total_samples as f64) >= 0.9
                 } else {
                     visible_samples <= occluded_samples
                 };
@@ -16003,10 +16860,30 @@ impl CadKitApp {
 
             for face in faces {
                 let projected = [
-                    Vec2::from(Self::project_dwiso_model_point(face[0], output_origin, ux, uy)),
-                    Vec2::from(Self::project_dwiso_model_point(face[1], output_origin, ux, uy)),
-                    Vec2::from(Self::project_dwiso_model_point(face[2], output_origin, ux, uy)),
-                    Vec2::from(Self::project_dwiso_model_point(face[3], output_origin, ux, uy)),
+                    Vec2::from(Self::project_dwiso_model_point(
+                        face[0],
+                        output_origin,
+                        ux,
+                        uy,
+                    )),
+                    Vec2::from(Self::project_dwiso_model_point(
+                        face[1],
+                        output_origin,
+                        ux,
+                        uy,
+                    )),
+                    Vec2::from(Self::project_dwiso_model_point(
+                        face[2],
+                        output_origin,
+                        ux,
+                        uy,
+                    )),
+                    Vec2::from(Self::project_dwiso_model_point(
+                        face[3],
+                        output_origin,
+                        ux,
+                        uy,
+                    )),
                 ];
                 for tri_indices in [[0usize, 1usize, 2usize], [0usize, 2usize, 3usize]] {
                     let tri = [
@@ -16675,7 +17552,8 @@ impl CadKitApp {
 
     fn apply_isocircle(&mut self, center: Vec2, radius: f64) -> bool {
         if radius <= 1e-9 || !radius.is_finite() {
-            self.command_log.push("ISOCIRCLE: Radius too small".to_string());
+            self.command_log
+                .push("ISOCIRCLE: Radius too small".to_string());
             return false;
         }
         let axes = self.iso_plane.axes();
@@ -16691,7 +17569,10 @@ impl CadKitApp {
         }
         self.push_undo();
         self.drawing.add_entity(Entity::new(
-            EntityKind::Polyline { vertices: verts, closed: true },
+            EntityKind::Polyline {
+                vertices: verts,
+                closed: true,
+            },
             self.current_layer,
         ));
         self.command_log.push(format!(
@@ -17684,14 +18565,7 @@ impl CadKitApp {
             return (guide_world, None);
         }
 
-        self
-            .resolve_ortho_snap_for_axis(
-                viewport,
-                rect,
-                screen_pos,
-                base,
-                guide_axis,
-            )
+        self.resolve_ortho_snap_for_axis(viewport, rect, screen_pos, base, guide_axis)
             .map(|(_, _, world, kind)| (world, Some(kind)))
             .unwrap_or((guide_world, None))
     }

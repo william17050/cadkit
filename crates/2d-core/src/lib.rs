@@ -9,7 +9,7 @@
 pub mod dxf_io;
 pub use dxf_io::{aci_to_rgb, rgb_to_aci, DxfImportResult};
 
-use cadkit_types::{Guid, Result, Vec2, Vec3};
+use cadkit_types::{CadError, Guid, Result, Vec2, Vec3};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -60,6 +60,9 @@ fn default_block_params() -> BlockParamValues {
     BlockParamValues::default()
 }
 fn default_insert_dynamic_param_overrides() -> HashMap<Guid, f64> {
+    HashMap::new()
+}
+fn default_insert_cabinet_param_overrides() -> HashMap<String, String> {
     HashMap::new()
 }
 fn default_axis_mask_true() -> bool {
@@ -276,6 +279,10 @@ pub struct Entity {
     /// Empty means "use block parameter defaults".
     #[serde(default = "default_insert_dynamic_param_overrides")]
     pub insert_dynamic_param_overrides: HashMap<Guid, f64>,
+    /// V1 cabinet parameter overrides for INSERT entities, keyed by cabinet parameter name.
+    /// Empty means "use cabinet definition defaults".
+    #[serde(default = "default_insert_cabinet_param_overrides")]
+    pub insert_cabinet_param_overrides: HashMap<String, String>,
 }
 
 impl Entity {
@@ -290,6 +297,7 @@ impl Entity {
             linetype_scale: None,
             block_params: BlockParamValues::default(),
             insert_dynamic_param_overrides: HashMap::new(),
+            insert_cabinet_param_overrides: HashMap::new(),
         }
     }
 }
@@ -329,6 +337,645 @@ pub struct BlockParamValues {
     pub width: Option<f64>,
     #[serde(default)]
     pub height: Option<f64>,
+}
+
+/// Parameter value type exposed by a cabinet definition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CabinetParameterType {
+    Number,
+    Integer,
+    Boolean,
+    Text,
+    Choice,
+}
+
+/// Declarative cabinet parameter metadata used by cabinet instances and formulas.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CabinetParameterDefinition {
+    pub id: Guid,
+    pub name: String,
+    pub label: String,
+    pub param_type: CabinetParameterType,
+    #[serde(default)]
+    pub default_value: String,
+    #[serde(default)]
+    pub choice_options: Vec<String>,
+    #[serde(default)]
+    pub unit: Option<String>,
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+
+/// Which authored view geometry a cabinet definition supplies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CabinetViewKind {
+    Plan,
+    FrontElevation,
+    Section,
+}
+
+/// A cabinet definition can carry multiple authored drawing views.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CabinetViewDefinition {
+    pub kind: CabinetViewKind,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub entity_ids: Vec<Guid>,
+}
+
+/// Canonical part orientation / exposed-face hint for MTO and nesting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CabinetPartFace {
+    None,
+    Left,
+    Right,
+    Top,
+    Bottom,
+    Front,
+    Back,
+    Inside,
+    Outside,
+}
+
+/// Grain guidance for rectangular sheet-good parts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CabinetGrainDirection {
+    None,
+    AlongLength,
+    AlongWidth,
+}
+
+/// One spreadsheet-style recipe row used to derive a cabinet part.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CabinetPartRecipeRow {
+    pub id: Guid,
+    pub part_name: String,
+    #[serde(default = "default_recipe_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_recipe_formula_one")]
+    pub qty_formula: String,
+    pub length_formula: String,
+    pub width_formula: String,
+    pub thickness_formula: String,
+    #[serde(default)]
+    pub core_material_formula: String,
+    #[serde(default)]
+    pub finish_formula: String,
+    #[serde(default)]
+    pub face: Option<CabinetPartFace>,
+    #[serde(default)]
+    pub grain: Option<CabinetGrainDirection>,
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+
+/// First-pass cabinet metadata attached to a block definition.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CabinetDefinition {
+    pub family_name: String,
+    #[serde(default)]
+    pub family_kind: Option<String>,
+    #[serde(default)]
+    pub geometry_authored: bool,
+    #[serde(default)]
+    pub parameters: Vec<CabinetParameterDefinition>,
+    #[serde(default)]
+    pub views: Vec<CabinetViewDefinition>,
+    #[serde(default)]
+    pub part_recipe: Vec<CabinetPartRecipeRow>,
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+
+/// Runtime value type produced by cabinet parameter parsing and recipe formulas.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum CabinetFormulaValue {
+    Number(f64),
+    Boolean(bool),
+    Text(String),
+}
+
+/// Evaluated part output derived from one cabinet insert instance.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CabinetGeneratedPart {
+    pub insert_entity_id: Guid,
+    pub block_name: String,
+    pub family_name: String,
+    #[serde(default)]
+    pub family_kind: Option<String>,
+    pub part_name: String,
+    pub quantity: f64,
+    pub length: f64,
+    pub width: f64,
+    pub thickness: f64,
+    #[serde(default)]
+    pub core_material: String,
+    #[serde(default)]
+    pub finish: String,
+    #[serde(default)]
+    pub face: Option<CabinetPartFace>,
+    #[serde(default)]
+    pub grain: Option<CabinetGrainDirection>,
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+
+fn default_recipe_enabled() -> bool {
+    true
+}
+
+fn default_recipe_formula_one() -> String {
+    "1".to_string()
+}
+
+impl CabinetFormulaValue {
+    fn as_number(&self, context: &str) -> Result<f64> {
+        match self {
+            Self::Number(v) => Ok(*v),
+            Self::Boolean(v) => Ok(if *v { 1.0 } else { 0.0 }),
+            Self::Text(_) => Err(CadError::InvalidOperation(format!(
+                "{context} must evaluate to a number"
+            ))),
+        }
+    }
+
+    fn as_bool(&self, context: &str) -> Result<bool> {
+        match self {
+            Self::Boolean(v) => Ok(*v),
+            Self::Number(v) => Ok(v.abs() > 1e-12),
+            Self::Text(v) => {
+                let normalized = v.trim();
+                if normalized.eq_ignore_ascii_case("true") {
+                    Ok(true)
+                } else if normalized.eq_ignore_ascii_case("false") || normalized.is_empty() {
+                    Ok(false)
+                } else {
+                    Err(CadError::InvalidOperation(format!(
+                        "{context} must evaluate to a boolean"
+                    )))
+                }
+            }
+        }
+    }
+
+    fn as_text(&self, _context: &str) -> String {
+        match self {
+            Self::Text(v) => v.clone(),
+            Self::Boolean(v) => {
+                if *v {
+                    "true".to_string()
+                } else {
+                    "false".to_string()
+                }
+            }
+            Self::Number(v) => {
+                if (v.round() - *v).abs() <= 1e-12 {
+                    format!("{}", *v as i64)
+                } else {
+                    v.to_string()
+                }
+            }
+        }
+    }
+}
+
+fn parse_cabinet_parameter_value(
+    param: &CabinetParameterDefinition,
+    raw: &str,
+) -> Result<CabinetFormulaValue> {
+    match param.param_type {
+        CabinetParameterType::Number | CabinetParameterType::Integer => raw
+            .trim()
+            .parse::<f64>()
+            .map(CabinetFormulaValue::Number)
+            .map_err(|_| {
+                CadError::InvalidOperation(format!(
+                    "Cabinet parameter '{}' expects a numeric value, got '{}'",
+                    param.name, raw
+                ))
+            }),
+        CabinetParameterType::Boolean => {
+            let normalized = raw.trim();
+            if normalized.eq_ignore_ascii_case("true")
+                || normalized == "1"
+                || normalized.eq_ignore_ascii_case("yes")
+            {
+                Ok(CabinetFormulaValue::Boolean(true))
+            } else if normalized.eq_ignore_ascii_case("false")
+                || normalized == "0"
+                || normalized.eq_ignore_ascii_case("no")
+                || normalized.is_empty()
+            {
+                Ok(CabinetFormulaValue::Boolean(false))
+            } else {
+                Err(CadError::InvalidOperation(format!(
+                    "Cabinet parameter '{}' expects a boolean value, got '{}'",
+                    param.name, raw
+                )))
+            }
+        }
+        CabinetParameterType::Text | CabinetParameterType::Choice => {
+            Ok(CabinetFormulaValue::Text(raw.to_string()))
+        }
+    }
+}
+
+fn evaluate_cabinet_formula(
+    formula: &str,
+    context: &HashMap<String, CabinetFormulaValue>,
+) -> Result<CabinetFormulaValue> {
+    let formula = formula.trim();
+    if formula.is_empty() {
+        return Ok(CabinetFormulaValue::Text(String::new()));
+    }
+    let mut parser = CabinetFormulaParser::new(formula, context);
+    let value = parser.parse_expression()?;
+    parser.skip_ws();
+    if !parser.is_eof() {
+        return Err(CadError::InvalidOperation(format!(
+            "Unexpected trailing input in formula '{}'",
+            formula
+        )));
+    }
+    Ok(value)
+}
+
+struct CabinetFormulaParser<'a> {
+    input: &'a str,
+    pos: usize,
+    context: &'a HashMap<String, CabinetFormulaValue>,
+}
+
+impl<'a> CabinetFormulaParser<'a> {
+    fn new(input: &'a str, context: &'a HashMap<String, CabinetFormulaValue>) -> Self {
+        Self {
+            input,
+            pos: 0,
+            context,
+        }
+    }
+
+    fn parse_expression(&mut self) -> Result<CabinetFormulaValue> {
+        self.parse_comparison()
+    }
+
+    fn parse_comparison(&mut self) -> Result<CabinetFormulaValue> {
+        let mut left = self.parse_additive()?;
+        loop {
+            self.skip_ws();
+            let op = if self.consume_str("==") {
+                Some("==")
+            } else if self.consume_str("!=") {
+                Some("!=")
+            } else if self.consume_str(">=") {
+                Some(">=")
+            } else if self.consume_str("<=") {
+                Some("<=")
+            } else if self.consume_char('>') {
+                Some(">")
+            } else if self.consume_char('<') {
+                Some("<")
+            } else {
+                None
+            };
+            let Some(op) = op else { break };
+            let right = self.parse_additive()?;
+            left = CabinetFormulaValue::Boolean(match op {
+                "==" => compare_formula_values(&left, &right)? == 0,
+                "!=" => compare_formula_values(&left, &right)? != 0,
+                ">" => compare_formula_values(&left, &right)? > 0,
+                "<" => compare_formula_values(&left, &right)? < 0,
+                ">=" => compare_formula_values(&left, &right)? >= 0,
+                "<=" => compare_formula_values(&left, &right)? <= 0,
+                _ => unreachable!(),
+            });
+        }
+        Ok(left)
+    }
+
+    fn parse_additive(&mut self) -> Result<CabinetFormulaValue> {
+        let mut left = self.parse_multiplicative()?;
+        loop {
+            self.skip_ws();
+            if self.consume_char('+') {
+                let right = self.parse_multiplicative()?;
+                left = CabinetFormulaValue::Number(
+                    left.as_number("left side of '+'")? + right.as_number("right side of '+'")?,
+                );
+            } else if self.consume_char('-') {
+                let right = self.parse_multiplicative()?;
+                left = CabinetFormulaValue::Number(
+                    left.as_number("left side of '-'")? - right.as_number("right side of '-'")?,
+                );
+            } else {
+                break;
+            }
+        }
+        Ok(left)
+    }
+
+    fn parse_multiplicative(&mut self) -> Result<CabinetFormulaValue> {
+        let mut left = self.parse_unary()?;
+        loop {
+            self.skip_ws();
+            if self.consume_char('*') {
+                let right = self.parse_unary()?;
+                left = CabinetFormulaValue::Number(
+                    left.as_number("left side of '*'")? * right.as_number("right side of '*'")?,
+                );
+            } else if self.consume_char('/') {
+                let right = self.parse_unary()?;
+                let denom = right.as_number("right side of '/'")?;
+                if denom.abs() <= 1e-12 {
+                    return Err(CadError::InvalidOperation(
+                        "Division by zero in cabinet formula".to_string(),
+                    ));
+                }
+                left = CabinetFormulaValue::Number(left.as_number("left side of '/'")? / denom);
+            } else {
+                break;
+            }
+        }
+        Ok(left)
+    }
+
+    fn parse_unary(&mut self) -> Result<CabinetFormulaValue> {
+        self.skip_ws();
+        if self.consume_char('-') {
+            return Ok(CabinetFormulaValue::Number(
+                -self.parse_unary()?.as_number("unary '-' operand")?,
+            ));
+        }
+        self.parse_primary()
+    }
+
+    fn parse_primary(&mut self) -> Result<CabinetFormulaValue> {
+        self.skip_ws();
+        if self.consume_char('(') {
+            let value = self.parse_expression()?;
+            self.skip_ws();
+            if !self.consume_char(')') {
+                return Err(CadError::InvalidOperation(
+                    "Missing closing ')' in cabinet formula".to_string(),
+                ));
+            }
+            return Ok(value);
+        }
+
+        if self.peek_char() == Some('"') {
+            return Ok(CabinetFormulaValue::Text(self.parse_string_literal()?));
+        }
+
+        if let Some(number) = self.parse_number_literal()? {
+            return Ok(CabinetFormulaValue::Number(number));
+        }
+
+        let ident = self.parse_identifier()?;
+        self.skip_ws();
+        if self.consume_char('(') {
+            return self.parse_function_call(&ident);
+        }
+
+        if ident.eq_ignore_ascii_case("true") {
+            return Ok(CabinetFormulaValue::Boolean(true));
+        }
+        if ident.eq_ignore_ascii_case("false") {
+            return Ok(CabinetFormulaValue::Boolean(false));
+        }
+
+        self.context.get(&ident).cloned().ok_or_else(|| {
+            CadError::InvalidOperation(format!("Unknown cabinet formula identifier '{}'", ident))
+        })
+    }
+
+    fn parse_function_call(&mut self, name: &str) -> Result<CabinetFormulaValue> {
+        let mut args = Vec::new();
+        loop {
+            self.skip_ws();
+            if self.consume_char(')') {
+                break;
+            }
+            args.push(self.parse_expression()?);
+            self.skip_ws();
+            if self.consume_char(')') {
+                break;
+            }
+            if !self.consume_char(',') {
+                return Err(CadError::InvalidOperation(format!(
+                    "Expected ',' in function '{}'",
+                    name
+                )));
+            }
+        }
+
+        if name.eq_ignore_ascii_case("if") {
+            if args.len() != 3 {
+                return Err(CadError::InvalidOperation(
+                    "Function 'if' expects exactly 3 arguments".to_string(),
+                ));
+            }
+            return if args[0].as_bool("if condition")? {
+                Ok(args[1].clone())
+            } else {
+                Ok(args[2].clone())
+            };
+        }
+        if name.eq_ignore_ascii_case("min") {
+            if args.len() != 2 {
+                return Err(CadError::InvalidOperation(
+                    "Function 'min' expects exactly 2 arguments".to_string(),
+                ));
+            }
+            return Ok(CabinetFormulaValue::Number(
+                args[0]
+                    .as_number("min arg 1")?
+                    .min(args[1].as_number("min arg 2")?),
+            ));
+        }
+        if name.eq_ignore_ascii_case("max") {
+            if args.len() != 2 {
+                return Err(CadError::InvalidOperation(
+                    "Function 'max' expects exactly 2 arguments".to_string(),
+                ));
+            }
+            return Ok(CabinetFormulaValue::Number(
+                args[0]
+                    .as_number("max arg 1")?
+                    .max(args[1].as_number("max arg 2")?),
+            ));
+        }
+
+        Err(CadError::InvalidOperation(format!(
+            "Unsupported cabinet formula function '{}'",
+            name
+        )))
+    }
+
+    fn parse_string_literal(&mut self) -> Result<String> {
+        if !self.consume_char('"') {
+            return Err(CadError::InvalidOperation(
+                "Expected string literal".to_string(),
+            ));
+        }
+        let mut out = String::new();
+        while let Some(ch) = self.peek_char() {
+            self.pos += ch.len_utf8();
+            match ch {
+                '"' => return Ok(out),
+                '\\' => {
+                    let Some(escaped) = self.peek_char() else {
+                        return Err(CadError::InvalidOperation(
+                            "Unterminated escape sequence in string literal".to_string(),
+                        ));
+                    };
+                    self.pos += escaped.len_utf8();
+                    out.push(match escaped {
+                        '"' => '"',
+                        '\\' => '\\',
+                        'n' => '\n',
+                        't' => '\t',
+                        other => other,
+                    });
+                }
+                other => out.push(other),
+            }
+        }
+        Err(CadError::InvalidOperation(
+            "Unterminated string literal in cabinet formula".to_string(),
+        ))
+    }
+
+    fn parse_number_literal(&mut self) -> Result<Option<f64>> {
+        self.skip_ws();
+        let rest = &self.input[self.pos..];
+        let mut chars = rest.char_indices().peekable();
+        let mut end = 0usize;
+        let mut saw_digit = false;
+        let mut saw_dot = false;
+
+        while let Some((idx, ch)) = chars.peek().copied() {
+            if ch.is_ascii_digit() {
+                saw_digit = true;
+                end = idx + ch.len_utf8();
+                chars.next();
+            } else if ch == '.' && !saw_dot {
+                saw_dot = true;
+                end = idx + ch.len_utf8();
+                chars.next();
+            } else {
+                break;
+            }
+        }
+
+        if !saw_digit {
+            return Ok(None);
+        }
+
+        let token = &rest[..end];
+        let value = token.parse::<f64>().map_err(|_| {
+            CadError::InvalidOperation(format!(
+                "Invalid numeric literal '{}' in cabinet formula",
+                token
+            ))
+        })?;
+        self.pos += end;
+        Ok(Some(value))
+    }
+
+    fn parse_identifier(&mut self) -> Result<String> {
+        self.skip_ws();
+        let rest = &self.input[self.pos..];
+        let mut chars = rest.char_indices();
+        let Some((_, first)) = chars.next() else {
+            return Err(CadError::InvalidOperation(
+                "Unexpected end of cabinet formula".to_string(),
+            ));
+        };
+        if !(first.is_ascii_alphabetic() || first == '_') {
+            return Err(CadError::InvalidOperation(format!(
+                "Expected identifier in cabinet formula near '{}'",
+                rest
+            )));
+        }
+        let mut end = first.len_utf8();
+        for (idx, ch) in chars {
+            if ch.is_ascii_alphanumeric() || ch == '_' {
+                end = idx + ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        let ident = &rest[..end];
+        self.pos += end;
+        Ok(ident.to_string())
+    }
+
+    fn skip_ws(&mut self) {
+        while let Some(ch) = self.peek_char() {
+            if ch.is_whitespace() {
+                self.pos += ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn peek_char(&self) -> Option<char> {
+        self.input[self.pos..].chars().next()
+    }
+
+    fn consume_char(&mut self, expected: char) -> bool {
+        if self.peek_char() == Some(expected) {
+            self.pos += expected.len_utf8();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn consume_str(&mut self, expected: &str) -> bool {
+        if self.input[self.pos..].starts_with(expected) {
+            self.pos += expected.len();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn is_eof(&self) -> bool {
+        self.pos >= self.input.len()
+    }
+}
+
+fn compare_formula_values(left: &CabinetFormulaValue, right: &CabinetFormulaValue) -> Result<i32> {
+    match (left, right) {
+        (CabinetFormulaValue::Number(a), CabinetFormulaValue::Number(b)) => {
+            Ok(if (a - b).abs() <= 1e-12 {
+                0
+            } else if a < b {
+                -1
+            } else {
+                1
+            })
+        }
+        (CabinetFormulaValue::Boolean(a), CabinetFormulaValue::Boolean(b)) => Ok(match (*a, *b) {
+            (false, false) | (true, true) => 0,
+            (false, true) => -1,
+            (true, false) => 1,
+        }),
+        _ => {
+            let left_text = left.as_text("comparison");
+            let right_text = right.as_text("comparison");
+            Ok(if left_text == right_text {
+                0
+            } else if left_text < right_text {
+                -1
+            } else {
+                1
+            })
+        }
+    }
 }
 
 /// Authored block-local entity payload used as the regeneration source.
@@ -497,6 +1144,16 @@ pub struct BlockDefinition {
     /// V1 dynamic authoring/action model (Phase 1 data-only).
     #[serde(default)]
     pub dynamic_v1: Option<DynamicBlockDefinition>,
+    /// V1 cabinet-definition metadata for library-driven cabinet workflows.
+    #[serde(default)]
+    pub cabinet_v1: Option<CabinetDefinition>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct BlockFileV1 {
+    format: String,
+    version: u32,
+    block: BlockDefinition,
 }
 
 // =============================================================================
@@ -623,6 +1280,7 @@ impl Drawing {
                 entities,
                 dynamic,
                 dynamic_v1: None,
+                cabinet_v1: None,
             },
         );
         true
@@ -636,6 +1294,35 @@ impl Drawing {
         let mut out: Vec<String> = self.blocks.values().map(|b| b.name.clone()).collect();
         out.sort();
         out
+    }
+
+    pub fn export_block_to_file(&self, name: &str, path: &str) -> Result<()> {
+        let block = self
+            .get_block(name)
+            .cloned()
+            .ok_or_else(|| CadError::InvalidOperation(format!("Block '{}' not found", name)))?;
+        let payload = BlockFileV1 {
+            format: "cadkit-block".to_string(),
+            version: 1,
+            block,
+        };
+        let json = serde_json::to_string_pretty(&payload)?;
+        std::fs::write(path, json)?;
+        Ok(())
+    }
+
+    pub fn import_block_from_file(&mut self, path: &str) -> Result<String> {
+        let json = std::fs::read_to_string(path)?;
+        let payload: BlockFileV1 = serde_json::from_str(&json)?;
+        if payload.format != "cadkit-block" || payload.version != 1 {
+            return Err(CadError::InvalidOperation(
+                "Unsupported block file format".to_string(),
+            ));
+        }
+        let key = payload.block.name.trim().to_ascii_lowercase();
+        let name = payload.block.name.clone();
+        self.blocks.insert(key, payload.block);
+        Ok(name)
     }
 
     /// Fetch V1 dynamic block metadata for a block name.
@@ -654,6 +1341,25 @@ impl Drawing {
             return false;
         };
         block.dynamic_v1 = dynamic_v1;
+        true
+    }
+
+    /// Fetch V1 cabinet-definition metadata for a block name.
+    pub fn get_block_cabinet_v1(&self, name: &str) -> Option<&CabinetDefinition> {
+        self.get_block(name).and_then(|b| b.cabinet_v1.as_ref())
+    }
+
+    /// Set or clear V1 cabinet-definition metadata for a block name.
+    pub fn set_block_cabinet_v1(
+        &mut self,
+        name: &str,
+        cabinet_v1: Option<CabinetDefinition>,
+    ) -> bool {
+        let key = name.trim().to_ascii_lowercase();
+        let Some(block) = self.blocks.get_mut(&key) else {
+            return false;
+        };
+        block.cabinet_v1 = cabinet_v1;
         true
     }
 
@@ -680,6 +1386,39 @@ impl Drawing {
         Some(values)
     }
 
+    /// Return effective cabinet parameter values for an INSERT entity id.
+    /// Defaults come from block `cabinet_v1.parameters`; entity overrides replace defaults.
+    pub fn get_insert_effective_cabinet_params(
+        &self,
+        insert_id: &Guid,
+    ) -> Result<HashMap<String, CabinetFormulaValue>> {
+        let entity = self
+            .get_entity(insert_id)
+            .ok_or(CadError::NotFound(*insert_id))?;
+        let EntityKind::Insert { name, .. } = &entity.kind else {
+            return Err(CadError::InvalidOperation(
+                "Cabinet parameters are only available on INSERT entities".to_string(),
+            ));
+        };
+        let cabinet = self.get_block_cabinet_v1(name).ok_or_else(|| {
+            CadError::InvalidOperation(format!("Block '{name}' has no cabinet_v1 definition"))
+        })?;
+
+        let mut values: HashMap<String, CabinetFormulaValue> = HashMap::new();
+        for param in &cabinet.parameters {
+            let raw = entity
+                .insert_cabinet_param_overrides
+                .get(&param.name)
+                .map(String::as_str)
+                .unwrap_or(param.default_value.as_str());
+            values.insert(
+                param.name.clone(),
+                parse_cabinet_parameter_value(param, raw)?,
+            );
+        }
+        Ok(values)
+    }
+
     /// Return raw override map for an INSERT entity id.
     pub fn get_insert_dynamic_param_overrides(
         &self,
@@ -690,6 +1429,18 @@ impl Drawing {
             return None;
         }
         Some(&entity.insert_dynamic_param_overrides)
+    }
+
+    /// Return raw cabinet override map for an INSERT entity id.
+    pub fn get_insert_cabinet_param_overrides(
+        &self,
+        insert_id: &Guid,
+    ) -> Option<&HashMap<String, String>> {
+        let entity = self.get_entity(insert_id)?;
+        if !matches!(entity.kind, EntityKind::Insert { .. }) {
+            return None;
+        }
+        Some(&entity.insert_cabinet_param_overrides)
     }
 
     /// Set/update one dynamic parameter override for an INSERT entity.
@@ -741,6 +1492,55 @@ impl Drawing {
         true
     }
 
+    /// Set/update one cabinet parameter override for an INSERT entity.
+    pub fn set_insert_cabinet_param_override(
+        &mut self,
+        insert_id: &Guid,
+        parameter_name: impl Into<String>,
+        value: impl Into<String>,
+    ) -> bool {
+        let Some(entity) = self.get_entity_mut(insert_id) else {
+            return false;
+        };
+        if !matches!(entity.kind, EntityKind::Insert { .. }) {
+            return false;
+        }
+        entity
+            .insert_cabinet_param_overrides
+            .insert(parameter_name.into(), value.into());
+        true
+    }
+
+    /// Remove one cabinet parameter override for an INSERT entity.
+    pub fn remove_insert_cabinet_param_override(
+        &mut self,
+        insert_id: &Guid,
+        parameter_name: &str,
+    ) -> bool {
+        let Some(entity) = self.get_entity_mut(insert_id) else {
+            return false;
+        };
+        if !matches!(entity.kind, EntityKind::Insert { .. }) {
+            return false;
+        }
+        entity
+            .insert_cabinet_param_overrides
+            .remove(parameter_name)
+            .is_some()
+    }
+
+    /// Clear all cabinet parameter overrides for an INSERT entity.
+    pub fn clear_insert_cabinet_param_overrides(&mut self, insert_id: &Guid) -> bool {
+        let Some(entity) = self.get_entity_mut(insert_id) else {
+            return false;
+        };
+        if !matches!(entity.kind, EntityKind::Insert { .. }) {
+            return false;
+        }
+        entity.insert_cabinet_param_overrides.clear();
+        true
+    }
+
     /// Snapshot helper for serialization/interchange of per-instance dynamic values.
     pub fn get_block_instance_dynamic_state(
         &self,
@@ -769,6 +1569,68 @@ impl Drawing {
         }
         entity.insert_dynamic_param_overrides = state.param_values.clone();
         true
+    }
+
+    /// Evaluate one cabinet insert into spreadsheet-style generated part rows.
+    pub fn evaluate_insert_cabinet_parts(
+        &self,
+        insert_id: &Guid,
+    ) -> Result<Vec<CabinetGeneratedPart>> {
+        let entity = self
+            .get_entity(insert_id)
+            .ok_or(CadError::NotFound(*insert_id))?;
+        let EntityKind::Insert { name, .. } = &entity.kind else {
+            return Err(CadError::InvalidOperation(
+                "Cabinet parts can only be generated from INSERT entities".to_string(),
+            ));
+        };
+        let cabinet = self.get_block_cabinet_v1(name).ok_or_else(|| {
+            CadError::InvalidOperation(format!("Block '{name}' has no cabinet_v1 definition"))
+        })?;
+        let context = self.get_insert_effective_cabinet_params(insert_id)?;
+
+        let mut parts = Vec::new();
+        for row in &cabinet.part_recipe {
+            if !row.enabled {
+                continue;
+            }
+
+            let quantity = evaluate_cabinet_formula(&row.qty_formula, &context)?
+                .as_number(&format!("recipe '{}' qty_formula", row.part_name))?;
+            if quantity <= 0.0 {
+                continue;
+            }
+
+            let length = evaluate_cabinet_formula(&row.length_formula, &context)?
+                .as_number(&format!("recipe '{}' length_formula", row.part_name))?;
+            let width = evaluate_cabinet_formula(&row.width_formula, &context)?
+                .as_number(&format!("recipe '{}' width_formula", row.part_name))?;
+            let thickness = evaluate_cabinet_formula(&row.thickness_formula, &context)?
+                .as_number(&format!("recipe '{}' thickness_formula", row.part_name))?;
+            let core_material = evaluate_cabinet_formula(&row.core_material_formula, &context)?
+                .as_text(&format!("recipe '{}' core_material_formula", row.part_name));
+            let finish = evaluate_cabinet_formula(&row.finish_formula, &context)?
+                .as_text(&format!("recipe '{}' finish_formula", row.part_name));
+
+            parts.push(CabinetGeneratedPart {
+                insert_entity_id: *insert_id,
+                block_name: name.clone(),
+                family_name: cabinet.family_name.clone(),
+                family_kind: cabinet.family_kind.clone(),
+                part_name: row.part_name.clone(),
+                quantity,
+                length,
+                width,
+                thickness,
+                core_material,
+                finish,
+                face: row.face,
+                grain: row.grain,
+                notes: row.notes.clone(),
+            });
+        }
+
+        Ok(parts)
     }
 
     /// Evaluate INSERT-local entities, regenerating from `dynamic_v1` authored geometry
@@ -816,6 +1678,13 @@ impl Drawing {
             .unwrap_or_default();
         for p in &dynv1.parameters {
             effective.entry(p.id).or_insert(p.default_value);
+        }
+        if let Ok(cabinet_values) = self.get_insert_effective_cabinet_params(&insert.id) {
+            for p in &dynv1.parameters {
+                if let Some(CabinetFormulaValue::Number(v)) = cabinet_values.get(&p.name) {
+                    effective.insert(p.id, *v);
+                }
+            }
         }
 
         let base_min_x = dynv1.base_bounds.min.x;
@@ -984,7 +1853,14 @@ impl Drawing {
                         EntityBehavior::StretchFromLeft
                         | EntityBehavior::StretchFromRight
                         | EntityBehavior::StretchFromCenter => {
-                            // TODO(dynamic-v1): Stretch behavior plugs in next phase.
+                            let delta_units = delta * weight;
+                            working[idx].kind = Self::stretch_kind_local(
+                                &working[idx].kind,
+                                param.axis,
+                                target.behavior,
+                                delta_units,
+                                (x0, y0, x1, y1),
+                            );
                             continue;
                         }
                         EntityBehavior::Ignore => continue,
@@ -1282,6 +2158,187 @@ impl Drawing {
         }
     }
 
+    fn stretch_kind_local(
+        kind: &EntityKind,
+        axis: ParameterAxis,
+        behavior: EntityBehavior,
+        delta: f64,
+        bounds: (f64, f64, f64, f64),
+    ) -> EntityKind {
+        let (x0, y0, x1, y1) = bounds;
+        let cx = (x0 + x1) * 0.5;
+        let cy = (y0 + y1) * 0.5;
+        let tol_x = ((x1 - x0).abs()).max(1.0) * 1e-6;
+        let tol_y = ((y1 - y0).abs()).max(1.0) * 1e-6;
+        let stretch_point = |p: Vec3| -> Vec3 {
+            let mut out = p;
+            match (axis, behavior) {
+                (ParameterAxis::X, EntityBehavior::StretchFromRight) => {
+                    if (p.x - x1).abs() <= tol_x {
+                        out.x += delta;
+                    }
+                }
+                (ParameterAxis::X, EntityBehavior::StretchFromLeft) => {
+                    if (p.x - x0).abs() <= tol_x {
+                        out.x -= delta;
+                    }
+                }
+                (ParameterAxis::X, EntityBehavior::StretchFromCenter) => {
+                    if p.x > cx + tol_x {
+                        out.x += delta * 0.5;
+                    } else if p.x < cx - tol_x {
+                        out.x -= delta * 0.5;
+                    }
+                }
+                (ParameterAxis::Y, EntityBehavior::StretchFromRight) => {
+                    if (p.y - y1).abs() <= tol_y {
+                        out.y += delta;
+                    }
+                }
+                (ParameterAxis::Y, EntityBehavior::StretchFromLeft) => {
+                    if (p.y - y0).abs() <= tol_y {
+                        out.y -= delta;
+                    }
+                }
+                (ParameterAxis::Y, EntityBehavior::StretchFromCenter) => {
+                    if p.y > cy + tol_y {
+                        out.y += delta * 0.5;
+                    } else if p.y < cy - tol_y {
+                        out.y -= delta * 0.5;
+                    }
+                }
+                _ => {}
+            }
+            out
+        };
+
+        match kind {
+            EntityKind::Line { start, end } => EntityKind::Line {
+                start: stretch_point(*start),
+                end: stretch_point(*end),
+            },
+            EntityKind::Arc {
+                center,
+                radius,
+                start_angle,
+                end_angle,
+            } => EntityKind::Arc {
+                center: stretch_point(*center),
+                radius: *radius,
+                start_angle: *start_angle,
+                end_angle: *end_angle,
+            },
+            EntityKind::Circle { center, radius } => EntityKind::Circle {
+                center: stretch_point(*center),
+                radius: *radius,
+            },
+            EntityKind::Polyline { vertices, closed } => EntityKind::Polyline {
+                vertices: vertices.iter().map(|v| stretch_point(*v)).collect(),
+                closed: *closed,
+            },
+            EntityKind::DimAligned {
+                start,
+                end,
+                offset,
+                text_override,
+                text_pos,
+                arrow_length,
+                arrow_half_width,
+            } => EntityKind::DimAligned {
+                start: stretch_point(*start),
+                end: stretch_point(*end),
+                offset: *offset,
+                text_override: text_override.clone(),
+                text_pos: stretch_point(*text_pos),
+                arrow_length: *arrow_length,
+                arrow_half_width: *arrow_half_width,
+            },
+            EntityKind::DimLinear {
+                start,
+                end,
+                offset,
+                text_override,
+                text_pos,
+                horizontal,
+                arrow_length,
+                arrow_half_width,
+            } => EntityKind::DimLinear {
+                start: stretch_point(*start),
+                end: stretch_point(*end),
+                offset: *offset,
+                text_override: text_override.clone(),
+                text_pos: stretch_point(*text_pos),
+                horizontal: *horizontal,
+                arrow_length: *arrow_length,
+                arrow_half_width: *arrow_half_width,
+            },
+            EntityKind::DimAngular {
+                vertex,
+                line1_pt,
+                line2_pt,
+                radius,
+                text_override,
+                text_pos,
+                arrow_length,
+                arrow_half_width,
+            } => EntityKind::DimAngular {
+                vertex: stretch_point(*vertex),
+                line1_pt: stretch_point(*line1_pt),
+                line2_pt: stretch_point(*line2_pt),
+                radius: *radius,
+                text_override: text_override.clone(),
+                text_pos: stretch_point(*text_pos),
+                arrow_length: *arrow_length,
+                arrow_half_width: *arrow_half_width,
+            },
+            EntityKind::DimRadial {
+                center,
+                radius,
+                leader_pt,
+                is_diameter,
+                text_override,
+                text_pos,
+                arrow_length,
+                arrow_half_width,
+            } => EntityKind::DimRadial {
+                center: stretch_point(*center),
+                radius: *radius,
+                leader_pt: stretch_point(*leader_pt),
+                is_diameter: *is_diameter,
+                text_override: text_override.clone(),
+                text_pos: stretch_point(*text_pos),
+                arrow_length: *arrow_length,
+                arrow_half_width: *arrow_half_width,
+            },
+            EntityKind::Text {
+                position,
+                content,
+                height,
+                rotation,
+                font_name,
+            } => EntityKind::Text {
+                position: stretch_point(*position),
+                content: content.clone(),
+                height: *height,
+                rotation: *rotation,
+                font_name: font_name.clone(),
+            },
+            EntityKind::Insert {
+                name,
+                position,
+                rotation,
+                scale_x,
+                scale_y,
+            } => EntityKind::Insert {
+                name: name.clone(),
+                position: stretch_point(*position),
+                rotation: *rotation,
+                scale_x: *scale_x,
+                scale_y: *scale_y,
+            },
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Layer Management
     // -------------------------------------------------------------------------
@@ -1479,5 +2536,391 @@ mod tests {
         assert_eq!(loaded.entity_count(), 1);
 
         std::fs::remove_file(temp_path).ok();
+    }
+
+    #[test]
+    fn test_set_and_get_block_cabinet_v1() {
+        let mut drawing = Drawing::default();
+        assert!(drawing.define_block(
+            "BaseCab".to_string(),
+            Vec3::ZERO,
+            vec![BlockEntity {
+                kind: EntityKind::Line {
+                    start: Vec3::xy(0.0, 0.0),
+                    end: Vec3::xy(24.0, 0.0),
+                },
+                layer: 0,
+                color: None,
+                linetype: Linetype::Continuous,
+                linetype_by_layer: false,
+                linetype_scale: None,
+            }],
+            None,
+        ));
+
+        let cabinet = CabinetDefinition {
+            family_name: "Base Cabinet".to_string(),
+            family_kind: Some("base".to_string()),
+            geometry_authored: false,
+            parameters: vec![
+                CabinetParameterDefinition {
+                    id: Guid::new(),
+                    name: "W".to_string(),
+                    label: "Width".to_string(),
+                    param_type: CabinetParameterType::Number,
+                    default_value: "36".to_string(),
+                    choice_options: Vec::new(),
+                    unit: Some("in".to_string()),
+                    notes: None,
+                },
+                CabinetParameterDefinition {
+                    id: Guid::new(),
+                    name: "EXPOSED_RIGHT".to_string(),
+                    label: "Exposed Right".to_string(),
+                    param_type: CabinetParameterType::Boolean,
+                    default_value: "false".to_string(),
+                    choice_options: Vec::new(),
+                    unit: None,
+                    notes: None,
+                },
+            ],
+            views: vec![CabinetViewDefinition {
+                kind: CabinetViewKind::Plan,
+                description: Some("Plan footprint".to_string()),
+                entity_ids: Vec::new(),
+            }],
+            part_recipe: vec![CabinetPartRecipeRow {
+                id: Guid::new(),
+                part_name: "SIDE_R".to_string(),
+                enabled: true,
+                qty_formula: "1".to_string(),
+                length_formula: "H - TKH".to_string(),
+                width_formula: "D".to_string(),
+                thickness_formula: "THK".to_string(),
+                core_material_formula: "COREMAT".to_string(),
+                finish_formula: "if(EXPOSED_RIGHT, LAMCODE, \"\")".to_string(),
+                face: Some(CabinetPartFace::Outside),
+                grain: Some(CabinetGrainDirection::AlongLength),
+                notes: Some("Right side panel".to_string()),
+            }],
+            notes: Some("Starter base cabinet".to_string()),
+        };
+
+        assert!(drawing.set_block_cabinet_v1("basecab", Some(cabinet)));
+        let stored = drawing.get_block_cabinet_v1("BASECAB").unwrap();
+        assert_eq!(stored.family_name, "Base Cabinet");
+        assert_eq!(stored.part_recipe.len(), 1);
+        assert_eq!(stored.part_recipe[0].part_name, "SIDE_R");
+    }
+
+    #[test]
+    fn test_cabinet_v1_field_defaults_when_missing() {
+        let json = r#"
+        {
+          "id": "00000000-0000-0000-0000-000000000001",
+          "name": "Legacy",
+          "linetype_scale": 1.0,
+          "entities": {},
+          "blocks": {
+            "testblock": {
+              "name": "TestBlock",
+              "base_point": {"x":0.0,"y":0.0,"z":0.0},
+              "entities": []
+            }
+          },
+          "layers": {
+            "0": {
+              "id": 0,
+              "name": "0",
+              "visible": true,
+              "locked": false,
+              "frozen": false,
+              "color": [255,255,255],
+              "linetype": "Continuous",
+              "linetype_scale": 1.0
+            }
+          },
+          "next_layer_id": 1
+        }
+        "#;
+        let drawing: Drawing = serde_json::from_str(json).unwrap();
+        let block = drawing.get_block("testblock").unwrap();
+        assert!(block.cabinet_v1.is_none());
+    }
+
+    #[test]
+    fn test_insert_cabinet_param_overrides_and_effective_values() {
+        let mut drawing = Drawing::default();
+        assert!(drawing.define_block(
+            "BaseCab".to_string(),
+            Vec3::ZERO,
+            vec![BlockEntity {
+                kind: EntityKind::Line {
+                    start: Vec3::xy(0.0, 0.0),
+                    end: Vec3::xy(24.0, 0.0),
+                },
+                layer: 0,
+                color: None,
+                linetype: Linetype::Continuous,
+                linetype_by_layer: false,
+                linetype_scale: None,
+            }],
+            None,
+        ));
+        assert!(drawing.set_block_cabinet_v1(
+            "BaseCab",
+            Some(CabinetDefinition {
+                family_name: "Base Cabinet".to_string(),
+                family_kind: Some("base".to_string()),
+                geometry_authored: false,
+                parameters: vec![
+                    CabinetParameterDefinition {
+                        id: Guid::new(),
+                        name: "W".to_string(),
+                        label: "Width".to_string(),
+                        param_type: CabinetParameterType::Number,
+                        default_value: "36".to_string(),
+                        choice_options: Vec::new(),
+                        unit: Some("in".to_string()),
+                        notes: None,
+                    },
+                    CabinetParameterDefinition {
+                        id: Guid::new(),
+                        name: "EXPOSED_RIGHT".to_string(),
+                        label: "Exposed Right".to_string(),
+                        param_type: CabinetParameterType::Boolean,
+                        default_value: "false".to_string(),
+                        choice_options: Vec::new(),
+                        unit: None,
+                        notes: None,
+                    },
+                ],
+                views: Vec::new(),
+                part_recipe: Vec::new(),
+                notes: None,
+            }),
+        ));
+
+        let insert = Entity::new(
+            EntityKind::Insert {
+                name: "BaseCab".to_string(),
+                position: Vec3::ZERO,
+                rotation: 0.0,
+                scale_x: 1.0,
+                scale_y: 1.0,
+            },
+            0,
+        );
+        let insert_id = drawing.add_entity(insert);
+        assert!(drawing.set_insert_cabinet_param_override(&insert_id, "W", "42"));
+        assert!(drawing.set_insert_cabinet_param_override(&insert_id, "EXPOSED_RIGHT", "true"));
+
+        let values = drawing
+            .get_insert_effective_cabinet_params(&insert_id)
+            .unwrap();
+        assert_eq!(values.get("W"), Some(&CabinetFormulaValue::Number(42.0)));
+        assert_eq!(
+            values.get("EXPOSED_RIGHT"),
+            Some(&CabinetFormulaValue::Boolean(true))
+        );
+
+        assert!(drawing.remove_insert_cabinet_param_override(&insert_id, "W"));
+        let values = drawing
+            .get_insert_effective_cabinet_params(&insert_id)
+            .unwrap();
+        assert_eq!(values.get("W"), Some(&CabinetFormulaValue::Number(36.0)));
+    }
+
+    #[test]
+    fn test_evaluate_insert_cabinet_parts() {
+        let mut drawing = Drawing::default();
+        assert!(drawing.define_block(
+            "BaseCab".to_string(),
+            Vec3::ZERO,
+            vec![BlockEntity {
+                kind: EntityKind::Line {
+                    start: Vec3::xy(0.0, 0.0),
+                    end: Vec3::xy(24.0, 0.0),
+                },
+                layer: 0,
+                color: None,
+                linetype: Linetype::Continuous,
+                linetype_by_layer: false,
+                linetype_scale: None,
+            }],
+            None,
+        ));
+        assert!(drawing.set_block_cabinet_v1(
+            "BaseCab",
+            Some(CabinetDefinition {
+                family_name: "Base Cabinet".to_string(),
+                family_kind: Some("base".to_string()),
+                geometry_authored: false,
+                parameters: vec![
+                    CabinetParameterDefinition {
+                        id: Guid::new(),
+                        name: "W".to_string(),
+                        label: "Width".to_string(),
+                        param_type: CabinetParameterType::Number,
+                        default_value: "36".to_string(),
+                        choice_options: Vec::new(),
+                        unit: Some("in".to_string()),
+                        notes: None,
+                    },
+                    CabinetParameterDefinition {
+                        id: Guid::new(),
+                        name: "H".to_string(),
+                        label: "Height".to_string(),
+                        param_type: CabinetParameterType::Number,
+                        default_value: "34.5".to_string(),
+                        choice_options: Vec::new(),
+                        unit: Some("in".to_string()),
+                        notes: None,
+                    },
+                    CabinetParameterDefinition {
+                        id: Guid::new(),
+                        name: "D".to_string(),
+                        label: "Depth".to_string(),
+                        param_type: CabinetParameterType::Number,
+                        default_value: "24".to_string(),
+                        choice_options: Vec::new(),
+                        unit: Some("in".to_string()),
+                        notes: None,
+                    },
+                    CabinetParameterDefinition {
+                        id: Guid::new(),
+                        name: "TKH".to_string(),
+                        label: "Toe Kick Height".to_string(),
+                        param_type: CabinetParameterType::Number,
+                        default_value: "4".to_string(),
+                        choice_options: Vec::new(),
+                        unit: Some("in".to_string()),
+                        notes: None,
+                    },
+                    CabinetParameterDefinition {
+                        id: Guid::new(),
+                        name: "THK".to_string(),
+                        label: "Panel Thickness".to_string(),
+                        param_type: CabinetParameterType::Number,
+                        default_value: "0.75".to_string(),
+                        choice_options: Vec::new(),
+                        unit: Some("in".to_string()),
+                        notes: None,
+                    },
+                    CabinetParameterDefinition {
+                        id: Guid::new(),
+                        name: "COREMAT".to_string(),
+                        label: "Core Material".to_string(),
+                        param_type: CabinetParameterType::Text,
+                        default_value: "PB_3_4_WHITE".to_string(),
+                        choice_options: Vec::new(),
+                        unit: None,
+                        notes: None,
+                    },
+                    CabinetParameterDefinition {
+                        id: Guid::new(),
+                        name: "LAMCODE".to_string(),
+                        label: "Laminate Code".to_string(),
+                        param_type: CabinetParameterType::Text,
+                        default_value: "WHT".to_string(),
+                        choice_options: Vec::new(),
+                        unit: None,
+                        notes: None,
+                    },
+                    CabinetParameterDefinition {
+                        id: Guid::new(),
+                        name: "EXPOSED_RIGHT".to_string(),
+                        label: "Exposed Right".to_string(),
+                        param_type: CabinetParameterType::Boolean,
+                        default_value: "false".to_string(),
+                        choice_options: Vec::new(),
+                        unit: None,
+                        notes: None,
+                    },
+                ],
+                views: Vec::new(),
+                part_recipe: vec![
+                    CabinetPartRecipeRow {
+                        id: Guid::new(),
+                        part_name: "SIDE_R".to_string(),
+                        enabled: true,
+                        qty_formula: "1".to_string(),
+                        length_formula: "H - TKH".to_string(),
+                        width_formula: "D".to_string(),
+                        thickness_formula: "THK".to_string(),
+                        core_material_formula: "COREMAT".to_string(),
+                        finish_formula: "if(EXPOSED_RIGHT, LAMCODE, \"\")".to_string(),
+                        face: Some(CabinetPartFace::Outside),
+                        grain: Some(CabinetGrainDirection::AlongLength),
+                        notes: Some("Right side".to_string()),
+                    },
+                    CabinetPartRecipeRow {
+                        id: Guid::new(),
+                        part_name: "STRETCHER".to_string(),
+                        enabled: true,
+                        qty_formula: "max(0, 2)".to_string(),
+                        length_formula: "W - 2 * THK".to_string(),
+                        width_formula: "4".to_string(),
+                        thickness_formula: "THK".to_string(),
+                        core_material_formula: "COREMAT".to_string(),
+                        finish_formula: "\"\"".to_string(),
+                        face: None,
+                        grain: Some(CabinetGrainDirection::AlongLength),
+                        notes: None,
+                    },
+                ],
+                notes: None,
+            }),
+        ));
+
+        let insert = Entity::new(
+            EntityKind::Insert {
+                name: "BaseCab".to_string(),
+                position: Vec3::ZERO,
+                rotation: 0.0,
+                scale_x: 1.0,
+                scale_y: 1.0,
+            },
+            0,
+        );
+        let insert_id = drawing.add_entity(insert);
+        assert!(drawing.set_insert_cabinet_param_override(&insert_id, "W", "42"));
+        assert!(drawing.set_insert_cabinet_param_override(&insert_id, "EXPOSED_RIGHT", "true"));
+
+        let parts = drawing.evaluate_insert_cabinet_parts(&insert_id).unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].part_name, "SIDE_R");
+        assert_eq!(parts[0].quantity, 1.0);
+        assert_eq!(parts[0].length, 30.5);
+        assert_eq!(parts[0].width, 24.0);
+        assert_eq!(parts[0].thickness, 0.75);
+        assert_eq!(parts[0].core_material, "PB_3_4_WHITE");
+        assert_eq!(parts[0].finish, "WHT");
+        assert_eq!(parts[1].part_name, "STRETCHER");
+        assert_eq!(parts[1].quantity, 2.0);
+        assert!((parts[1].length - 40.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_cabinet_formula_comparisons_and_empty_formula() {
+        let mut context = HashMap::new();
+        context.insert("W".to_string(), CabinetFormulaValue::Number(42.0));
+        context.insert(
+            "FINISH".to_string(),
+            CabinetFormulaValue::Text("MAPLE".to_string()),
+        );
+
+        assert_eq!(
+            evaluate_cabinet_formula("W >= 42", &context).unwrap(),
+            CabinetFormulaValue::Boolean(true)
+        );
+        assert_eq!(
+            evaluate_cabinet_formula("FINISH == \"MAPLE\"", &context).unwrap(),
+            CabinetFormulaValue::Boolean(true)
+        );
+        assert_eq!(
+            evaluate_cabinet_formula("", &context).unwrap(),
+            CabinetFormulaValue::Text(String::new())
+        );
     }
 }

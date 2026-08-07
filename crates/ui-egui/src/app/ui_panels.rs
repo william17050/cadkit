@@ -2,11 +2,14 @@ use super::state::{
     ActiveTool, ArrayMode, ArrayPhase, BlockPhase, BoundaryPhase, ChamferPhase, CopyPhase,
     DimAngularPhase, DimLinearPhase, DimPhase, DimRadialPhase, DwIsoSidePhase, EditDimPhase,
     EditTextPhase, EllipsePhase, ExtendPhase, FilletPhase, FromPhase, HatchPhase, InsertPhase,
-    IsocirclePhase, IsoExtrudePhase, IsoPlane, MirrorPhase, MovePhase, OffsetPhase, PeditPhase, PolygonPhase,
-    RectanglePhase, RotatePhase, ScalePhase, StretchPhase, TextPhase, TrimPhase,
+    IsoExtrudePhase, IsoPlane, IsocirclePhase, MirrorPhase, MovePhase, OffsetPhase, PeditPhase,
+    PolygonPhase, RectanglePhase, RotatePhase, ScalePhase, StretchPhase, TextPhase, TrimPhase,
 };
 use super::CadKitApp;
-use cadkit_2d_core::{EntityKind, Linetype};
+use cadkit_2d_core::{
+    CabinetFormulaValue, CabinetGrainDirection, CabinetParameterType, CabinetPartFace,
+    CabinetPartRecipeRow, EntityKind, Linetype,
+};
 use cadkit_types::{Guid, Vec2};
 use eframe::egui;
 
@@ -255,7 +258,8 @@ impl CadKitApp {
                     self.exit_dim();
                     self.cancel_active_tool();
                     self.isocircle_phase = IsocirclePhase::Center;
-                    self.command_log.push("ISOCIRCLE: Pick center point:".to_string());
+                    self.command_log
+                        .push("ISOCIRCLE: Pick center point:".to_string());
                 }
                 if ui.button("T Text").clicked() {
                     self.exit_dim();
@@ -291,8 +295,69 @@ impl CadKitApp {
                 ui.heading("Blocks");
                 ui.separator();
 
+                let has_selected_insert = self.selected_entities.iter().any(|id| {
+                    self.drawing
+                        .get_entity(id)
+                        .map(|e| matches!(e.kind, EntityKind::Insert { .. }))
+                        .unwrap_or(false)
+                });
+                let can_bedit = !self.block_edit_active
+                    && (has_selected_insert
+                        || (!self.block_palette_selected.trim().is_empty()
+                            && self.drawing.get_block(&self.block_palette_selected).is_some()));
+                let can_bsave = self.block_edit_active;
+
                 if ui.button("🧱 BMake").clicked() {
                     let _ = self.execute_command_alias("bmake");
+                }
+                ui.checkbox(&mut self.block_replace_source, "Replace source")
+                    .on_hover_text("Convert selected source geometry into a block insert after BMake. Turn off to keep the original geometry.");
+                if ui
+                    .add_enabled(has_selected_insert, egui::Button::new("💥 Explode"))
+                    .clicked()
+                {
+                    let _ = self.execute_command_alias("explode");
+                }
+                if ui
+                    .add_enabled(can_bedit, egui::Button::new("✏ BEdit"))
+                    .clicked()
+                {
+                    if has_selected_insert {
+                        let _ = self.execute_command_alias("bedit");
+                    } else if !self.block_palette_selected.trim().is_empty() {
+                        let cmd = format!("bedit {}", self.block_palette_selected);
+                        let _ = self.execute_command_alias(&cmd);
+                    }
+                }
+                if ui
+                    .add_enabled(can_bsave, egui::Button::new("💾 BSave"))
+                    .clicked()
+                {
+                    let _ = self.execute_command_alias("bsave");
+                }
+                if ui
+                    .add_enabled(can_bsave, egui::Button::new("↩ BCancel"))
+                    .clicked()
+                {
+                    let _ = self.execute_command_alias("bcancel");
+                }
+                if ui.button("💾 WBlock").clicked() {
+                    self.export_block_file();
+                }
+                if ui.button("📥 LoadBlock").clicked() {
+                    self.import_block_file();
+                }
+                if ui.button("🗂 CabDef").clicked() {
+                    match self.attach_starter_cabinet_definition() {
+                        Ok(msg) => self.command_log.push(msg),
+                        Err(err) => self.command_log.push(err),
+                    }
+                }
+                if ui.button("🗑 NoCab").clicked() {
+                    match self.remove_cabinet_definition() {
+                        Ok(msg) => self.command_log.push(msg),
+                        Err(err) => self.command_log.push(err),
+                    }
                 }
 
                 let block_names = self.drawing.block_names();
@@ -592,6 +657,7 @@ impl CadKitApp {
                     self.exit_copy();
                     self.exit_rotate();
                     self.exit_scale();
+                    self.mirror_erase_source = false;
                     self.mirror_phase = MirrorPhase::SelectingEntities;
                     self.mirror_axis_p1 = None;
                     self.mirror_entities.clear();
@@ -668,6 +734,14 @@ impl CadKitApp {
             let mut assign_entity_linetype_bylayer: Option<bool> = None;
             let mut assign_entity_linetype_scale: Option<Option<f64>> = None;
             let mut assign_insert_dynamic: Option<(Guid, Option<f64>, Option<f64>)> = None;
+            let mut set_insert_cabinet_param: Option<(Guid, String, String)> = None;
+            let mut clear_insert_cabinet_param: Option<(Guid, String)> = None;
+            let mut apply_cabdef_behavior = false;
+            let mut clear_cabdef_behavior = false;
+            let mut load_cabdef_behavior: Option<Guid> = None;
+            let mut remove_cabdef_behavior: Option<Guid> = None;
+            let mut add_cabdef_part_row = false;
+            let mut remove_cabdef_part_row: Option<Guid> = None;
             let mut set_entity_bylayer = false;
             let mut open_entity_color_picker = false;
 
@@ -826,6 +900,393 @@ impl CadKitApp {
             egui::ScrollArea::vertical()
                 .id_source("props_scroll")
                 .show(ui, |ui| {
+                    if self.block_edit_active {
+                        let block_name = self
+                            .block_edit_name
+                            .as_deref()
+                            .unwrap_or("<unknown>")
+                            .to_string();
+                        let cabdef_behavior_rows = self.cabdef_behavior_summaries();
+                        if let Some(cabinet) = self.block_edit_cabinet_v1.as_mut() {
+                            ui.label(egui::RichText::new("CabDef Parameters").strong());
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "Block: {}",
+                                    block_name
+                                ))
+                                .small()
+                                .color(egui::Color32::from_gray(150)),
+                            );
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "These are the cabinet definition defaults saved on the block."
+                                ))
+                                .small()
+                                .color(egui::Color32::from_gray(120)),
+                            );
+                            egui::Grid::new("cabdef_param_grid")
+                                .num_columns(2)
+                                .spacing([4.0, 2.0])
+                                .show(ui, |ui| {
+                                    ui.label("Family:");
+                                    ui.text_edit_singleline(&mut cabinet.family_name);
+                                    ui.end_row();
+                                    for param in &mut cabinet.parameters {
+                                        ui.label(format!("{}:", param.label));
+                                        match param.param_type {
+                                            CabinetParameterType::Boolean => {
+                                                let mut value = param.default_value
+                                                    .trim()
+                                                    .eq_ignore_ascii_case("true")
+                                                    || param.default_value.trim() == "1";
+                                                if ui.checkbox(&mut value, "").changed() {
+                                                    param.default_value = if value {
+                                                        "true".to_string()
+                                                    } else {
+                                                        "false".to_string()
+                                                    };
+                                                }
+                                            }
+                                            CabinetParameterType::Choice => {
+                                                egui::ComboBox::from_id_source((
+                                                    "cabdef_param_choice",
+                                                    param.name.as_str(),
+                                                ))
+                                                .selected_text(param.default_value.clone())
+                                                .width(120.0)
+                                                .show_ui(ui, |ui| {
+                                                    for option in &param.choice_options {
+                                                        ui.selectable_value(
+                                                            &mut param.default_value,
+                                                            option.clone(),
+                                                            option,
+                                                        );
+                                                    }
+                                                });
+                                            }
+                                            CabinetParameterType::Number
+                                            | CabinetParameterType::Integer
+                                            | CabinetParameterType::Text => {
+                                                ui.add(
+                                                    egui::TextEdit::singleline(
+                                                        &mut param.default_value,
+                                                    )
+                                                    .desired_width(96.0),
+                                                );
+                                            }
+                                        }
+                                        ui.end_row();
+                                    }
+                                });
+                            ui.separator();
+
+                            ui.label(egui::RichText::new("CabDef Parts").strong());
+                            ui.label(
+                                egui::RichText::new(
+                                    "Author cutlist rows with formulas like W, H, D, THK, COREMAT, FINISH, or if(...).",
+                                )
+                                .small()
+                                .color(egui::Color32::from_gray(120)),
+                            );
+                            if ui.button("Add Part Row").clicked() {
+                                add_cabdef_part_row = true;
+                            }
+                            ui.add_space(4.0);
+                            for row in &mut cabinet.part_recipe {
+                                ui.group(|ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.checkbox(&mut row.enabled, "");
+                                        ui.label(egui::RichText::new("Enabled").small());
+                                        ui.label("Part:");
+                                        ui.add(
+                                            egui::TextEdit::singleline(&mut row.part_name)
+                                                .desired_width(120.0),
+                                        );
+                                        if ui.small_button("Remove").clicked() {
+                                            remove_cabdef_part_row = Some(row.id);
+                                        }
+                                    });
+                                    egui::Grid::new(("cabdef_part_row", row.id))
+                                        .num_columns(2)
+                                        .spacing([6.0, 2.0])
+                                        .show(ui, |ui| {
+                                            ui.label("Qty:");
+                                            ui.add(
+                                                egui::TextEdit::singleline(&mut row.qty_formula)
+                                                    .desired_width(120.0),
+                                            );
+                                            ui.end_row();
+                                            ui.label("Length:");
+                                            ui.add(
+                                                egui::TextEdit::singleline(
+                                                    &mut row.length_formula,
+                                                )
+                                                .desired_width(120.0),
+                                            );
+                                            ui.end_row();
+                                            ui.label("Width:");
+                                            ui.add(
+                                                egui::TextEdit::singleline(&mut row.width_formula)
+                                                    .desired_width(120.0),
+                                            );
+                                            ui.end_row();
+                                            ui.label("Thk:");
+                                            ui.add(
+                                                egui::TextEdit::singleline(
+                                                    &mut row.thickness_formula,
+                                                )
+                                                .desired_width(120.0),
+                                            );
+                                            ui.end_row();
+                                            ui.label("Core:");
+                                            ui.add(
+                                                egui::TextEdit::singleline(
+                                                    &mut row.core_material_formula,
+                                                )
+                                                .desired_width(120.0),
+                                            );
+                                            ui.end_row();
+                                            ui.label("Finish:");
+                                            ui.add(
+                                                egui::TextEdit::singleline(
+                                                    &mut row.finish_formula,
+                                                )
+                                                .desired_width(120.0),
+                                            );
+                                            ui.end_row();
+                                        });
+                                    ui.horizontal(|ui| {
+                                        ui.label("Face:");
+                                        egui::ComboBox::from_id_source(("cabdef_part_face", row.id))
+                                            .selected_text(match row.face {
+                                                None => "None",
+                                                Some(CabinetPartFace::None) => "None",
+                                                Some(CabinetPartFace::Left) => "Left",
+                                                Some(CabinetPartFace::Right) => "Right",
+                                                Some(CabinetPartFace::Top) => "Top",
+                                                Some(CabinetPartFace::Bottom) => "Bottom",
+                                                Some(CabinetPartFace::Front) => "Front",
+                                                Some(CabinetPartFace::Back) => "Back",
+                                                Some(CabinetPartFace::Inside) => "Inside",
+                                                Some(CabinetPartFace::Outside) => "Outside",
+                                            })
+                                            .width(96.0)
+                                            .show_ui(ui, |ui| {
+                                                ui.selectable_value(&mut row.face, None, "None");
+                                                ui.selectable_value(
+                                                    &mut row.face,
+                                                    Some(CabinetPartFace::None),
+                                                    "None (Explicit)",
+                                                );
+                                                ui.selectable_value(
+                                                    &mut row.face,
+                                                    Some(CabinetPartFace::Left),
+                                                    "Left",
+                                                );
+                                                ui.selectable_value(
+                                                    &mut row.face,
+                                                    Some(CabinetPartFace::Right),
+                                                    "Right",
+                                                );
+                                                ui.selectable_value(
+                                                    &mut row.face,
+                                                    Some(CabinetPartFace::Top),
+                                                    "Top",
+                                                );
+                                                ui.selectable_value(
+                                                    &mut row.face,
+                                                    Some(CabinetPartFace::Bottom),
+                                                    "Bottom",
+                                                );
+                                                ui.selectable_value(
+                                                    &mut row.face,
+                                                    Some(CabinetPartFace::Front),
+                                                    "Front",
+                                                );
+                                                ui.selectable_value(
+                                                    &mut row.face,
+                                                    Some(CabinetPartFace::Back),
+                                                    "Back",
+                                                );
+                                                ui.selectable_value(
+                                                    &mut row.face,
+                                                    Some(CabinetPartFace::Inside),
+                                                    "Inside",
+                                                );
+                                                ui.selectable_value(
+                                                    &mut row.face,
+                                                    Some(CabinetPartFace::Outside),
+                                                    "Outside",
+                                                );
+                                            });
+                                        ui.label("Grain:");
+                                        egui::ComboBox::from_id_source((
+                                            "cabdef_part_grain",
+                                            row.id,
+                                        ))
+                                        .selected_text(match row.grain {
+                                            None => "None",
+                                            Some(CabinetGrainDirection::None) => "None",
+                                            Some(CabinetGrainDirection::AlongLength) => {
+                                                "Along Length"
+                                            }
+                                            Some(CabinetGrainDirection::AlongWidth) => {
+                                                "Along Width"
+                                            }
+                                        })
+                                        .width(110.0)
+                                        .show_ui(ui, |ui| {
+                                            ui.selectable_value(&mut row.grain, None, "None");
+                                            ui.selectable_value(
+                                                &mut row.grain,
+                                                Some(CabinetGrainDirection::None),
+                                                "None (Explicit)",
+                                            );
+                                            ui.selectable_value(
+                                                &mut row.grain,
+                                                Some(CabinetGrainDirection::AlongLength),
+                                                "Along Length",
+                                            );
+                                            ui.selectable_value(
+                                                &mut row.grain,
+                                                Some(CabinetGrainDirection::AlongWidth),
+                                                "Along Width",
+                                            );
+                                        });
+                                    });
+                                    ui.label("Notes:");
+                                    {
+                                        let notes = row.notes.get_or_insert_with(String::new);
+                                        ui.add(
+                                            egui::TextEdit::singleline(notes)
+                                                .desired_width(f32::INFINITY),
+                                        );
+                                    }
+                                });
+                                ui.add_space(6.0);
+                            }
+                            ui.separator();
+
+                            ui.label(egui::RichText::new("CabDef Behaviors").strong());
+                            ui.label(
+                                egui::RichText::new(
+                                    "Select block entities in BEDIT, then assign a width/height behavior.",
+                                )
+                                .small()
+                                .color(egui::Color32::from_gray(120)),
+                            );
+                            ui.separator();
+
+                            ui.horizontal(|ui| {
+                                ui.label("Driver:");
+                                egui::ComboBox::from_id_source("cabdef_behavior_driver")
+                                    .selected_text(self.cabdef_behavior_param_name.clone())
+                                    .width(90.0)
+                                    .show_ui(ui, |ui| {
+                                        for param in &cabinet.parameters {
+                                            if matches!(
+                                                param.param_type,
+                                                CabinetParameterType::Number
+                                                    | CabinetParameterType::Integer
+                                            ) {
+                                                ui.selectable_value(
+                                                    &mut self.cabdef_behavior_param_name,
+                                                    param.name.clone(),
+                                                    format!("{} ({})", param.label, param.name),
+                                                );
+                                            }
+                                        }
+                                    });
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Rule:");
+                                egui::ComboBox::from_id_source("cabdef_behavior_kind")
+                                    .selected_text(Self::cabdef_behavior_kind_label(
+                                        &self.cabdef_behavior_kind,
+                                    ))
+                                    .width(130.0)
+                                    .show_ui(ui, |ui| {
+                                        let choices = [
+                                            ("stretch_right_x", "Stretch Right X"),
+                                            ("stretch_left_x", "Stretch Left X"),
+                                            ("stretch_center_x", "Stretch Center X"),
+                                            ("stretch_top_y", "Stretch Top Y"),
+                                            ("stretch_bottom_y", "Stretch Bottom Y"),
+                                            ("stretch_center_y", "Stretch Center Y"),
+                                            ("move_x", "Move X"),
+                                            ("move_y", "Move Y"),
+                                            ("anchor_left", "Anchor Left"),
+                                            ("anchor_right", "Anchor Right"),
+                                            ("center_x", "Center X"),
+                                        ];
+                                        for (value, label) in choices {
+                                            ui.selectable_value(
+                                                &mut self.cabdef_behavior_kind,
+                                                value.to_string(),
+                                                label,
+                                            );
+                                        }
+                                    });
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Rate:");
+                                ui.add(
+                                    egui::DragValue::new(&mut self.cabdef_behavior_weight)
+                                        .clamp_range(-10.0..=10.0)
+                                        .speed(0.1),
+                                );
+                            });
+                            ui.horizontal(|ui| {
+                                if ui.button("Apply To Selection").clicked() {
+                                    apply_cabdef_behavior = true;
+                                }
+                                if ui.button("Clear From Selection").clicked() {
+                                    clear_cabdef_behavior = true;
+                                }
+                            });
+                            ui.separator();
+                            ui.label(egui::RichText::new("Current Rules").strong());
+                            if cabdef_behavior_rows.is_empty() {
+                                ui.label(
+                                    egui::RichText::new(
+                                        "No CabDef behavior rules authored on this block yet.",
+                                    )
+                                    .small()
+                                    .color(egui::Color32::from_gray(120)),
+                                );
+                            } else {
+                                ui.label(
+                                    egui::RichText::new(
+                                        "Load selects the driven entities and fills the editor controls.",
+                                    )
+                                    .small()
+                                    .color(egui::Color32::from_gray(120)),
+                                );
+                                for row in cabdef_behavior_rows {
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.label(format!(
+                                            "{} | {} | rate {:.2} | {} target{}",
+                                            row.parameter_name,
+                                            row.rule_label,
+                                            row.rate,
+                                            row.target_count,
+                                            if row.target_count == 1 { "" } else { "s" }
+                                        ));
+                                        if row.rule_key != "custom"
+                                            && ui.small_button("Load").clicked()
+                                        {
+                                            load_cabdef_behavior = Some(row.action_id);
+                                        }
+                                        if ui.small_button("Remove").clicked() {
+                                            remove_cabdef_behavior = Some(row.action_id);
+                                        }
+                                    });
+                                }
+                            }
+                            ui.separator();
+                        }
+                    }
+
                     let sel_count = self.selected_entities.len();
 
                     if sel_count == 0 {
@@ -1062,6 +1523,213 @@ impl CadKitApp {
                                                             ));
                                                         }
                                                         ui.end_row();
+                                                    }
+
+                                                    if let Some(cabinet) = def.cabinet_v1.as_ref() {
+                                                        ui.separator();
+                                                        ui.label(egui::RichText::new("Cabinet").strong());
+                                                        ui.end_row();
+                                                        ui.label("Family:");
+                                                        ui.label(cabinet.family_name.as_str());
+                                                        ui.end_row();
+                                                        if let Some(kind) = &cabinet.family_kind {
+                                                            ui.label("Kind:");
+                                                            ui.label(kind.as_str());
+                                                            ui.end_row();
+                                                        }
+                                                        ui.label("Authored:");
+                                                        ui.label(if cabinet.geometry_authored {
+                                                            "Yes"
+                                                        } else {
+                                                            "No"
+                                                        });
+                                                        ui.end_row();
+                                                        if !cabinet.geometry_authored {
+                                                            ui.label("");
+                                                            ui.label(
+                                                                egui::RichText::new(
+                                                                    "Open this block in BEDIT and BSAVE it before editing cabinet instance parameters.",
+                                                                )
+                                                                .small()
+                                                                .color(egui::Color32::from_rgb(
+                                                                    220, 180, 120,
+                                                                )),
+                                                            );
+                                                            ui.end_row();
+                                                        }
+
+                                                        let effective = self
+                                                            .drawing
+                                                            .get_insert_effective_cabinet_params(&eid)
+                                                            .ok();
+                                                        let raw_overrides = self
+                                                            .drawing
+                                                            .get_insert_cabinet_param_overrides(&eid)
+                                                            .cloned()
+                                                            .unwrap_or_default();
+
+                                                        for param in &cabinet.parameters {
+                                                            ui.label(format!("{}:", param.label));
+                                                            ui.add_enabled_ui(cabinet.geometry_authored, |ui| {
+                                                                match param.param_type {
+                                                                    CabinetParameterType::Boolean => {
+                                                                        let mut value = effective
+                                                                            .as_ref()
+                                                                            .and_then(|map| map.get(&param.name))
+                                                                            .and_then(|v| match v {
+                                                                                CabinetFormulaValue::Boolean(v) => Some(*v),
+                                                                                CabinetFormulaValue::Number(v) => {
+                                                                                    Some(v.abs() > 1e-12)
+                                                                                }
+                                                                                CabinetFormulaValue::Text(_) => None,
+                                                                            })
+                                                                            .unwrap_or(false);
+                                                                        if ui.checkbox(&mut value, "").changed() {
+                                                                            set_insert_cabinet_param = Some((
+                                                                                eid,
+                                                                                param.name.clone(),
+                                                                                if value {
+                                                                                    "true".to_string()
+                                                                                } else {
+                                                                                    "false".to_string()
+                                                                                },
+                                                                            ));
+                                                                        }
+                                                                    }
+                                                                    CabinetParameterType::Choice => {
+                                                                        let mut value = raw_overrides
+                                                                            .get(&param.name)
+                                                                            .cloned()
+                                                                            .unwrap_or_else(|| param.default_value.clone());
+                                                                        egui::ComboBox::from_id_source((
+                                                                            "cab_choice",
+                                                                            eid,
+                                                                            param.name.as_str(),
+                                                                        ))
+                                                                        .selected_text(value.clone())
+                                                                        .width(120.0)
+                                                                        .show_ui(ui, |ui| {
+                                                                            for option in &param.choice_options {
+                                                                                if ui
+                                                                                    .selectable_label(value == *option, option)
+                                                                                    .clicked()
+                                                                                {
+                                                                                    value = option.clone();
+                                                                                }
+                                                                            }
+                                                                        });
+                                                                        let current_raw = raw_overrides
+                                                                            .get(&param.name)
+                                                                            .cloned()
+                                                                            .unwrap_or_else(|| param.default_value.clone());
+                                                                        if value != current_raw {
+                                                                            set_insert_cabinet_param = Some((
+                                                                                eid,
+                                                                                param.name.clone(),
+                                                                                value,
+                                                                            ));
+                                                                        }
+                                                                    }
+                                                                    CabinetParameterType::Number
+                                                                    | CabinetParameterType::Integer => {
+                                                                        let mut value = raw_overrides
+                                                                            .get(&param.name)
+                                                                            .cloned()
+                                                                            .unwrap_or_else(|| param.default_value.clone());
+                                                                        if ui
+                                                                            .add(
+                                                                                egui::TextEdit::singleline(&mut value)
+                                                                                    .desired_width(96.0),
+                                                                            )
+                                                                            .changed()
+                                                                        {
+                                                                            let trimmed = value.trim();
+                                                                            if trimmed.is_empty() {
+                                                                                clear_insert_cabinet_param = Some((
+                                                                                    eid,
+                                                                                    param.name.clone(),
+                                                                                ));
+                                                                            } else if trimmed.parse::<f64>().is_ok() {
+                                                                                set_insert_cabinet_param = Some((
+                                                                                    eid,
+                                                                                    param.name.clone(),
+                                                                                    trimmed.to_string(),
+                                                                                ));
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                    CabinetParameterType::Text => {
+                                                                        let mut value = raw_overrides
+                                                                            .get(&param.name)
+                                                                            .cloned()
+                                                                            .unwrap_or_else(|| param.default_value.clone());
+                                                                        if ui
+                                                                            .add(
+                                                                                egui::TextEdit::singleline(&mut value)
+                                                                                    .desired_width(120.0),
+                                                                            )
+                                                                            .changed()
+                                                                        {
+                                                                            set_insert_cabinet_param = Some((
+                                                                                eid,
+                                                                                param.name.clone(),
+                                                                                value,
+                                                                            ));
+                                                                        }
+                                                                    }
+                                                                }
+                                                            });
+                                                            ui.end_row();
+                                                        }
+
+                                                        ui.separator();
+                                                        ui.label(egui::RichText::new("Generated Parts").strong());
+                                                        ui.end_row();
+                                                        match self.drawing.evaluate_insert_cabinet_parts(&eid) {
+                                                            Ok(parts) if parts.is_empty() => {
+                                                                ui.label("Parts:");
+                                                                ui.label(
+                                                                    egui::RichText::new("No generated parts")
+                                                                        .color(egui::Color32::from_gray(120)),
+                                                                );
+                                                                ui.end_row();
+                                                            }
+                                                            Ok(parts) => {
+                                                                ui.label("Rows:");
+                                                                ui.label(parts.len().to_string());
+                                                                ui.end_row();
+                                                                ui.end_row();
+                                                                ui.label(egui::RichText::new("Part").small().strong());
+                                                                ui.label(egui::RichText::new("Qty / Size / Material").small().strong());
+                                                                ui.end_row();
+                                                                for part in parts {
+                                                                    ui.label(part.part_name);
+                                                                    ui.label(format!(
+                                                                        "{:.3}  |  {:.3} x {:.3} x {:.3}  |  {}{}",
+                                                                        part.quantity,
+                                                                        part.length,
+                                                                        part.width,
+                                                                        part.thickness,
+                                                                        part.core_material,
+                                                                        if part.finish.is_empty() {
+                                                                            String::new()
+                                                                        } else {
+                                                                            format!(" / {}", part.finish)
+                                                                        }
+                                                                    ));
+                                                                    ui.end_row();
+                                                                }
+                                                            }
+                                                            Err(err) => {
+                                                                ui.label("Parts:");
+                                                                ui.label(
+                                                                    egui::RichText::new(err.to_string())
+                                                                        .small()
+                                                                        .color(egui::Color32::from_rgb(220, 120, 120)),
+                                                                );
+                                                                ui.end_row();
+                                                            }
+                                                        }
                                                     }
                                                 }
                                             }
@@ -1393,6 +2061,78 @@ impl CadKitApp {
                     }
                 }
             }
+            if let Some((eid, param_name)) = clear_insert_cabinet_param {
+                let requested = vec![eid];
+                let ids = self.filter_editable_entity_ids(&requested, "PROPERTIES");
+                if ids.iter().any(|id| *id == eid) {
+                    let _ = self
+                        .drawing
+                        .remove_insert_cabinet_param_override(&eid, &param_name);
+                }
+            }
+            if let Some((eid, param_name, value)) = set_insert_cabinet_param {
+                let requested = vec![eid];
+                let ids = self.filter_editable_entity_ids(&requested, "PROPERTIES");
+                if ids.iter().any(|id| *id == eid) {
+                    let _ = self
+                        .drawing
+                        .set_insert_cabinet_param_override(&eid, param_name, value);
+                }
+            }
+            if apply_cabdef_behavior {
+                match self.apply_cabdef_behavior_to_selection() {
+                    Ok(msg) => self.command_log.push(msg),
+                    Err(err) => self.command_log.push(err),
+                }
+            }
+            if clear_cabdef_behavior {
+                match self.clear_cabdef_behaviors_from_selection() {
+                    Ok(msg) => self.command_log.push(msg),
+                    Err(err) => self.command_log.push(err),
+                }
+            }
+            if let Some(action_id) = load_cabdef_behavior {
+                match self.load_cabdef_behavior_binding(action_id) {
+                    Ok(msg) => self.command_log.push(msg),
+                    Err(err) => self.command_log.push(err),
+                }
+            }
+            if let Some(action_id) = remove_cabdef_behavior {
+                match self.remove_cabdef_behavior_binding(action_id) {
+                    Ok(msg) => self.command_log.push(msg),
+                    Err(err) => self.command_log.push(err),
+                }
+            }
+            if add_cabdef_part_row {
+                if let Some(cabinet) = self.block_edit_cabinet_v1.as_mut() {
+                    cabinet.part_recipe.push(CabinetPartRecipeRow {
+                        id: Guid::new(),
+                        part_name: format!("PART_{}", cabinet.part_recipe.len() + 1),
+                        enabled: true,
+                        qty_formula: "1".to_string(),
+                        length_formula: "H".to_string(),
+                        width_formula: "W".to_string(),
+                        thickness_formula: "THK".to_string(),
+                        core_material_formula: "COREMAT".to_string(),
+                        finish_formula: "FINISH".to_string(),
+                        face: None,
+                        grain: None,
+                        notes: None,
+                    });
+                    self.command_log
+                        .push("CABDEF: Added part recipe row".to_string());
+                }
+            }
+            if let Some(row_id) = remove_cabdef_part_row {
+                if let Some(cabinet) = self.block_edit_cabinet_v1.as_mut() {
+                    let before = cabinet.part_recipe.len();
+                    cabinet.part_recipe.retain(|row| row.id != row_id);
+                    if cabinet.part_recipe.len() != before {
+                        self.command_log
+                            .push("CABDEF: Removed part recipe row".to_string());
+                    }
+                }
+            }
 
             if set_entity_bylayer {
                 let requested: Vec<Guid> = self.selected_entities.iter().copied().collect();
@@ -1472,6 +2212,10 @@ impl CadKitApp {
                             ui.separator();
                             ui.checkbox(&mut self.axis_ortho_enabled, "Ortho");
                             ui.checkbox(&mut self.ortho_enabled, "Polar");
+                            if self.mirror_phase != MirrorPhase::Idle {
+                                ui.separator();
+                                ui.checkbox(&mut self.mirror_erase_source, "Erase source");
+                            }
                             if !self.iso_mode {
                                 ui.add(
                                     egui::DragValue::new(&mut self.ortho_increment_deg)
@@ -1546,7 +2290,9 @@ impl CadKitApp {
 
                         // Keep focus glued to the command line unless the user is
                         // interacting with another text-heavy dialog/window.
-                        if self.layer_editing_id.is_none()
+                        let nothing_focused = ui.ctx().memory(|m| m.focused().is_none());
+                        if nothing_focused
+                            && self.layer_editing_id.is_none()
                             && self.layer_color_picking.is_none()
                             && self.text_edit_dialog.is_none()
                             && self.dim_edit_dialog.is_none()
@@ -1816,14 +2562,20 @@ impl CadKitApp {
                                         self.command_log.push("MIRROR: No editable entities selected".to_string());
                                     } else {
                                         self.mirror_phase = MirrorPhase::FirstAxisPoint;
-                                        self.command_log.push("MIRROR: Pick first axis point".to_string());
+                                        self.command_log.push(format!(
+                                            "MIRROR: Pick first axis point [Erase source: {}]",
+                                            if self.mirror_erase_source { "Yes" } else { "No" }
+                                        ));
                                     }
                                 }
                             } else if self.mirror_phase == MirrorPhase::FirstAxisPoint {
                                 if let Some(world) = self.hover_world_pos {
                                     self.mirror_axis_p1 = Some(world);
                                     self.mirror_phase = MirrorPhase::SecondAxisPoint;
-                                    self.command_log.push("MIRROR: Pick second axis point".to_string());
+                                    self.command_log.push(format!(
+                                        "MIRROR: Pick second axis point [Erase source: {}]",
+                                        if self.mirror_erase_source { "Yes" } else { "No" }
+                                    ));
                                 }
                             } else if self.mirror_phase == MirrorPhase::SecondAxisPoint {
                                 if let (Some(world), Some(p1)) = (self.hover_world_pos, self.mirror_axis_p1) {
@@ -3051,7 +3803,10 @@ impl CadKitApp {
                                 if let Some(world) = Self::resolve_typed_point(&cmd, None) {
                                     self.mirror_axis_p1 = Some(world);
                                     self.mirror_phase = MirrorPhase::SecondAxisPoint;
-                                    self.command_log.push("MIRROR: Pick second axis point".to_string());
+                                    self.command_log.push(format!(
+                                        "MIRROR: Pick second axis point [Erase source: {}]",
+                                        if self.mirror_erase_source { "Yes" } else { "No" }
+                                    ));
                                 } else {
                                     self.command_log.push("  *MIRROR: enter x,y for first axis point*".to_string());
                                 }
