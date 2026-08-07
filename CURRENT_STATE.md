@@ -1,7 +1,7 @@
 # CadKit Current State
 
 ## Current Build
-- Current commit hash: `4f0373c`
+- Current commit hash: `20bb792`
 - Branch: `refactor/main-split`
 - Worktree: Dirty
 
@@ -44,7 +44,7 @@
 - Python: Partial
 
 ## Next Recommended Work
-- Return to product feature work, with leaders/callouts as the clearest next feature area on top of the now-stable drafting and QA foundation.
+- Start the cabinet-layout and MTO foundation: cabinet library objects, project spec data, rule-driven part derivation, and material-based nesting/estimation for sheet-goods shops.
 
 ## Last Updated
-- 2026-08-06 23:20:00Z
+- 2026-08-07 00:05:00Z

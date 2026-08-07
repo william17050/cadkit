@@ -152,7 +152,7 @@
 
 ---
 
-## Phase 5: Advanced 2D (Q1 2027) — **Current Main Product Track**
+## Phase 5: Advanced 2D (Q1 2027) — **Supporting Product Track**
 
 ### Milestone 5.1: Hatch & Regions
 - [x] Boundary detection algorithm (first pass in geometry crate + `BOUNDARY` point-pick command)
@@ -193,54 +193,87 @@ CadKit has progressed beyond the earlier "2D MVP" framing. The current baseline 
 - a substantial in-app QA bridge for repeatable behavioral testing under Wayland
 
 The highest-value unfinished product work is now concentrated in:
-- leaders/callouts
-- hatch gap healing and robustness
-- nested blocks and fuller block-palette workflows
-- broader DXF and layer-system completeness
+- cabinet layout workflows for real room/front planning
+- project spec data for materials, hardware, toe kicks, depths, and construction defaults
+- rule-based part derivation and traceable MTO output
+- material-grouped rectangular nesting/optimization for sheet-goods estimating
+- then manufacturing-aware part/assembly visualization
 
-The long-term 3D, CAM, cabinet, and parametric phases remain directionally valid, but the immediate development posture is still deepening the 2D drafting product.
+The long-term 3D, CAM, cabinet, and parametric phases remain directionally valid, but the immediate development posture is shifting from generic 2D depth toward cabinet-layout and manufacturing-data workflows.
 
 ---
 
-## Phase 6: Direct 3D (Q2-Q3 2027)
+## Phase 6: Cabinet Layout & MTO (Q2-Q3 2027) — **Next Major Milestone**
 
-### Milestone 6.1: 3D Viewport
+### Milestone 6.1: Cabinet Layout Foundation
+- [ ] Cabinet library for base, upper, tall, pantry, filler, and open cases
+- [ ] Parametric 2D cabinet layout objects for front/layout use
+- [ ] Room/project assignment for cabinet instances
+- [ ] Cabinet include/exclude behavior for takeoff generation
+- [ ] Wall-run / layout placement tools for rapid room planning
+
+### Milestone 6.2: Project Spec Builder
+- [ ] Project-wide construction defaults
+- [ ] Material/core sheet-good definitions
+- [ ] Finish/laminate code definitions
+- [ ] Hardware package definitions
+- [ ] Toe kick height/depth, base depth, upper depth, pedestal/built-in defaults
+
+### Milestone 6.3: Rule-Based Part Derivation
+- [ ] Cabinet instance -> part record derivation engine
+- [ ] Traceable part records: room -> cabinet -> part
+- [ ] Core material separated from applied finish metadata
+- [ ] Construction-rule formulas for sides, tops, bottoms, backs, shelves, stretchers, nailers, fillers, and toe-kick-related parts
+- [ ] Rebuild MTO from current cabinets instead of append-only accumulation
+
+### Milestone 6.4: Estimating & Nesting
+- [ ] Area-based early sheet estimate
+- [ ] Material/thickness/grain grouping
+- [ ] Skyline-based rectangular nesting first pass
+- [ ] Table-saw / panel-saw oriented optimization outputs
+- [ ] CSV/DXF/report outputs for summary, cutlist, and nests
+
+---
+
+## Phase 7: Manufacturing-Aware 3D (Q4 2027 - Q1 2028)
+
+### Milestone 7.1: 3D Viewport
 - [ ] 3D camera controls (orbit / pan / zoom)
 - [ ] Perspective / orthographic toggle
 - [ ] View cube navigation
 - [ ] Shaded rendering mode
 
-### Milestone 6.2: Push/Pull
-- [ ] Select 2D region (face)
-- [ ] Extrude in Z direction with live preview
-- [ ] Confirm to create solid mesh
-- [ ] Extrude with taper angle
+### Milestone 7.2: Part & Assembly Visualization
+- [ ] Board/panel part primitives with material and thickness metadata
+- [ ] 3D assembly placement of generated parts
+- [ ] Face-aware part editing workspace
+- [ ] Visual synchronization between cabinet data, part data, and 3D representation
 
-### Milestone 6.3: 3D Boolean Operations
-- [ ] Union solids
-- [ ] Subtract solids
-- [ ] Intersect solids
-- [ ] Manifold mesh validation
+### Milestone 7.3: Manufacturing-Aware Operations
+- [ ] Extrude panel/part from manufacturable profiles
+- [ ] Tool-driven cut concepts (dado, rabbet, pocket, drill, profile cut)
+- [ ] Depth/tool-profile aware previews
+- [ ] Rebuild solid part geometry from machining features
 
 ---
 
-## Phase 7: CNC/CAM (Q4 2027 - Q1 2028)
+## Phase 8: CNC/CAM (Q2-Q3 2028)
 
-### Milestone 7.1: Toolpath Generation
+### Milestone 8.1: Toolpath Generation
 - [ ] 2D profile toolpath
 - [ ] Pocket clearing
 - [ ] Drilling operations
 - [ ] Adaptive clearing
 - [ ] Helical entry
 
-### Milestone 7.2: Post-Processors
+### Milestone 8.2: Post-Processors
 - [ ] Generic G-code output
 - [ ] Mach3 post-processor
 - [ ] Fanuc/KOMO post-processor
 - [ ] Planet CNC post-processor
 - [ ] Load Aspire .pp files
 
-### Milestone 7.3: CAM Features
+### Milestone 8.3: CAM Features
 - [ ] Tool library
 - [ ] Material database
 - [ ] Feed/speed calculator
@@ -250,48 +283,46 @@ The long-term 3D, CAM, cabinet, and parametric phases remain directionally valid
 
 ---
 
-## Phase 8: Cabinet Designer (Q2-Q3 2028)
+## Phase 9: Cabinet Designer Depth (Q4 2028 - Q1 2029)
 
-### Milestone 8.1: Cabinet Primitives
-- [ ] Base cabinet template
-- [ ] Wall cabinet template
-- [ ] Tall cabinet template
+### Milestone 9.1: Cabinet Primitives
+- [ ] Broader cabinet family coverage and refinements
 - [ ] Corner cabinet variants
 - [ ] Drawer stack generator
+- [ ] Face-frame / frameless construction variations
+- [ ] Specialty cabinet cases
 
-### Milestone 8.2: Cut List & Nesting
-- [ ] Generate cut list from design
-- [ ] Sheet nesting algorithm
-- [ ] Grain direction control
+### Milestone 9.2: Production Output
 - [ ] Edge banding list
 - [ ] Hardware requirements
-
-### Milestone 8.3: Production Output
-- [ ] CNC programs for nested sheets
 - [ ] Assembly drawings
-- [ ] Hardware location drilling
 - [ ] Material cost estimation
 - [ ] Quote generation
 
+### Milestone 9.3: CNC-Integrated Cabinet Output
+- [ ] CNC programs for nested sheets
+- [ ] Hardware location drilling
+- [ ] Production-ready cabinet packages
+
 ---
 
-## Phase 9: Parametric & Polish (Q4 2028 - Q1 2029)
+## Phase 10: Parametric & Polish (Q2-Q3 2029)
 
-### Milestone 9.1: Constraints
+### Milestone 10.1: Constraints
 - [ ] Distance constraints
 - [ ] Angle constraints
 - [ ] Parallel / perpendicular
 - [ ] Tangent constraints
 - [ ] Constraint solver
 
-### Milestone 9.2: Feature History
+### Milestone 10.2: Feature History
 - [ ] History tree UI
 - [ ] Edit feature parameters
 - [ ] Suppress / resume features
 - [ ] Reorder operations
 - [ ] Feature patterns
 
-### Milestone 9.3: Final Polish
+### Milestone 10.3: Final Polish
 - [ ] Performance optimization
 - [ ] User documentation
 - [ ] Tutorial system

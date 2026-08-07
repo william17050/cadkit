@@ -55,16 +55,17 @@ Modular Rust workspace with clear separation of concerns:
 - **QA automation**: in-app QA bridge with mode toggles, polar-angle control, snap-aware testing, and session-safe preference snapshot/restore for repeatable behavioral QA.
 
 ## Near-Term Product Focus
-- Leaders and callouts.
-- Hatch robustness, especially gap healing under tolerance.
-- Blocks follow-up work: nested blocks and a fuller block library/palette.
-- DXF and layer-system depth beyond the current stable drafting core.
-- Continued polish of modify workflows and annotation ergonomics.
+- Cabinet layout and estimating workflows for sheet-goods shops.
+- Project-wide spec builder for materials, hardware, toe kicks, depths, and construction defaults.
+- Cabinet library with parametric 2D layout objects and per-cabinet part recipes.
+- Rule-based MTO engine that derives parts from cabinet instances instead of manual spreadsheets.
+- Material-bucket summaries and rectangular nesting/optimization for table-saw and panel-saw workflows before CNC.
 
 ## Longer-Term (high level)
-- Hatch patterns, leaders/callouts, multi-line text, dynamic/parametric blocks.
-- Python bridge and AI command line.
-- Push/pull 3D prototype, then CAM and cabinet workflows.
+- Finish remaining advanced 2D drafting depth where it materially supports production workflows.
+- Add manufacturing-aware part/assembly visualization after the cabinet/spec/part engine is established.
+- Evolve toward woodworking-aware 3D and machining operations rather than generic artistic push/pull.
+- Continue toward CAM and cabinet workflows from that manufacturing-first foundation.
 
 ## Technology Stack
 - **Language**: Rust (performance, safety, packaging)
@@ -149,7 +150,7 @@ cargo test -p cadkit-types
 
 ## Project Status
 **Current**: Mature 2D drafting core with a strong editing, snapping, annotation, DXF/JSON IO, Python/AI, and QA automation foundation.
-**Next Milestone**: Return to product-facing feature work on advanced 2D depth, likely leaders/callouts, hatch robustness, or broader block workflows.
+**Next Milestone**: Cabinet layout + MTO foundation: parametric cabinet layout objects, project spec data, rule-driven part derivation, and material-based nesting/estimation for sheet-goods shops.
 
 ---
 *Built by Bill - 20+ years manufacturing experience, ready to ship what should exist.*
